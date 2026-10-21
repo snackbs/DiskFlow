@@ -1,0 +1,7 @@
+{
+  "_comment": "fixture: 空历史（首次运行，建立基线）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [
+  ]
+}

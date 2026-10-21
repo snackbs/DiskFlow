@@ -1,0 +1,233 @@
+# ---------------------------------------------------------------------------
+# 测试 -> 打包 -> 上传产物（全部在 GitHub 原生 windows-latest runner 上执行）
+#
+# 关键约定：
+#  * 名称只从 main.py 读取（APP_DISPLAY_NAME / APP_EXE_NAME / APP_ARTIFACT_NAME），
+#    workflow 里没有任何写死的软件名，改名只需要改 main.py 顶部三行。
+#  * build job 通过 needs: test 硬依赖 test job：测试不过就不会打包。
+#  * 不使用 Wine / 交叉编译：runner 本身就是 Windows，PyInstaller 原生出 exe。
+# ---------------------------------------------------------------------------
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # tag 触发时创建 Release 需要
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  # =========================================================================
+  # Job 1: 测试（真实执行 pytest，不依赖真实硬盘）
+  # =========================================================================
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pytest
+
+      - name: Show environment
+        run: |
+          python -c "import sys, platform; print(sys.version); print(platform.platform())"
+
+      - name: Run pytest
+        run: python -m pytest -v --no-header
+
+  # =========================================================================
+  # Job 2: 打包（needs: test —— 测试全绿才允许执行）
+  # =========================================================================
+  build:
+    name: build exe
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ---------------------------------------------------------------
+      # 名称单一来源：从 main.py 读取常量，导出成 step 输出 + 环境变量。
+      # 后续所有步骤（--name / artifact / Release 附件）都引用这里。
+      # ---------------------------------------------------------------
+      - name: Resolve app names from main.py
+        id: names
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exeName = (python -c "import main as m; print(m.APP_EXE_NAME)").Trim()
+          $artifact = (python -c "import main as m; print(m.APP_ARTIFACT_NAME)").Trim()
+          $display  = (python -c "import main as m; print(m.APP_DISPLAY_NAME)").Trim()
+          Write-Host "APP_DISPLAY_NAME = $display"
+          Write-Host "APP_EXE_NAME     = $exeName"
+          Write-Host "APP_ARTIFACT_NAME= $artifact"
+          if ($exeName -notmatch '^[A-Za-z0-9]{1,20}$') {
+            throw "APP_EXE_NAME '$exeName' 必须是 1-20 位纯字母数字（PyInstaller --name / exe 文件名要求）"
+          }
+          "exe_name=$exeName"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_name=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "display_name=$display"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "APP_EXE_NAME=$exeName"   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      # ---------------------------------------------------------------
+      # 获取 smartctl.exe 到项目根目录（--add-binary 需要它）。
+      # 方案 A：官方 Release 的 NSIS setup.exe + 7-Zip 解包（无需管理员）
+      # 方案 B：Chocolatey 安装 smartmontools 后从安装目录拷出
+      # 两条都失败则明确报错退出，不产出缺 smartctl 的 exe。
+      # ---------------------------------------------------------------
+      - name: Fetch smartctl.exe into repo root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path (Get-Location) 'smartctl.exe'
+
+          function Get-SevenZip {
+            $candidates = @(
+              (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
+              (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
+            )
+            foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+            $cmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            return $null
+          }
+
+          function Test-Smartctl([string]$path) {
+            if (-not (Test-Path $path)) { return $false }
+            try { & $path --version | Out-Null; return ($LASTEXITCODE -eq 0) } catch { return $false }
+          }
+
+          # ---- 方案 A：下载官方 win32-setup.exe，用 7-Zip 解包 ----
+          $sevenZip = Get-SevenZip
+          if (-not $sevenZip) {
+            Write-Host '未找到 7-Zip，尝试 choco 安装 7zip.install ...'
+            choco install 7zip.install -y --no-progress | Out-Null
+            $sevenZip = Get-SevenZip
+          }
+          if ($sevenZip) {
+            foreach ($ver in @('7.5', '7.4')) {
+              $tag = 'RELEASE_' + ($ver -replace '\.', '_')
+              $url = "https://github.com/smartmontools/smartmontools/releases/download/$tag/smartmontools-$ver.win32-setup.exe"
+              $setup = Join-Path $env:RUNNER_TEMP "smartmontools-$ver.win32-setup.exe"
+              $outDir = Join-Path $env:RUNNER_TEMP "smartmontools-$ver"
+              Write-Host "尝试下载：$url"
+              try {
+                Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing -TimeoutSec 120
+              } catch {
+                Write-Warning "下载失败（$($_.Exception.Message)），换下一个版本 / 换方案 B"
+                continue
+              }
+              if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
+              New-Item -ItemType Directory -Path $outDir | Out-Null
+              & $sevenZip x $setup "-o$outDir" -y | Out-Null
+              $found = Get-ChildItem -Path $outDir -Recurse -Filter 'smartctl.exe' -File |
+                       Select-Object -First 1
+              if ($found) {
+                Copy-Item $found.FullName $dest -Force
+                if (Test-Smartctl $dest) {
+                  Write-Host "方案 A 成功：$($found.FullName) -> $dest"
+                  break
+                }
+              }
+              Write-Warning "smartmontools $ver 解包后没找到可用的 smartctl.exe"
+            }
+          } else {
+            Write-Warning '没有 7-Zip，跳过方案 A'
+          }
+
+          # ---- 方案 B：Chocolatey 安装后拷出 ----
+          if (-not (Test-Smartctl $dest)) {
+            Write-Host '方案 B：choco install smartmontools ...'
+            choco install smartmontools -y --no-progress | Out-Null
+            $installed = Join-Path $env:ProgramFiles 'smartmontools\bin\smartctl.exe'
+            if (Test-Path $installed) {
+              Copy-Item $installed $dest -Force
+            }
+          }
+
+          if (-not (Test-Smartctl $dest)) {
+            throw '无法获得可用的 smartctl.exe（方案 A 下载解包 / 方案 B choco 均失败）'
+          }
+          & $dest --version
+          "{0} 字节" -f (Get-Item $dest).Length
+
+      - name: Build onefile exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 名称来自 main.py 的 APP_EXE_NAME（上一步写入 GITHUB_ENV），不写死
+          python -m PyInstaller --onefile --noconsole --uac-admin `
+            --name "$env:APP_EXE_NAME" `
+            --add-binary "smartctl.exe;." `
+            main.py
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 退出码 $LASTEXITCODE" }
+
+      - name: Verify dist artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path 'dist' ("$env:APP_EXE_NAME" + '.exe')
+          if (-not (Test-Path $exe)) { throw "缺少产物：$exe" }
+          $size = (Get-Item $exe).Length
+          Write-Host ("{0} = {1:N0} 字节 ({2:N2} MB)" -f $exe, $size, ($size / 1MB))
+          # 合理体积：单文件 exe 含 Python 运行时 + smartctl.exe，正常在 8-40 MB
+          if ($size -lt 3MB)  { throw "产物过小（$size 字节），疑似打包不完整" }
+          if ($size -gt 120MB) { throw "产物过大（$size 字节），疑似把无关文件打进去了" }
+          # 提醒：PyInstaller 会把 UAC manifest 作为资源嵌入；这里做一次非致命检查
+          $blob = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($exe))
+          if ($blob -notmatch 'requireAdministrator') {
+            Write-Warning '未在 exe 里找到 requireAdministrator，请确认 --uac-admin 生效'
+          } else {
+            Write-Host 'UAC manifest: requireAdministrator 已嵌入'
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.artifact_name }}
+          path: dist/${{ steps.names.outputs.exe_name }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create Release (tag v* only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.names.outputs.display_name }} ${{ github.ref_name }}
+          files: dist/${{ steps.names.outputs.exe_name }}.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -1,0 +1,27 @@
+{
+  "_comment": "fixture: 每条盘各一条历史记录（第二次运行对比用）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [{
+      "timestamp": "2026-04-30T08:00:00+08:00",
+      "key": "SAMSUNG SSD 980 PRO 1TB|S6B0NL0R912345A",
+      "model": "Samsung SSD 980 PRO 1TB",
+      "serial": "S6B0NL0R912345A",
+      "protocol": "NVMe",
+      "device": "/dev/nvme0",
+      "read_gb": 6000.0,
+      "write_gb": 7500.0,
+      "media_errors": 0
+    },{
+      "timestamp": "2026-04-30T08:00:00+08:00",
+      "key": "CRUCIAL MX500 1TB|2108E5A1B2C3",
+      "model": "Crucial MX500 1TB",
+      "serial": "2108E5A1B2C3",
+      "protocol": "SATA",
+      "device": "/dev/sdb",
+      "read_gb": 900.0,
+      "write_gb": 1200.0,
+      "media_errors": null
+    }
+  ]
+}

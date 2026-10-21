@@ -1,0 +1,24 @@
+# ---- 本地私有目录：会话交接文档等，绝不推送到 GitHub ----
+_local/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# ---- PyInstaller ----
+build/
+dist/
+*.spec
+
+# ---- 打包时临时放进项目根的 smartctl.exe（由 CI 现场下载）----
+smartctl.exe
+
+# ---- 测试 / 调试残留 ----
+.ptrun*/
+*.tmp
+history.json
+history.corrupt-*.json

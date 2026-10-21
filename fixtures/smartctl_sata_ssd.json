@@ -1,0 +1,22 @@
+{
+  "_comment": "fixture: SATA SSD，Total_LBAs_Read/Written（1 LBA = 512 字节），无 0E 字段",
+  "json_format_version": [1, 0],
+  "smartctl": {"version": [7, 5], "exit_status": 0, "messages": []},
+
+  "model_name": "Crucial MX500 1TB",
+  "serial_number": "2108E5A1B2C3",
+  "firmware_version": "M3CR045",
+  "device": {"name": "/dev/sdb", "info_name": "/dev/sdb", "type": "sat", "protocol": "ATA"},
+  "mock": {"device_path": "/dev/sdb"},
+  "user_capacity": {"blocks": 1953525168, "bytes": 1000204886016},
+  "logical_block_size": 512,
+  "ata_smart_attributes": {
+    "revision": 1,
+    "table": [
+      {"id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 10, "raw": {"value": 0, "string": "0"}},
+      {"id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "raw": {"value": 0, "string": "0"}},
+      {"id": 241, "name": "Total_LBAs_Written", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 3274915840, "string": "3274915840"}},
+      {"id": 242, "name": "Total_LBAs_Read", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 2147483648, "string": "2147483648"}}
+    ]
+  }
+}

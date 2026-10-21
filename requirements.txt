@@ -1,0 +1,12 @@
+# ---------------------------------------------------------------------------
+# 运行时依赖：无。
+# main.py 只使用 Python 标准库（tkinter / ttk / json / subprocess / datetime /
+# pathlib / threading / sys / os / platform / ctypes），因此用 PyInstaller 打包时
+# 不需要任何第三方运行时包。
+#
+# 本文件只用于 CI 与本地开发环境安装【测试依赖】：
+#   python -m pip install -r requirements.txt
+# CI 里还会额外 `pip install pyinstaller pytest`（见 .github/workflows/build.yml），
+# 因为 pytest 也写在下面，安装后即可直接 `python -m pytest -v`。
+# ---------------------------------------------------------------------------
+pytest>=8.0,<10

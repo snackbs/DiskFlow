@@ -1,0 +1,39 @@
+{
+  "_comment": "fixture: 历史里有一块本次未出现的盘（WD40EFRX）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [{
+      "timestamp": "2026-04-30T08:00:00+08:00",
+      "key": "SAMSUNG SSD 980 PRO 1TB|S6B0NL0R912345A",
+      "model": "Samsung SSD 980 PRO 1TB",
+      "serial": "S6B0NL0R912345A",
+      "protocol": "NVMe",
+      "device": "/dev/nvme0",
+      "read_gb": 6000.0,
+      "write_gb": 7500.0,
+      "media_errors": 0
+    },
+    {
+      "timestamp": "2026-04-30T08:00:00+08:00",
+      "key": "CRUCIAL MX500 1TB|2108E5A1B2C3",
+      "model": "Crucial MX500 1TB",
+      "serial": "2108E5A1B2C3",
+      "protocol": "SATA",
+      "device": "/dev/sdb",
+      "read_gb": 900.0,
+      "write_gb": 1200.0,
+      "media_errors": null
+    },
+    {
+      "timestamp": "2026-04-30T08:00:00+08:00",
+      "key": "WDC WD40EFRX-68N32N0|WD-WCC7K1234567",
+      "model": "WDC WD40EFRX-68N32N0",
+      "serial": "WD-WCC7K1234567",
+      "protocol": "SATA",
+      "device": "/dev/sdd",
+      "read_gb": 12345.6,
+      "write_gb": 23456.7,
+      "media_errors": null
+    }
+  ]
+}

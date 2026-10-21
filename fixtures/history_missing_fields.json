@@ -1,0 +1,8 @@
+{
+  "_comment": "fixture: 字段缺失的 history.json（缺少 write_gb，测试备份并重建基线）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [
+    {"timestamp": "2026-04-30T08:00:00+08:00", "model": "Crucial MX500 1TB", "serial": "2108E5A1B2C3", "read_gb": 900.0}
+  ]
+}

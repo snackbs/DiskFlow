@@ -1,0 +1,28 @@
+{
+  "_comment": "fixture: NVMe SSD，含 media_errors 与 data_units_read/written（Data Unit = 512000 字节）",
+  "json_format_version": [1, 0],
+  "smartctl": {"version": [7, 5], "exit_status": 0, "messages": []},
+
+  "model_name": "Samsung SSD 980 PRO 1TB",
+  "serial_number": "S6B0NL0R912345A",
+  "firmware_version": "5B2QGXA7",
+  "device": {"name": "/dev/nvme0", "info_name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe"},
+  "mock": {"device_path": "/dev/nvme0"},
+  "user_capacity": {"blocks": 1953525168, "bytes": 1000204886016},
+  "logical_block_size": 512,
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 38,
+    "available_spare": 100,
+    "percentage_used": 7,
+    "data_units_read": 13314398,
+    "data_units_written": 17120410,
+    "host_reads": 220145871,
+    "host_writes": 298745120,
+    "power_cycles": 412,
+    "power_on_hours": 5120,
+    "unsafe_shutdowns": 22,
+    "media_errors": 0,
+    "num_err_log_entries": 5
+  }
+}

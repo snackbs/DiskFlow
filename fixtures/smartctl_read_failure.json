@@ -1,0 +1,18 @@
+{
+  "_comment": "fixture: 读取失败的盘（HDD），smartctl exit_status=2 (bit1: 设备打开失败)，无任何 SMART 数据",
+  "json_format_version": [1, 0],
+  "smartctl": {
+    "version": [7, 5],
+    "exit_status": 2,
+    "messages": [
+      {"string": "Smartctl open device: /dev/sdc failed: Permission denied", "severity": "error"}
+    ]
+  },
+
+  "model_name": "ST4000VN008-2DR166",
+  "serial_number": "ZDH1ABCD",
+  "firmware_version": "SC60",
+  "device": {"name": "/dev/sdc", "info_name": "/dev/sdc", "type": "sat", "protocol": "ATA"},
+  "mock": {"device_path": "/dev/sdc"},
+  "user_capacity": {"blocks": 7814037168, "bytes": 4000787030016}
+}
