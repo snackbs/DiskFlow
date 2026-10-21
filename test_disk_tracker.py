@@ -889,6 +889,56 @@ def test_about_text_uses_given_history_path(tmp_path):
     assert "None" not in text
 
 
+# ---------------------------------------------------------------------------
+# 发布流程：CHANGELOG.md 是 Release 正文的唯一来源，必须与 APP_VERSION 对齐
+# ---------------------------------------------------------------------------
+
+CHANGELOG = Path(__file__).resolve().parent / "CHANGELOG.md"
+
+
+def _changelog_sections():
+    """返回 {版本号: 小节正文}，按 "## [x.y.z]" 二级标题切分。"""
+    assert CHANGELOG.exists(), "缺少 CHANGELOG.md：Release 正文必须有出处"
+    sections = {}
+    current = None
+    buffer = []
+    for line in CHANGELOG.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(buffer).strip()
+            match = re.match(r"^##\s+\[?([0-9A-Za-z.\-]+)\]?", line)
+            current = match.group(1) if match else None
+            buffer = []
+        elif current is not None:
+            buffer.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buffer).strip()
+    return sections
+
+
+def test_changelog_has_section_for_current_version():
+    """APP_VERSION 必须有对应小节，否则 CI 抽不到 Release 正文（会直接失败）。"""
+    sections = _changelog_sections()
+    assert app.APP_VERSION in sections, (
+        f"CHANGELOG.md 缺少 v{app.APP_VERSION} 的小节，现有：{sorted(sections)}"
+    )
+    body = sections[app.APP_VERSION]
+    # 正文必须是给用户看的说明，不是占位符
+    assert len(body) > 100, "该版本的更新日志过于敷衍"
+    assert "###" in body, "更新日志应分小节说明，而不是一句话带过"
+
+
+def test_changelog_newest_entry_matches_app_version():
+    """第一个版本小节必须是当前版本：避免发了新版却忘了写日志。"""
+    first_header = next(
+        line for line in CHANGELOG.read_text(encoding="utf-8").splitlines()
+        if line.startswith("## ")
+    )
+    assert app.APP_VERSION in first_header, (
+        f"CHANGELOG.md 最新的小节是 {first_header!r}，与 APP_VERSION {app.APP_VERSION} 不一致"
+    )
+
+
 def test_gui_layer_does_not_call_smartctl():
     """GUI 层不得出现 smartctl 调用：类里不应引用 subprocess。"""
     import inspect
