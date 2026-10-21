@@ -1,0 +1,22 @@
+{
+  "_comment": "fixture（不被 FixturesProvider 的 smartctl_*.json 通配符收集）：只有 SMART 属性 241/242、没有 ata_device_statistics 的 SATA 盘，用来验证兜底路径与'可能偏小'提示。",
+  "json_format_version": [1, 0],
+  "smartctl": {"version": [7, 5], "exit_status": 0, "messages": []},
+
+  "model_name": "Legacy SATA Disk 512G",
+  "serial_number": "LEGACY0001",
+  "device": {"name": "/dev/sdd", "info_name": "/dev/sdd", "type": "sat", "protocol": "ATA"},
+  "mock": {"device_path": "/dev/sdd"},
+  "user_capacity": {"blocks": 1000215216, "bytes": 512110190592},
+  "logical_block_size": 512,
+  "ata_smart_attributes": {
+    "revision": 1,
+    "table": [
+      {"id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 10, "raw": {"value": 2, "string": "2"}},
+      {"id": 177, "name": "Wear_Leveling_Count", "value": 88, "worst": 88, "thresh": 0, "raw": {"value": 12, "string": "12"}},
+      {"id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "raw": {"value": 1, "string": "1"}},
+      {"id": 241, "name": "Total_LBAs_Written", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 2048, "string": "2048"}},
+      {"id": 242, "name": "Total_LBAs_Read", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 4096, "string": "4096"}}
+    ]
+  }
+}
