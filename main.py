@@ -32,13 +32,39 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.1.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.2.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
 NVME_DATA_UNIT_BYTES = 512000    # NVMe: 1 Data Unit = 1000 x 512 字节
 BYTES_PER_GB = 1024 ** 3         # 界面统一 1 GB = 1024^3 字节
 BYTES_PER_GIB_TEXT = "1 GB = 1024^3 字节"
+BYTES_PER_TB = 1024 ** 4         # 1 TB = 1024 GB（累计量双单位显示用）
+
+# SATA 累计读写量的来源优先级
+#   Device Statistics 的 Logical Sectors 恒为 512 字节扇区，是权威来源（需要 smartctl -x）
+#   SMART 属性 241/242（Total_LBAs_*）的计数单位随主控而异：多数按 512 字节 LBA 计数，
+#   部分主控（Silicon Motion / Toshiba 等）按 16 MiB / 32 MiB 块计数，直接用会低几个数量级。
+#   因此属性值只作为 Device Statistics 缺失时的兜底，并在界面上提示"可能偏小"。
+ATA_DEVSTAT_READ_NAME = "logical sectors read"
+ATA_DEVSTAT_WRITE_NAME = "logical sectors written"
+COUNTER_SOURCE_NONE = ""
+COUNTER_SOURCE_NVME = "NvmeLog"
+COUNTER_SOURCE_DEVSTAT = "DeviceStatistics"
+COUNTER_SOURCE_ATTR = "SmartAttributes"
+COUNTER_SOURCE_TEXT = {
+    COUNTER_SOURCE_NVME: "NVMe Data Units",
+    COUNTER_SOURCE_DEVSTAT: "Device Statistics（Logical Sectors）",
+    COUNTER_SOURCE_ATTR: "SMART 属性 241/242（按 512 字节/LBA）",
+}
+
+# 健康度：只显示硬盘自己报告的剩余寿命，绝不估算、绝不用其它指标代替。
+#   NVMe: 100 - percentage_used
+#   SATA: 按下列优先级取厂商写下的剩余寿命百分比，全都没有则显示"不适用"
+SATA_LIFE_ATTRIBUTES = (231, 202, 177, 233, 169)
+SATA_LIFE_RAW_PERCENT = (231, 202, 233, 169)   # 这些属性的 raw.value 通常是剩余寿命 %
+# 177 Wear_Leveling_Count 的 raw 是磨损循环次数，只有归一化 value 才是剩余百分比
+HEALTH_NOT_AVAILABLE = "不适用"
 
 SMARTCTL_EXE = "smartctl.exe"
 
@@ -58,8 +84,12 @@ def about_text(history_path: Any = None) -> str:
         "记录本机各物理磁盘的累计读取量与累计写入量，并在每次打开时与上一次记录对比，\n"
         "给出本次区间增量与历史累计增量；同时监测 NVMe 的 0E（介质与数据完整性错误）。\n"
         "\n"
-        "数据来源：smartctl --json（smartmontools），随 exe 一同打包\n"
+        "数据来源：smartctl -x -a --json（smartmontools），随 exe 一同打包\n"
         f"容量换算：{BYTES_PER_GIB_TEXT}；1 LBA = 512 字节，1 NVMe Data Unit = 512000 字节\n"
+        "累计读写：优先取 smartctl 的 Device Statistics（Logical Sectors，恒为 512 字节扇区），\n"
+        "          该字段缺失时才退回 SMART 属性 241/242；累计量超过 1 TB 时同时显示 TB 与 GB。\n"
+        "健康度：只显示硬盘自报的剩余寿命（NVMe 100 − 已用百分比；\n"
+        "        SATA 依次取 231/202/177/233/169 属性），没有该字段显示「不适用」，不做推算。\n"
         f"历史文件：{path_text}\n"
         f"历史目录 ID：{APP_STORAGE_ID}（显示名改名不影响历史数据）\n"
         "\n"
@@ -139,6 +169,18 @@ def fmt_delta(value: float | None, digits: int = 2) -> str:
     return f"{sign}{value:,.{digits}f}"
 
 
+def fmt_size_gb(value: float | None, digits: int = 2) -> str:
+    """累计量双单位显示：>= 1 TB 时同时给出 TB 与 GB，否则只给 GB。
+
+    例：32567.42 -> "31.80 TB (32,567.42 GB)"；512 -> "512.00 GB"。
+    """
+    if value is None:
+        return "—"
+    if abs(value) >= 1024.0:
+        return f"{value / 1024.0:,.{digits}f} TB ({value:,.{digits}f} GB)"
+    return f"{value:,.{digits}f} GB"
+
+
 # ---------------------------------------------------------------------------
 # 时间格式化层
 # ---------------------------------------------------------------------------
@@ -204,6 +246,8 @@ class DiskSnapshot:
     media_errors: int | None = None
     reallocated: int | None = None
     pending: int | None = None
+    life_percent: int | None = None    # 硬盘自报的剩余寿命百分比，None = 未提供
+    counter_source: str = ""           # 累计读写量取自哪个字段（见 COUNTER_SOURCE_*）
     error: str | None = None
 
     @property
@@ -221,6 +265,15 @@ class DiskSnapshot:
     @property
     def write_gb(self) -> float | None:
         return bytes_to_gb(self.write_bytes)
+
+    @property
+    def health_text(self) -> str:
+        """健康度显示文本：只反映硬盘自报值，读不到就是"不适用"。"""
+        if not self.ok:
+            return "—"
+        if self.life_percent is None:
+            return HEALTH_NOT_AVAILABLE
+        return f"{self.life_percent}%"
 
 
 def disk_key(model: str, serial: str, device_path: str = "") -> str:
@@ -265,6 +318,7 @@ class DiskRow:
     write_delta_gb: float | None = None
     hist_read_delta_gb: float | None = None
     hist_write_delta_gb: float | None = None
+    health_text: str = "—"     # 健康度列：硬盘自报剩余寿命，读不到显示"不适用"
     media_text: str = "—"
     media_kind: str = "unavailable"
     status_text: str = ""
@@ -288,6 +342,60 @@ def _ata_attribute(table: list[dict], attr_id: int) -> int | None:
             if value is None:
                 value = _as_int(raw.get("string"))
             return value
+    return None
+
+
+def _ata_normalized(table: list[dict], attr_id: int) -> int | None:
+    """取 SMART 属性的归一化值（0-100），177 等属性的剩余寿命只存在这里。"""
+    for entry in table or []:
+        if not isinstance(entry, dict):
+            continue
+        if _as_int(entry.get("id")) == attr_id:
+            return _as_int(entry.get("value"))
+    return None
+
+
+def _device_statistic(payload: dict, name: str) -> int | None:
+    """从 ata_device_statistics 里按（小写）名称取一项统计值。
+
+    smartctl -x 输出形如：
+        "ata_device_statistics": {"pages": [{"number": 1, "name": "General Statistics",
+            "table": [{"offset": 8, "name": "Logical Sectors Read", "value": 123, ...}]}]}
+    这些计数值恒为 512 字节扇区，与主控无关。
+    """
+    block = payload.get("ata_device_statistics")
+    if not isinstance(block, dict):
+        return None
+    target = name.strip().lower()
+    for page in block.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        for entry in page.get("table") or []:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("name") or "").strip().lower() == target:
+                value = _as_int(entry.get("value"))
+                if value is None:
+                    value = _as_int(entry.get("string"))
+                return value
+    return None
+
+
+def _sata_life_percent(table: list[dict]) -> int | None:
+    """SATA 盘自报的剩余寿命百分比；没有任何厂商属性时返回 None（界面显示"不适用"）。
+
+    177 Wear_Leveling_Count 的 raw 是磨损循环次数，只有归一化 value 才是剩余寿命；
+    其余（231/202/233/169）的 raw 通常就是剩余百分比，但个别厂商会放进别的单位，
+    所以只在 0..100 之间才采信，否则退回归一化值。
+    """
+    for attr_id in SATA_LIFE_ATTRIBUTES:
+        normalized = _ata_normalized(table, attr_id)
+        if attr_id in SATA_LIFE_RAW_PERCENT:
+            raw = _ata_attribute(table, attr_id)
+            if raw is not None and 0 <= raw <= 100:
+                return int(raw)
+        if normalized is not None and 0 <= normalized <= 100:
+            return int(normalized)
     return None
 
 
@@ -338,6 +446,8 @@ def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
     media_errors: int | None = None
     reallocated: int | None = None
     pending: int | None = None
+    life_percent: int | None = None
+    counter_source = COUNTER_SOURCE_NONE
 
     nvme_log = payload.get("nvme_smart_health_information_log")
     if isinstance(nvme_log, dict):
@@ -347,28 +457,56 @@ def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
             read_bytes = units_read * NVME_DATA_UNIT_BYTES
         if units_written is not None:
             write_bytes = units_written * NVME_DATA_UNIT_BYTES
+            counter_source = COUNTER_SOURCE_NVME
         media_errors = _as_int(nvme_log.get("media_errors"))
+        # NVMe 的 percentage_used 是"已消耗寿命百分比"，剩余寿命 = 100 - 已用
+        used = _as_int(nvme_log.get("percentage_used"))
+        if used is not None:
+            life_percent = max(0, min(100, 100 - used))
+
+    # Device Statistics 的 Logical Sectors 恒为 512 字节扇区，是累计读写量的权威来源。
+    # 它不依赖 ata_smart_attributes 是否存在，所以先单独尝试。
+    if read_bytes is None:
+        devstat_read = _device_statistic(payload, ATA_DEVSTAT_READ_NAME)
+        if devstat_read is not None:
+            read_bytes = devstat_read * LBA_BYTES
+            counter_source = COUNTER_SOURCE_DEVSTAT
+    if write_bytes is None:
+        devstat_write = _device_statistic(payload, ATA_DEVSTAT_WRITE_NAME)
+        if devstat_write is not None:
+            write_bytes = devstat_write * LBA_BYTES
+            counter_source = COUNTER_SOURCE_DEVSTAT
 
     ata_attrs = payload.get("ata_smart_attributes")
     if isinstance(ata_attrs, dict):
         table = ata_attrs.get("table") or []
-        read_lba = _ata_attribute(table, 242)          # Total_LBAs_Read
-        write_lba = _ata_attribute(table, 241)         # Total_LBAs_Written
-        if read_bytes is None and read_lba is not None:
-            read_bytes = read_lba * LBA_BYTES
-        if write_bytes is None and write_lba is not None:
-            write_bytes = write_lba * LBA_BYTES
+        # 兜底：SMART 属性 241/242。计数单位随主控而异（512 字节 LBA 或 16/32 MiB 块），
+        # 只能在拿不到 Device Statistics 时用，界面上会注明来源。
+        if read_bytes is None:
+            read_lba = _ata_attribute(table, 242)      # Total_LBAs_Read
+            if read_lba is not None:
+                read_bytes = read_lba * LBA_BYTES
+                counter_source = COUNTER_SOURCE_ATTR
+        if write_bytes is None:
+            write_lba = _ata_attribute(table, 241)     # Total_LBAs_Written
+            if write_lba is not None:
+                write_bytes = write_lba * LBA_BYTES
+                counter_source = COUNTER_SOURCE_ATTR
         reallocated = _ata_attribute(table, 5)         # Reallocated_Sector_Ct
         pending = _ata_attribute(table, 197)           # Current_Pending_Sector
+        if life_percent is None:
+            life_percent = _sata_life_percent(table)
 
     if read_bytes is None:
         fallback = payload.get("total_lbas_read")
         if fallback is not None:
             read_bytes = (_as_int(fallback) or 0) * LBA_BYTES
+            counter_source = COUNTER_SOURCE_ATTR
     if write_bytes is None:
         fallback = payload.get("total_lbas_written")
         if fallback is not None:
             write_bytes = (_as_int(fallback) or 0) * LBA_BYTES
+            counter_source = COUNTER_SOURCE_ATTR
 
     if not model and not serial and not payload.get("device"):
         return DiskSnapshot(device_path=path, protocol=protocol, model=model, serial=serial,
@@ -385,6 +523,8 @@ def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
         media_errors=media_errors,
         reallocated=reallocated,
         pending=pending,
+        life_percent=life_percent,
+        counter_source=counter_source,
     )
 
 
@@ -486,7 +626,9 @@ class SmartctlProvider:
         if not path:
             return DiskSnapshot(device_path=device_path, error="读取失败：未找到 smartctl.exe")
         try:
-            _code, out, err = self._run([path, "-a", "--json", device_path])
+            # -x 追加 Device Statistics（Logical Sectors Read/Written），是累计读写量的权威来源；
+            # 缺少 -x 时只能退回 SMART 属性 241/242，部分主控的单位不是 512 字节，会严重偏小。
+            _code, out, err = self._run([path, "-x", "-a", "--json", device_path])
         except subprocess.TimeoutExpired:
             return DiskSnapshot(device_path=device_path, error="读取失败：smartctl 执行超时")
         except (OSError, subprocess.SubprocessError) as exc:
@@ -615,6 +757,7 @@ def build_rows(history_records: Sequence[dict],
                 serial=snapshot.serial or "—",
                 protocol=snapshot.protocol,
                 device_path=snapshot.device_path,
+                health_text="—",
                 media_text="—",
                 media_kind="unavailable",
                 status_text=snapshot.error or "读取失败",
@@ -635,6 +778,7 @@ def build_rows(history_records: Sequence[dict],
             device_path=snapshot.device_path,
             read_gb=current_read,
             write_gb=current_write,
+            health_text=snapshot.health_text,
         )
 
         if prior is None:
@@ -681,6 +825,10 @@ def build_rows(history_records: Sequence[dict],
         if snapshot.protocol == "SATA" and (snapshot.reallocated or snapshot.pending):
             extra = f"重映射 {snapshot.reallocated or 0} / 待映射 {snapshot.pending or 0}"
             row.status_text = f"{row.status_text}（{extra}）"
+        if snapshot.counter_source == COUNTER_SOURCE_ATTR:
+            # 拿不到 Device Statistics，累计量只能按 SMART 241/242 的 512 字节假设换算，
+            # 个别主控按 16/32 MiB 块计数，会明显偏小，必须在界面上说明。
+            row.status_text = f"{row.status_text}（累计量取自 SMART 241/242，可能偏小）"
 
         rows.append(row)
 
@@ -697,6 +845,7 @@ def build_rows(history_records: Sequence[dict],
             read_gb=_record_gb(record, "read_gb"),
             write_gb=_record_gb(record, "write_gb"),
             interval_text="—",
+            health_text="—",
             media_text="—",
             media_kind="unavailable",
             status_text="本次未检测到该磁盘（可能已移除或读取失败）",
@@ -1014,13 +1163,14 @@ COLUMN_SPECS: tuple[tuple[str, str, int, str], ...] = (
     ("model", "磁盘型号", 190, "text"),
     ("serial", "序列号(截断)", 130, "text"),
     ("protocol", "协议", 70, "text"),
-    ("read_gb", "累计读(GB)", 105, "num"),
-    ("write_gb", "累计写(GB)", 105, "num"),
+    ("read_gb", "累计读取(GB/TB)", 190, "num"),
+    ("write_gb", "累计写入(GB/TB)", 190, "num"),
     ("interval", "距上次", 150, "text"),
     ("read_delta", "本次读增(GB)", 110, "num"),
     ("write_delta", "本次写增(GB)", 110, "num"),
     ("hist_read_delta", "历史读增(GB)", 110, "num"),
     ("hist_write_delta", "历史写增(GB)", 110, "num"),
+    ("health", "健康度", 80, "text"),
     ("media", "0E", 130, "text"),
     ("status", "状态", 260, "text"),
 )
@@ -1038,13 +1188,14 @@ def _row_values(row: DiskRow) -> tuple[str, ...]:
         row.model,
         serial,
         row.protocol,
-        fmt_gb(row.read_gb),
-        fmt_gb(row.write_gb),
+        fmt_size_gb(row.read_gb),
+        fmt_size_gb(row.write_gb),
         row.interval_text,
         fmt_delta(row.read_delta_gb),
         fmt_delta(row.write_delta_gb),
         fmt_delta(row.hist_read_delta_gb),
         fmt_delta(row.hist_write_delta_gb),
+        row.health_text,
         row.media_text,
         row.status_text,
     )
@@ -1062,6 +1213,7 @@ def _row_sort_value(row: DiskRow, column: str) -> Any:
         "write_delta": row.write_delta_gb,
         "hist_read_delta": row.hist_read_delta_gb,
         "hist_write_delta": row.hist_write_delta_gb,
+        "health": row.health_text,
         "media": row.media_text,
         "status": row.status_text,
     }
@@ -1091,7 +1243,7 @@ class DiskTrackerApp:
         self._busy = False
 
         root.title(APP_DISPLAY_NAME)
-        root.geometry("1100x600")
+        root.geometry("1280x600")
         root.minsize(900, 420)
         try:
             style = ttk.Style(root)

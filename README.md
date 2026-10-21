@@ -18,7 +18,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 ```
 .
 ├─ main.py                     # 全部程序逻辑（数据读取层 / 历史存储层 / 增量计算层 / GUI 层）
-├─ test_disk_tracker.py        # pytest 用例（46 个，不依赖真实硬盘）
+├─ test_disk_tracker.py        # pytest 用例（53 个，不依赖真实硬盘）
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ build.bat                   # 可选：本地 Windows 手动打包脚本
@@ -49,9 +49,9 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 `FixturesProvider` �
 5. 想直接发版：打 tag 并推送
 
    ```bash
-   # tag 必须等于 main.py 里的 APP_VERSION（当前 0.1.0）
-   git tag v0.1.0
-   git push origin v0.1.0
+   # tag 必须等于 main.py 里的 APP_VERSION（当前 0.2.0）
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
    workflow 会额外创建 GitHub Release，并把 exe 作为附件挂上去，用户从 Release 页直接下载。
@@ -68,6 +68,17 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 `FixturesProvider` �
 - **history.json 位置**：优先 exe 同目录；该目录不可写（例如装在 `Program Files`）时自动回退到
   `%LOCALAPPDATA%\DiskUsageTracker\history.json`。
   目录名是**固定内部 ID**，改显示名不会让历史记录“丢失”。
+- **累计读写的单位口径（重要）**：优先取 smartctl 的 *Device Statistics → Logical Sectors
+  Read/Written*，它恒按 512 字节扇区计数，是权威来源。只有该字段缺失时才退回 SMART 属性
+  241/242（Total_LBAs_*）——这两个属性的计数单位随主控而异（多数按 512 字节 LBA，部分主控按
+  16/32 MiB 块），会明显偏小，此时状态列会标注「累计量取自 SMART 241/242，可能偏小」。
+  > v0.2.0 修的就是这个 bug：早期版本无条件把 241/242 当 512 字节 LBA，SATA 盘 32 TB 的读量
+  > 可能只显示成 1 GB 量级。
+- **GB / TB 双单位**：累计读写超过 1 TB（1024 GB）时显示成 `31.80 TB (32,567.42 GB)`，
+  两种口径都摆出来，避免换算歧义。
+- **健康度**：只显示硬盘自己报告的剩余寿命百分比，不估算、不拿 0E 或重映射数冒充。
+  NVMe 用 100 − percentage_used；SATA 依次尝试属性 231 / 202 / 177 / 233 / 169
+  （177 的 raw 是磨损循环次数，只采信归一化值）。硬盘没报就显示「不适用」。
 - **0E 告警**：0E = NVMe 的 *Media and Data Integrity Errors*。数值上升说明介质层面出现了
   新的不可纠正错误，程序会把整行标红并提示「介质错误在累积，建议关注备份」。稳定则显示
   「稳定」；SATA 盘没有这个字段，显示「不适用」，另附重映射 / 待映射扇区数作为辅助健康信息。
@@ -106,7 +117,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题 / 界面�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 【不要改】历史目录固定 ID
-APP_VERSION = "0.1.0"                              # 版本号：关于框 + 发版校验
+APP_VERSION = "0.2.0"                              # 版本号：关于框 + 发版校验
 ```
 
 - 窗口标题、PyInstaller `--name`、artifact 名、Release 附件名都引用这几个常量，

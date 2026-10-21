@@ -1,5 +1,5 @@
 {
-  "_comment": "fixture: SATA SSD，Total_LBAs_Read/Written（1 LBA = 512 字节），无 0E 字段",
+  "_comment": "fixture: SATA SSD。累计读写以 ata_device_statistics 的 Logical Sectors（512 字节扇区）为准；SMART 241/242 故意给成很小、单位可疑的值，用来验证解析器优先取 Device Statistics。无 0E 字段（SATA 不适用），健康度来自属性 231 的 raw。",
   "json_format_version": [1, 0],
   "smartctl": {"version": [7, 5], "exit_status": 0, "messages": []},
 
@@ -15,8 +15,21 @@
     "table": [
       {"id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 10, "raw": {"value": 0, "string": "0"}},
       {"id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "raw": {"value": 0, "string": "0"}},
+      {"id": 231, "name": "SSD_Life_Left", "value": 92, "worst": 92, "thresh": 10, "raw": {"value": 92, "string": "092"}},
       {"id": 241, "name": "Total_LBAs_Written", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 3274915840, "string": "3274915840"}},
       {"id": 242, "name": "Total_LBAs_Read", "value": 99, "worst": 99, "thresh": 0, "raw": {"value": 2147483648, "string": "2147483648"}}
+    ]
+  },
+  "ata_device_statistics": {
+    "pages": [
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "table": [
+          {"offset": 8, "name": "Logical Sectors Read", "size": 8, "value": 68336000000},
+          {"offset": 16, "name": "Logical Sectors Written", "size": 8, "value": 41624000000}
+        ]
+      }
     ]
   }
 }

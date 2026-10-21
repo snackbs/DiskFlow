@@ -26,8 +26,13 @@ SATA_KEY = "CRUCIAL MX500 1TB|2108E5A1B2C3"
 # fixtures 样本的精确换算值（供断言使用）
 NVME_READ_GB = 13314398 * 512000 / 1024 ** 3      # 6348.799705505371
 NVME_WRITE_GB = 17120410 * 512000 / 1024 ** 3     # 8163.647651672363
-SATA_READ_GB = 2147483648 * 512 / 1024 ** 3       # 1024.0
-SATA_WRITE_GB = 3274915840 * 512 / 1024 ** 3      # 1561.6015625
+# SATA 盘的累计读写以 ata_device_statistics 的 Logical Sectors 为准（512 字节扇区）；
+# fixture 里故意把 SMART 241/242 写成小得多的值，用来证明解析器优先取 Device Statistics。
+SATA_READ_GB = 68336000000 * 512 / 1024 ** 3      # 32585.14404296875
+SATA_WRITE_GB = 41624000000 * 512 / 1024 ** 3     # 19847.869873046875
+# 仅当 Device Statistics 缺失时，才退回 SMART 241/242（这里按 512 字节/LBA 假设）
+SATA_ATTR_READ_GB = 2147483648 * 512 / 1024 ** 3  # 1024.0
+SATA_ATTR_WRITE_GB = 3274915840 * 512 / 1024 ** 3 # 1561.6015625
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +294,62 @@ def test_vanished_disk_is_listed_as_missing():
 
 
 # ---------------------------------------------------------------------------
+# 1b. 双单位显示（GB / TB）与健康度
+# ---------------------------------------------------------------------------
+
+
+def test_fmt_size_gb_switches_unit_at_one_tb():
+    """>= 1 TB（1024 GB）时同时给出 TB 与 GB，否则只给 GB。"""
+    assert app.fmt_size_gb(0) == "0.00 GB"
+    assert app.fmt_size_gb(512.5) == "512.50 GB"
+    assert app.fmt_size_gb(1023.99) == "1,023.99 GB"      # 未到 1 TB 仍是 GB
+    assert app.fmt_size_gb(1024) == "1.00 TB (1,024.00 GB)"
+    assert app.fmt_size_gb(32567.42) == "31.80 TB (32,567.42 GB)"
+    assert app.fmt_size_gb(None) == "—"
+
+
+def test_fmt_size_gb_keeps_both_units_for_huge_values():
+    """极大值不溢出，且 TB/GB 两个数字都能读出来。"""
+    huge = 1024.0 * 1024.0          # 1048576 GB = 1024 TB
+    text = app.fmt_size_gb(huge)
+    assert text == "1,024.00 TB (1,048,576.00 GB)"
+    assert app.fmt_size_gb(0.0) == "0.00 GB"
+
+
+def test_health_text_nvme_uses_100_minus_percentage_used():
+    snapshot = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                                model="M", serial="S", read_bytes=0, write_bytes=0,
+                                life_percent=93)
+    assert snapshot.health_text == "93%"
+
+
+def test_health_text_is_not_available_when_disk_does_not_report_it():
+    """硬盘没报寿命就显示"不适用"，绝不推算。"""
+    snapshot = app.DiskSnapshot(device_path="/dev/sdb", protocol="SATA",
+                                model="M", serial="S", read_bytes=0, write_bytes=0)
+    assert snapshot.life_percent is None
+    assert snapshot.health_text == app.HEALTH_NOT_AVAILABLE == "不适用"
+    failed = app.DiskSnapshot(device_path="/dev/sdc", protocol="SATA", error="读取失败：x")
+    assert failed.health_text == "—"
+
+
+def test_sata_life_percent_prefers_raw_percent_then_normalized():
+    """231/202/233/169 的 raw 就是剩余百分比；177 只有归一化值可信。"""
+    table = [
+        {"id": 177, "name": "Wear_Leveling_Count", "value": 88,
+         "raw": {"value": 12, "string": "12"}},
+    ]
+    assert app._sata_life_percent(table) == 88
+
+    table_231 = [
+        {"id": 231, "name": "SSD_Life_Left", "value": 5, "raw": {"value": 92, "string": "092"}},
+    ]
+    assert app._sata_life_percent(table_231) == 92
+
+    assert app._sata_life_percent([]) is None
+
+
+# ---------------------------------------------------------------------------
 # 解析层：fixtures 样本
 # ---------------------------------------------------------------------------
 
@@ -304,6 +365,10 @@ def test_parse_nvme_fixture():
     assert snapshot.read_gb == pytest.approx(NVME_READ_GB)
     assert snapshot.write_gb == pytest.approx(NVME_WRITE_GB)
     assert snapshot.key == NVME_KEY
+    assert snapshot.counter_source == app.COUNTER_SOURCE_NVME
+    # fixtures 里 percentage_used = 7 -> 剩余寿命 93%
+    assert snapshot.life_percent == 93
+    assert snapshot.health_text == "93%"
 
 
 def test_parse_sata_fixture_has_no_media_errors():
@@ -316,6 +381,37 @@ def test_parse_sata_fixture_has_no_media_errors():
     assert snapshot.write_gb == pytest.approx(SATA_WRITE_GB)
     assert snapshot.reallocated == 0
     assert snapshot.pending == 0
+    # SATA 盘没有 0E；健康度取自属性 231 的 raw（92），不是"不适用"
+    assert snapshot.health_text == "92%"
+
+
+def test_sata_uses_device_statistics_over_smart_attributes():
+    """SATA 累计读写必须优先取 ata_device_statistics，属性 241/242 只在缺失时兜底。
+
+    回归 bug：某些主控的 241/242 不是按 512 字节 LBA 计数（按 16/32 MiB 块），
+    直接乘 512 会把 32 TB 读量显示成 1 GB 量级。
+    """
+    payload = json.loads((FIXTURES / "smartctl_sata_ssd.json").read_text(encoding="utf-8"))
+    snapshot = app.parse_smartctl_payload(payload, device_path="/dev/sdb")
+    assert snapshot.counter_source == app.COUNTER_SOURCE_DEVSTAT
+    # Device Statistics 的两个值确实存在且被采用
+    assert app._device_statistic(payload, app.ATA_DEVSTAT_READ_NAME) == 68336000000
+    assert app._device_statistic(payload, app.ATA_DEVSTAT_WRITE_NAME) == 41624000000
+    assert snapshot.read_gb > SATA_ATTR_READ_GB * 10      # 远大于属性口径，证明没走 241/242
+    assert snapshot.write_gb > SATA_ATTR_WRITE_GB * 10
+
+
+def test_sata_falls_back_to_attributes_and_flags_it():
+    """没有 ata_device_statistics 时退回 241/242，并标记来源以便界面提示"可能偏小"。"""
+    payload = json.loads((FIXTURES / "sata_attr_only.json").read_text(encoding="utf-8"))
+    snapshot = app.parse_smartctl_payload(payload, device_path="/dev/sdd")
+    assert snapshot.ok
+    assert snapshot.counter_source == app.COUNTER_SOURCE_ATTR
+    assert snapshot.read_gb == pytest.approx(4096 * 512 / 1024 ** 3)
+    assert snapshot.write_gb == pytest.approx(2048 * 512 / 1024 ** 3)
+    # 177 的 raw 是磨损循环次数(12)，只有归一化 value(88) 才是剩余寿命
+    assert snapshot.life_percent == 88
+    assert snapshot.health_text == "88%"
 
 
 def test_parse_read_failure_fixture():
@@ -650,7 +746,7 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     outcome = window.run_pipeline_sync()
     tk_root.update_idletasks()
 
-    assert len(window.tree["columns"]) == 12
+    assert len(window.tree["columns"]) == 13
     assert len(window.tree.get_children()) == 2
 
     tags_by_iid = {iid: tuple(window.tree.item(iid, "tags")) for iid in window.tree.get_children()}
@@ -668,7 +764,7 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     # 表头/列标题与需求一致
     headings = [window.tree.heading(col)["text"] for col in window.tree["columns"]]
     assert headings[:3] == ["磁盘型号", "序列号(截断)", "协议"]
-    assert headings[-2:] == ["0E", "状态"]
+    assert headings[-3:] == ["健康度", "0E", "状态"]   # 健康度列紧挨在 0E 之前
 
     window.root.destroy()
 
@@ -720,7 +816,7 @@ def test_gui_sorting_does_not_crash(tk_root, tmp_path):
                                 now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
     window.run_pipeline_sync()
     before = len(window.tree.get_children())
-    for column in ("read_gb", "write_delta", "model", "media"):
+    for column in ("read_gb", "write_delta", "model", "health", "media"):
         window.sort_by(column)
         window.sort_by(column)   # 再点一次反向
         assert len(window.tree.get_children()) == before
@@ -762,10 +858,12 @@ def test_about_text_references_app_version_and_names():
 
 def test_about_text_reflects_changed_version(monkeypatch):
     """改 APP_VERSION 后关于框内容必须跟着变（证明没有第二个写死来源）。"""
+    original = app.APP_VERSION
     monkeypatch.setattr(app, "APP_VERSION", "9.9.9")
     text = app.about_text()
     assert "v9.9.9" in text
-    assert "v0.1.0" not in text
+    # 原来的版本号必须消失（否则说明某处又写死了一份）
+    assert f"v{original}" not in text
 
 
 def test_about_text_uses_given_history_path(tmp_path):
