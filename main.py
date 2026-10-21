@@ -7,6 +7,7 @@
    smartctl 调用代码，便于用 fixture provider 在无真实硬盘的环境下测试。
 2. 名称集中配置：窗口标题、PyInstaller --name、artifact 名一律引用本文件顶部常量。
 3. 历史目录使用固定内部 ID（APP_STORAGE_ID），显示名改名不影响历史数据。
+4. 版本号集中在 APP_VERSION，「关于」对话框只引用它，不重复写死。
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -40,6 +41,32 @@ BYTES_PER_GB = 1024 ** 3         # 界面统一 1 GB = 1024^3 字节
 BYTES_PER_GIB_TEXT = "1 GB = 1024^3 字节"
 
 SMARTCTL_EXE = "smartctl.exe"
+
+
+def about_text(history_path: Any = None) -> str:
+    """「关于」对话框正文。
+
+    版本号只引用 APP_VERSION，界面里不再出现任何写死的版本字面量；
+    发版时改一处常量即可，避免关于框与实际 exe 版本对不上。
+    """
+    path_text = str(history_path) if history_path else "启动后自动确定"
+    return (
+        f"{APP_DISPLAY_NAME}\n"
+        f"版本：v{APP_VERSION}\n"
+        f"可执行文件：{APP_EXE_NAME}.exe\n"
+        "\n"
+        "记录本机各物理磁盘的累计读取量与累计写入量，并在每次打开时与上一次记录对比，\n"
+        "给出本次区间增量与历史累计增量；同时监测 NVMe 的 0E（介质与数据完整性错误）。\n"
+        "\n"
+        "数据来源：smartctl --json（smartmontools），随 exe 一同打包\n"
+        f"容量换算：{BYTES_PER_GIB_TEXT}；1 LBA = 512 字节，1 NVMe Data Unit = 512000 字节\n"
+        f"历史文件：{path_text}\n"
+        f"历史目录 ID：{APP_STORAGE_ID}（显示名改名不影响历史数据）\n"
+        "\n"
+        "本程序为单窗口工具，关闭即退出，不驻留后台、不写系统服务、不设置开机自启。\n"
+        "磁盘读取通常需要管理员权限，未提权时部分磁盘可能读取失败。"
+    )
+
 
 # ---------------------------------------------------------------------------
 # 容量换算层
@@ -1130,6 +1157,9 @@ class DiskTrackerApp:
         self.refresh_button.pack(side="right")
         self.open_button = ttk.Button(bottom, text="打开历史文件", command=self.open_history_file)
         self.open_button.pack(side="right", padx=(0, 8))
+        # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死
+        self.about_button = ttk.Button(bottom, text="关于", command=self.show_about)
+        self.about_button.pack(side="right", padx=(0, 8))
 
         self.note_label = ttk.Label(outer, text=f"容量换算：{BYTES_PER_GIB_TEXT}；"
                                                f"历史文件：{self.store.path}",
@@ -1265,6 +1295,13 @@ class DiskTrackerApp:
         """同步跑一遍流水线（GUI 冒烟测试用，不启动线程）。"""
         outcome = perform_run(self.provider, self.store, now=self.now_func())
         return self.apply_outcome(outcome)
+
+    # ---------- 关于 ----------
+    def show_about(self) -> None:
+        """弹出版本/来源说明。正文完全由 about_text() 生成，只引用 APP_VERSION。"""
+        from tkinter import messagebox
+
+        messagebox.showinfo(f"关于 {APP_DISPLAY_NAME}", about_text(self.store.path), parent=self.root)
 
     def open_history_file(self) -> None:
         path = self.store.path

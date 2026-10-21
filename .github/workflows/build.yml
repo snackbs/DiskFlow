@@ -86,16 +86,31 @@ jobs:
           $exeName = (python -c "import main as m; print(m.APP_EXE_NAME)").Trim()
           $artifact = (python -c "import main as m; print(m.APP_ARTIFACT_NAME)").Trim()
           $display  = (python -c "import main as m; print(m.APP_DISPLAY_NAME)").Trim()
+          $version  = (python -c "import main as m; print(m.APP_VERSION)").Trim()
           Write-Host "APP_DISPLAY_NAME = $display"
           Write-Host "APP_EXE_NAME     = $exeName"
           Write-Host "APP_ARTIFACT_NAME= $artifact"
+          Write-Host "APP_VERSION      = $version"
           if ($exeName -notmatch '^[A-Za-z0-9]{1,20}$') {
             throw "APP_EXE_NAME '$exeName' 必须是 1-20 位纯字母数字（PyInstaller --name / exe 文件名要求）"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "APP_VERSION '$version' 必须是点分数字（X.Y.Z），关于框与 Release 标题都引用它"
+          }
+          # tag 发版时必须与 APP_VERSION 一致，否则 exe 的「关于」版本会和 Release 对不上
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $tagVersion = $env:GITHUB_REF -replace '^refs/tags/v', ''
+            if ($tagVersion -ne $version) {
+              throw "tag '$env:GITHUB_REF_NAME' 与 main.py 的 APP_VERSION '$version' 不一致，请先改 APP_VERSION 再打 tag"
+            }
+            Write-Host "tag 与 APP_VERSION 一致：v$version"
           }
           "exe_name=$exeName"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "artifact_name=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "display_name=$display"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "app_version=$version"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "APP_EXE_NAME=$exeName"   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_VERSION=$version"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install PyInstaller
         run: |
@@ -227,7 +242,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ steps.names.outputs.display_name }} ${{ github.ref_name }}
+          # 标题里的版本号来自 main.py 的 APP_VERSION（上一步已校验与 tag 一致），不写死
+          name: ${{ steps.names.outputs.display_name }} v${{ steps.names.outputs.app_version }}
+          body: |
+            ${{ steps.names.outputs.display_name }} v${{ steps.names.outputs.app_version }}
+
+            下载 `${{ steps.names.outputs.exe_name }}.exe` 即可运行；双击会弹 UAC（需要管理员权限读取 SMART 数据）。
+            smartctl.exe 已打进单文件 exe，无需另装 smartmontools。
+            首次打开只建立基线，第二次起显示本次与历史增量。
+
+            > 版本号与程序「关于」对话框一致（均来自 `APP_VERSION`）。
           files: dist/${{ steps.names.outputs.exe_name }}.exe
           fail_on_unmatched_files: true
           generate_release_notes: true

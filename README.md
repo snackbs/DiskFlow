@@ -18,7 +18,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 ```
 .
 ├─ main.py                     # 全部程序逻辑（数据读取层 / 历史存储层 / 增量计算层 / GUI 层）
-├─ test_disk_tracker.py        # pytest 用例（41 个，不依赖真实硬盘）
+├─ test_disk_tracker.py        # pytest 用例（46 个，不依赖真实硬盘）
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ build.bat                   # 可选：本地 Windows 手动打包脚本
@@ -49,6 +49,7 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 `FixturesProvider` �
 5. 想直接发版：打 tag 并推送
 
    ```bash
+   # tag 必须等于 main.py 里的 APP_VERSION（当前 0.1.0）
    git tag v0.1.0
    git push origin v0.1.0
    ```
@@ -97,14 +98,15 @@ python -m PyInstaller --onefile --noconsole --uac-admin --name DiskFlow ^
 
 `app.ico` 可选：放在项目根目录并加 `--icon app.ico` 即可。
 
-## 6. 名称集中配置（改名只改这里）
+## 6. 名称与版本集中配置（改名 / 升版本只改这里）
 
 ```python
-# main.py:30-34
+# main.py:31-35
 APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题 / 界面（已定名）
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 【不要改】历史目录固定 ID
+APP_VERSION = "0.1.0"                              # 版本号：关于框 + 发版校验
 ```
 
 - 窗口标题、PyInstaller `--name`、artifact 名、Release 附件名都引用这几个常量，
@@ -112,3 +114,16 @@ APP_STORAGE_ID = "DiskUsageTracker"                # 【不要改】历史目录
 - 同步改 `test_disk_tracker.py` 中 `test_names_are_configured_in_one_place` 的断言值，否则 CI 会红。
 - `APP_STORAGE_ID` 保持不动，历史数据不会搬家。
 - 已发布的 tag 里的 asset 名是旧的；改名后需要打一个新 tag 才能拿到新文件名。
+
+### 版本号（`APP_VERSION`）
+
+- 唯一来源就是 `APP_VERSION`，界面上没有任何写死的版本字面量。
+  底部「关于」按钮弹出的正文由 `about_text()` 生成，其中 `版本：v{APP_VERSION}` 直接引用该常量。
+- **发版流程**：先把 `APP_VERSION` 改成新版本 → 提交推送 → 打同名 tag（`v` + `APP_VERSION`）。
+- CI 的 `Resolve app names from main.py` 步骤会校验：
+  - `APP_VERSION` 必须是 `X.Y.Z` 点分数字；
+  - tag 触发时 `refs/tags/v<tag>` 必须与 `APP_VERSION` **完全一致**，否则直接 fail，
+    避免出现「exe 里写着 0.1.0，Release 却叫 v0.2.0」的错位。
+- 对应测试：`test_app_version_is_configured_and_has_single_source`、
+  `test_about_text_references_app_version_and_names`、
+  `test_about_text_reflects_changed_version`、`test_gui_about_button_shows_version`。

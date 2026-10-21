@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -688,6 +689,30 @@ def test_gui_baseline_message_on_first_run(tk_root, tmp_path):
     window.root.destroy()
 
 
+def test_gui_about_button_shows_version(tk_root, tmp_path, monkeypatch):
+    """GUI 层「关于」按钮必须存在，且正文版本号来自 APP_VERSION（不弹真对话框）。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False)
+    tk_root.update_idletasks()
+    assert window.about_button.cget("text") == "关于"
+
+    captured = {}
+
+    def fake_showinfo(title, message, **kwargs):
+        captured["title"] = title
+        captured["message"] = message
+        return "ok"
+
+    import tkinter.messagebox as mb
+    monkeypatch.setattr(mb, "showinfo", fake_showinfo)
+    window.show_about()
+    assert app.APP_VERSION in captured["message"]
+    assert app.APP_DISPLAY_NAME in captured["title"]
+    assert str(store.path) in captured["message"]
+    window.root.destroy()
+
+
 def test_gui_sorting_does_not_crash(tk_root, tmp_path):
     store = _gui_store(tmp_path)
     window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
@@ -713,6 +738,43 @@ def test_names_are_configured_in_one_place():
     assert app.APP_ARTIFACT_NAME == "DiskFlow-windows"
     assert app.APP_STORAGE_ID == "DiskUsageTracker"
     assert app.APP_EXE_NAME.isalnum()
+
+
+def test_app_version_is_configured_and_has_single_source():
+    """版本号必须有唯一来源 APP_VERSION，且是点分数字（发版 tag 用它对齐）。"""
+    assert re.fullmatch(r"\d+\.\d+\.\d+", app.APP_VERSION), app.APP_VERSION
+    assert app.APP_VERSION == app.APP_VERSION.strip()
+
+
+def test_about_text_references_app_version_and_names():
+    text = app.about_text()
+    # 版本号来自 APP_VERSION，不是写死的字面量
+    assert app.APP_VERSION in text
+    assert f"v{app.APP_VERSION}" in text
+    assert app.APP_DISPLAY_NAME in text
+    assert f"{app.APP_EXE_NAME}.exe" in text
+    # 历史目录 ID 固定，改名不影响历史数据，关于框里要讲清楚
+    assert app.APP_STORAGE_ID in text
+    # 关键实现说明：换算规则不能只有代码里知道
+    assert "1024^3" in text
+    assert "512000" in text
+
+
+def test_about_text_reflects_changed_version(monkeypatch):
+    """改 APP_VERSION 后关于框内容必须跟着变（证明没有第二个写死来源）。"""
+    monkeypatch.setattr(app, "APP_VERSION", "9.9.9")
+    text = app.about_text()
+    assert "v9.9.9" in text
+    assert "v0.1.0" not in text
+
+
+def test_about_text_uses_given_history_path(tmp_path):
+    target = tmp_path / "somewhere" / "history.json"
+    text = app.about_text(target)
+    assert str(target) in text
+    # 不传路径时给出可读占位，而不是 "None"
+    assert "None" not in app.about_text()
+    assert "None" not in text
 
 
 def test_gui_layer_does_not_call_smartctl():
