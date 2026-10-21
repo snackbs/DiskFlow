@@ -1,0 +1,6 @@
+{
+  "_comment": "fixture: 损坏的 history.json，JSON 不完整（测试自动备份并重建基线）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [
+    {"timestamp": "2026-04-30T08:00:00+08:00", "read_gb": 6000.0, "write_gb": 7500.0,

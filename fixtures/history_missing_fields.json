@@ -1,0 +1,8 @@
+{
+  "_comment": "fixture: 字段缺失的 history.json（缺少 write_gb，测试备份并重建基线）",
+  "schema_version": 1,
+  "app": "DiskUsageTracker",
+  "records": [
+    {"timestamp": "2026-04-30T08:00:00+08:00", "model": "Sample SATA SSD 1TB", "serial": "S5SAMPLE0002", "read_gb": 900.0}
+  ]
+}
