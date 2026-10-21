@@ -19,6 +19,11 @@ smartctl.exe
 
 # ---- 测试 / 调试残留 ----
 .ptrun*/
+.zzrun/
+.pytestlib/
+.yamllib/
+zz_*
+release_notes.md
 *.tmp
 history.json
 history.corrupt-*.json
