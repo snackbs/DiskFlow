@@ -18,7 +18,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 ```
 .
 ├─ main.py                     # 全部程序逻辑（数据读取层 / 历史存储层 / 增量计算层 / GUI 层）
-├─ test_disk_tracker.py        # pytest 用例（54 个，不依赖真实硬盘）
+├─ test_disk_tracker.py        # pytest 用例（56 个，不依赖真实硬盘）
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把对应小节贴成 Release 正文
