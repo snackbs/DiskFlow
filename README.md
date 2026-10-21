@@ -21,6 +21,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 ├─ test_disk_tracker.py        # pytest 用例（54 个，不依赖真实硬盘）
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
+├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把对应小节贴成 Release 正文
 ├─ build.bat                   # 可选：本地 Windows 手动打包脚本
 └─ .github/workflows/build.yml # CI：test -> build -> artifact -> Release
 ```
@@ -46,15 +47,20 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 `FixturesProvider` �
    - `test (3.11)` / `test (3.12)` —— 真实跑 `pytest -v`
    - `build exe` —— 只有两个 test job 全绿才会启动（`needs: test`）
 4. 全部通过后，进入该次 run 页面底部 **Artifacts**，下载 `DiskFlow-windows`，解压即得 exe。
-5. 想直接发版：打 tag 并推送
+5. 想直接发版：先写 `CHANGELOG.md`，再打 tag
 
    ```bash
-   # tag 必须等于 main.py 里的 APP_VERSION（当前 0.2.0）
+   # 1) 在 CHANGELOG.md 顶部加一节 `## [0.2.0] - 2026-10-22`，写清给用户看的变化
+   # 2) tag 必须等于 main.py 里的 APP_VERSION（当前 0.2.0）
    git tag v0.2.0
    git push origin v0.2.0
    ```
 
    workflow 会额外创建 GitHub Release，并把 exe 作为附件挂上去，用户从 Release 页直接下载。
+
+   **Release 正文来自 `CHANGELOG.md`，不是 workflow 里写死的文案**：CI 抽取与 `APP_VERSION`
+   同名的小节（`## [0.2.0]`）作为正文；抽不到就**直接失败**，既不发正文空白的 Release，
+   也不会悄悄退化成自动生成的 "What's Changed" 提交列表。
 
 > 手动重跑：Actions 页 → 选中 `build` → **Run workflow**（对应 `workflow_dispatch`）。
 
@@ -138,3 +144,14 @@ APP_VERSION = "0.2.0"                              # 版本号：关于框 + 发
 - 对应测试：`test_app_version_is_configured_and_has_single_source`、
   `test_about_text_references_app_version_and_names`、
   `test_about_text_reflects_changed_version`、`test_gui_about_button_shows_version`。
+
+### 发版清单（顺序不能反）
+
+1. 改 `main.py` 的 `APP_VERSION`；
+2. 在 `CHANGELOG.md` **顶部**加一节 `## [新版本] - YYYY-MM-DD`（CI 只认第一个匹配项，
+   且 `test_changelog_newest_entry_matches_app_version` 会强制「最新小节 == APP_VERSION」）；
+3. 提交并推送 `main`，等 CI 的 `test` + `build exe` 全绿；
+4. `git tag v<APP_VERSION>` 并推送 —— CI 用 `CHANGELOG.md` 该小节作为 **Release 正文**。
+
+这四步的顺序反过来会被 CI 拦住：先打 tag 再改 `APP_VERSION`，版本校验直接 fail；
+只改 `APP_VERSION` 不写日志，`Extract release notes` 步骤会因为找不到小节而 fail。
