@@ -371,6 +371,20 @@ def test_parse_nvme_fixture():
     assert snapshot.health_text == "93%"
 
 
+def test_nvme_counter_source_set_when_only_read_is_reported():
+    """NVMe 只报 data_units_read（没有 written）时，来源仍应标成 NvmeLog。"""
+    payload = {
+        "device": {"name": "/dev/nvme1", "protocol": "NVMe"},
+        "model_name": "Partial NVMe",
+        "serial_number": "PARTIAL01",
+        "nvme_smart_health_information_log": {"data_units_read": 1000},
+    }
+    snapshot = app.parse_smartctl_payload(payload, device_path="/dev/nvme1")
+    assert snapshot.counter_source == app.COUNTER_SOURCE_NVME
+    assert snapshot.read_gb == pytest.approx(1000 * 512000 / 1024 ** 3)
+    assert snapshot.write_gb is None
+
+
 def test_parse_sata_fixture_has_no_media_errors():
     payload = json.loads((FIXTURES / "smartctl_sata_ssd.json").read_text(encoding="utf-8"))
     snapshot = app.parse_smartctl_payload(payload, device_path="/dev/sdb")

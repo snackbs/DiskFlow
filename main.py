@@ -457,6 +457,7 @@ def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
             read_bytes = units_read * NVME_DATA_UNIT_BYTES
         if units_written is not None:
             write_bytes = units_written * NVME_DATA_UNIT_BYTES
+        if units_read is not None or units_written is not None:
             counter_source = COUNTER_SOURCE_NVME
         media_errors = _as_int(nvme_log.get("media_errors"))
         # NVMe 的 percentage_used 是"已消耗寿命百分比"，剩余寿命 = 100 - 已用
