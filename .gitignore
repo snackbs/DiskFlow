@@ -32,3 +32,6 @@ release_notes.md
 *.tmp
 history.json
 history.corrupt-*.json
+
+# ---- 本地推送辅助目录（可能含凭证，绝不提交）----
+.zztmp/
