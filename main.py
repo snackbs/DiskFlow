@@ -69,6 +69,15 @@ HEALTH_NOT_AVAILABLE = "不适用"
 SMARTCTL_EXE = "smartctl.exe"
 
 
+def window_title() -> str:
+    """窗口标题 / 界面左上角标题栏文字的唯一来源：显示名 + 版本号。
+
+    版本号只引用 APP_VERSION，界面里不再出现任何写死的版本字面量；
+    发版时改一处常量，窗口标题、左上角标题、关于框会同步跟上。
+    """
+    return f"{APP_DISPLAY_NAME}  v{APP_VERSION}"
+
+
 def about_text(history_path: Any = None) -> str:
     """「关于」对话框正文。
 
@@ -1243,7 +1252,7 @@ class DiskTrackerApp:
         self._sort_reverse = False
         self._busy = False
 
-        root.title(APP_DISPLAY_NAME)
+        root.title(window_title())
         root.geometry("1280x600")
         root.minsize(900, 420)
         try:
@@ -1252,6 +1261,7 @@ class DiskTrackerApp:
             style.configure("Treeview", rowheight=24)
             style.configure("Alert.TLabel", foreground=ALERT_COLOR)
             style.configure("Hint.TLabel", foreground="#8A6D00")
+            style.configure("Title.TLabel", font=(BASE_FONT[0], BASE_FONT[1] + 2, "bold"))
         except Exception:
             pass
 
@@ -1264,6 +1274,10 @@ class DiskTrackerApp:
         ttk = self.ttk
         outer = ttk.Frame(self.root, padding=(10, 8, 10, 8))
         outer.pack(fill="both", expand=True)
+
+        # 左上角程序名 + 版本号：文字来自 window_title()，与窗口标题同源
+        self.title_label = ttk.Label(outer, text=window_title(), style="Title.TLabel", anchor="w")
+        self.title_label.pack(fill="x")
 
         self.hint_label = ttk.Label(outer, text="", style="Hint.TLabel", anchor="w")
         self.hint_label.pack(fill="x")
@@ -1454,7 +1468,7 @@ class DiskTrackerApp:
         """弹出版本/来源说明。正文完全由 about_text() 生成，只引用 APP_VERSION。"""
         from tkinter import messagebox
 
-        messagebox.showinfo(f"关于 {APP_DISPLAY_NAME}", about_text(self.store.path), parent=self.root)
+        messagebox.showinfo(f"关于 {window_title()}", about_text(self.store.path), parent=self.root)
 
     def open_history_file(self) -> None:
         path = self.store.path

@@ -11,7 +11,7 @@
     ],
     "pre_release": false,
     "svn_revision": "5714",
-    "platform_info": "x86_64-w64-mingw32-w11-b26300",
+    "platform_info": "x86_64-w64-mingw32-w11",
     "build_info": "(AppVeyor)",
     "argv": [
       "smartctl",

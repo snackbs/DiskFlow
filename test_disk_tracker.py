@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -369,6 +370,137 @@ def test_parse_nvme_fixture():
     # fixtures 里 percentage_used = 7 -> 剩余寿命 93%
     assert snapshot.life_percent == 93
     assert snapshot.health_text == "93%"
+
+
+def test_parse_real_captured_nvme_fixture():
+    """真机抓取的 NVMe 样本（已脱敏）：锁住完整 nvme_smart_health_information_log 的解析。
+
+    真机上 NVMe 的健康信息是一个整块，data_units_read/written、media_errors、
+    percentage_used 全在里面；这里断言解析器把四个关键字段都取对了。
+    """
+    payload = json.loads((FIXTURES / "nvme_real_256gb.json").read_text(encoding="utf-8"))
+    snapshot = app.parse_smartctl_payload(payload, device_path=payload["device"]["name"])
+    assert snapshot.ok
+    assert snapshot.protocol == "NVMe"
+    assert snapshot.model == "Sample NVMe SSD 256GB"
+    assert snapshot.serial == "N2SAMPLE0001"
+    assert snapshot.counter_source == app.COUNTER_SOURCE_NVME
+    assert snapshot.read_gb == pytest.approx(68636716 * 512000 / 1024 ** 3)
+    assert snapshot.write_gb == pytest.approx(41713767 * 512000 / 1024 ** 3)
+    assert snapshot.read_gb == pytest.approx(32728.536606, rel=1e-9)
+    assert snapshot.write_gb == pytest.approx(19890.674114, rel=1e-9)
+    assert snapshot.media_errors == 0
+    assert snapshot.life_percent == 95           # percentage_used = 5
+    assert snapshot.health_text == "95%"
+    # TB / GB 双单位：31.96 TB (32,728.54 GB)
+    assert app.fmt_size_gb(snapshot.read_gb) == "31.96 TB (32,728.54 GB)"
+
+
+def test_parse_real_captured_nvme_fixture_second_controller():
+    """第二块真机 NVMe（NVMe 2.0 控制器、双温度传感器）的解析结果。"""
+    payload = json.loads((FIXTURES / "nvme_real_512gb.json").read_text(encoding="utf-8"))
+    snapshot = app.parse_smartctl_payload(payload, device_path=payload["device"]["name"])
+    assert snapshot.ok
+    assert snapshot.model == "Sample NVMe SSD 512GB"
+    assert snapshot.serial == "N2SAMPLE0002"
+    assert snapshot.read_gb == pytest.approx(124883089 * 512000 / 1024 ** 3)
+    assert snapshot.write_gb == pytest.approx(55508360 * 512000 / 1024 ** 3)
+    assert snapshot.read_gb == pytest.approx(59548.897266, rel=1e-9)
+    assert snapshot.write_gb == pytest.approx(26468.448639, rel=1e-9)
+    assert snapshot.media_errors == 0
+    assert snapshot.life_percent == 93           # percentage_used = 7
+    assert app.fmt_size_gb(snapshot.read_gb) == "58.15 TB (59,548.90 GB)"
+
+
+# 真机样本脱敏回归测试的敏感词表。这里**故意不写明文**：把这些型号、序列号直接写成
+# 字面量，测试文件本身就成了泄漏源（仓库是公开的）。改成小写后的 SHA-256 之后再比对，
+# 既能精确防护，又不会把硬件标识带进源码。新增一条时用：
+#   python -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].lower().encode()).hexdigest())" <敏感词>
+ANONYMIZATION_FORBIDDEN_SHA256 = {
+    "e754a8485451bd160a0d61c1f83bc0bbb1b7e8ffcb660827319ac4ca0cf79fb7": "盘 1 型号片段（NVMe）",
+    "e9bca60b333d4f1a86d0fb1fb093ddf28d9bf840f9cb2daf557d1ee87e93133a": "盘 1 型号片段（NVMe）",
+    "acd0785eea980b6df4351382ed61a8656460782b5f05225ac1de9bc7dd8c90ef": "盘 1 序列号",
+    "98343d9d7d9ba59d2f3d3f08157f3130c17fe3b4da18e8b0961867618b8477b0": "盘 1 固件版本",
+    "63d20c658ee95769ff8b099b5843b5265f47dd31dc41379b3c54ca01955ad03d": "盘 2 型号片段（NVMe）",
+    "955d355feefd859f59b1aee299181faefcc22085abb7c72acc1938e9593bbf3b": "盘 2 序列号",
+    "3e6928b5b19570221abad3ab4399928bb65a430d00c790bb116c5267007627a0": "盘 2 固件版本",
+    "22040cde5778d72e2ab800aac3450070953ab8b68f9e3fe4f6779717734f9c2f": "SATA 盘厂商名",
+    "b61c55b39df4ed28e51a3120f1db0290c49e4a74dad9f4fafe3d9d9a349f9188": "SATA 盘型号片段",
+    "deb2f9d84252c2b54027f07bb86e5a0befa932fd4549ef0d1c363e8959fdb417": "SATA 盘序列号",
+    "167898d1425dbe417720ed3ba2c5d67447480df6648ec11c9e593d5902f30289": "SATA 盘固件版本",
+    "64eea25fd0fd214e6543fc57946ee64085da1246697deb32c154485f513ca58d": "采集机的系统 build 号",
+}
+
+_ANON_MIN_PREFIX = 5   # 敏感词最短 5 字符；再短（如 4 位年份 "2024"）会误报
+_ANON_MAX_PREFIX = 24  # 最长的是 14 位序列号；取到 24 留足余量
+
+
+def _find_forbidden_hits(text):
+    """在 text 里找出命中敏感词表的片段。
+
+    不能直接做反向查表（哈希不可逆），所以按"分词 + 逐前缀哈希"来探：
+    先把文本切成字母数字词，再对每个词的前 5..24 个字符分别求 SHA-256，
+    与敏感词表对照。这样既能命中整词（一整串序列号），也能命中词前缀
+    （型号长串开头的型号片段），而开销只有 词数 × 20 次哈希。
+    """
+    hits = []
+    for token in re.findall(r"[A-Za-z0-9]{%d,}" % _ANON_MIN_PREFIX, text):
+        lowered = token.lower()
+        for length in range(_ANON_MIN_PREFIX, min(_ANON_MAX_PREFIX, len(lowered)) + 1):
+            digest = hashlib.sha256(lowered[:length].encode("utf-8")).hexdigest()
+            label = ANONYMIZATION_FORBIDDEN_SHA256.get(digest)
+            if label:
+                hits.append((label, f"命中前缀长度 {length} 的词"))
+    return hits
+
+
+def test_anonymization_scanner_actually_detects_leaks(monkeypatch):
+    """防"扫描器坏了但测试一直绿"：用运行时生成的假敏感词验证扫描器真的能命中。
+
+    这里不写任何真实硬件标识 —— 只在内存里造一个随机 token，算出哈希塞进词表，
+    然后确认 _find_forbidden_hits 能把它从一段文本里揪出来；同时确认干净文本不误报。
+    """
+    secret = "ZZ" + "Q7" * 6          # 14 字符，形如序列号
+    digest = hashlib.sha256(secret.lower().encode("utf-8")).hexdigest()
+    patched = dict(ANONYMIZATION_FORBIDDEN_SHA256)
+    patched[digest] = "测试用假敏感词"
+    monkeypatch.setattr(sys.modules[__name__], "ANONYMIZATION_FORBIDDEN_SHA256", patched)
+    # 整词命中
+    assert _find_forbidden_hits(f"model XYZ serial {secret} firmware A1") != []
+    # 大小写不敏感
+    assert _find_forbidden_hits(secret.lower()) != []
+    # 干净文本不误报
+    assert _find_forbidden_hits("Sample NVMe SSD 256GB N2SAMPLE0001") == []
+
+
+def test_real_capture_fixtures_are_anonymized():
+    """真机样本必须脱敏：仓库里不能出现任何品牌型号、序列号、固件、PCI/EUI 标识。
+
+    敏感词以 SHA-256 形式保存（见 ANONYMIZATION_FORBIDDEN_SHA256），测试文件本身
+    不含明文硬件标识；比对时把 fixture 文本分词后对各前缀求哈希。
+    """
+    names = ("nvme_real_256gb.json", "nvme_real_512gb.json", "sata_real_960gb.json")
+    for name in names:
+        text = (FIXTURES / name).read_text(encoding="utf-8")
+        hits = _find_forbidden_hits(text)
+        assert not hits, f"{name} 里残留了可识别信息：{hits}"
+    # 结构性检查：这几个字段本身就不该存在于 fixture 中（不涉及具体值）
+    for name in names:
+        payload = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        for field in ("nvme_pci_vendor", "nvme_ieee_oui_identifier", "nvme_controller_id"):
+            assert field not in payload, f"{name} 里应已删除 {field}"
+        namespaces = payload.get("nvme_namespaces") or []
+        for ns in namespaces:
+            assert "eui64" not in ns, f"{name} 的命名空间里应已删除 eui64"
+    # 型号/序列号统一用 Sample / SAMPLE 占位，其余字段（容量、计数、能力位）保持真机原值，
+    # 这样换算与格式化路径仍被真机数据验证过
+    payloads = [
+        json.loads((FIXTURES / n).read_text(encoding="utf-8"))
+        for n in ("nvme_real_256gb.json", "nvme_real_512gb.json", "sata_real_960gb.json")
+    ]
+    for payload in payloads:
+        assert "sample" in payload["model_name"].lower()
+        assert "sample" in payload["serial_number"].lower()
 
 
 def test_nvme_counter_source_set_when_only_read_is_reported():
@@ -889,6 +1021,9 @@ def test_gui_about_button_shows_version(tk_root, tmp_path, monkeypatch):
     window.show_about()
     assert app.APP_VERSION in captured["message"]
     assert app.APP_DISPLAY_NAME in captured["title"]
+    # 关于框标题也要带版本号，与窗口标题、左上角标题同源（window_title()）
+    assert f"v{app.APP_VERSION}" in captured["title"]
+    assert captured["title"] == f"关于 {app.window_title()}"
     assert str(store.path) in captured["message"]
     window.root.destroy()
 
@@ -918,6 +1053,35 @@ def test_names_are_configured_in_one_place():
     assert app.APP_ARTIFACT_NAME == "DiskFlow-windows"
     assert app.APP_STORAGE_ID == "DiskUsageTracker"
     assert app.APP_EXE_NAME.isalnum()
+
+
+def test_window_title_carries_display_name_and_version():
+    """窗口标题与左上角标题必须带上版本号，且文字只来自 window_title()。"""
+    title = app.window_title()
+    assert app.APP_DISPLAY_NAME in title
+    assert f"v{app.APP_VERSION}" in title
+    assert title == f"{app.APP_DISPLAY_NAME}  v{app.APP_VERSION}"
+
+
+def test_window_title_follows_app_version(monkeypatch):
+    """改 APP_VERSION 后窗口标题必须跟着变（证明没有第二处写死）。"""
+    original = app.APP_VERSION
+    monkeypatch.setattr(app, "APP_VERSION", "9.9.9")
+    assert "v9.9.9" in app.window_title()
+    assert f"v{original}" not in app.window_title()
+
+
+def test_gui_title_bar_and_header_show_version(tk_root, tmp_path):
+    """GUI 既要有带版本号的窗口标题，也要有左上角带版本号的标题文本。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False)
+    tk_root.update_idletasks()
+    assert window.root.title() == app.window_title()
+    assert f"v{app.APP_VERSION}" in window.root.title()
+    assert window.title_label.cget("text") == app.window_title()
+    assert f"v{app.APP_VERSION}" in window.title_label.cget("text")
+    window.root.destroy()
 
 
 def test_app_version_is_configured_and_has_single_source():

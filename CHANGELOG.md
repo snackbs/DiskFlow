@@ -28,12 +28,40 @@
 这块真实盘解析结果：累计读 71.42 TB、累计写 16.07 TB、健康度 100%、0E 不适用、
 重映射扇区 0、待映射扇区 0——全部符合预期。
 
+### 新增：窗口标题与界面左上角显示版本号
+
+标题栏和界面左上角的标题行现在都写作 `磁盘流水 DiskFlow  v0.3.0`，两处文字都来自
+`main.py` 的 `window_title()`，版本号只引用 `APP_VERSION` 这一处，不在界面里重复写死。
+「关于」对话框的标题也走同一个函数，用户截图反馈问题时一眼能看出跑的哪个版本。
+
+### 新增：两份真机抓取的 NVMe 样本
+
+`fixtures/nvme_real_256gb.json` 和 `fixtures/nvme_real_512gb.json` 是从真机上用
+`smartctl -x -a --json -d nvme` 抓下来的原始输出，只把型号、序列号、固件版本换成假值，
+并删掉了能定位到具体硬件/厂商的 `nvme_pci_vendor`、`nvme_ieee_oui_identifier`、
+`nvme_controller_id` 与命名空间 `eui64`。保留的是解析器真正依赖的形态：
+`nvme_smart_health_information_log` 的完整字段、`nvme_power_states`、`lba_formats`、
+`endurance_used` 等。
+
+### 文档：README 改为面向使用者的发布说明
+
+去掉了开发过程中的改名记录、内部待办和作者口吻，改成「这个工具做什么 / 怎么用 / 数据口径
+是什么 / 怎么自己构建」的结构，并补上从 Actions 与 Releases 两个渠道取 exe 的路径。
+
 ### 测试
 
-pytest 用例从 56 增至 59，新增：
+pytest 用例从 56 增至 66，新增：
 `test_parse_real_captured_sata_fixture`（真样本端到端解析）、
 `test_real_capture_duplicate_general_statistics_pages_are_harmless`（重复页）、
-`test_real_capture_shows_attr_241_242_use_32mib_blocks`（65536 倍关系）。
+`test_real_capture_shows_attr_241_242_use_32mib_blocks`（65536 倍关系）、
+`test_parse_real_captured_nvme_fixture` / `test_parse_real_captured_nvme_fixture_second_controller`
+（两份真机 NVMe 样本的累计量与健康度）、
+`test_real_capture_fixtures_are_anonymized`（扫描所有 fixture，确认真实型号/序列号/固件/
+EUI 一个都不剩；敏感词在测试源码里以 SHA-256 保存，避免测试文件自己成为泄漏源）、
+`test_anonymization_scanner_actually_detects_leaks`（用运行时生成的假敏感词反证扫描器
+确实能命中，防止"扫描器失效但测试一直绿"）、
+`test_window_title_carries_display_name_and_version` / `test_window_title_follows_app_version` /
+`test_gui_title_bar_and_header_show_version`（标题与左上角标题行同源且带版本号）。
 
 ## [0.2.0] - 2026-10-22
 
