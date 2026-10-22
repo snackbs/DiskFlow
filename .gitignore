@@ -18,11 +18,16 @@ dist/
 smartctl.exe
 
 # ---- 测试 / 调试残留 ----
+# 本地跑 pytest 用的临时目录与一次性探针脚本（详见 README「测试」一节）
 .ptrun*/
+.ptrun_*
+.temps_*/
 .zzrun/
 .pytestlib/
 .yamllib/
 zz_*
+zz*
+_zz*
 release_notes.md
 *.tmp
 history.json

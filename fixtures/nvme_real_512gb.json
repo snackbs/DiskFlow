@@ -1,0 +1,279 @@
+{
+  "_comment": "fixture: 真机抓取的 NVMe 样本（另一块盘，NVMe 2.0 控制器），已脱敏型号/序列号/固件/PCI ID/EUI64/时间戳。保留真机形态：双温度传感器、namespace utilization、nvme_optional_* 能力位。",
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "svn_revision": "5714",
+    "platform_info": "x86_64-w64-mingw32-w11",
+    "build_info": "(AppVeyor)",
+    "argv": [
+      "smartctl",
+      "-x",
+      "-a",
+      "--json",
+      "-d",
+      "nvme",
+      "/dev/nvme1"
+    ],
+    "exit_status": 0
+  },
+  "local_time": {
+    "time_t": 1793000000,
+    "asctime": "Thu Oct 01 12:00:00 2026 "
+  },
+  "device": {
+    "name": "/dev/nvme1",
+    "info_name": "/dev/nvme1",
+    "type": "nvme",
+    "protocol": "NVMe"
+  },
+  "model_name": "Sample NVMe SSD 512GB",
+  "serial_number": "N2SAMPLE0002",
+  "firmware_version": "FW0001N0",
+  "nvme_total_capacity": 512110190592,
+  "nvme_unallocated_capacity": 0,
+  "nvme_version": {
+    "string": "2.0",
+    "value": 131072
+  },
+  "nvme_number_of_namespaces": 1,
+  "nvme_namespaces": [
+    {
+      "id": 1,
+      "size": {
+        "blocks": 1000215216,
+        "bytes": 512110190592
+      },
+      "capacity": {
+        "blocks": 1000215216,
+        "bytes": 512110190592
+      },
+      "utilization": {
+        "blocks": 887884000,
+        "bytes": 454596608000
+      },
+      "formatted_lba_size": 512,
+      "features": {
+        "value": 0,
+        "thin_provisioning": false,
+        "na_fields": false,
+        "dealloc_or_unwritten_block_error": false,
+        "uid_reuse": false,
+        "np_fields": false,
+        "other": 0
+      },
+      "lba_formats": [
+        {
+          "formatted": true,
+          "data_bytes": 512,
+          "metadata_bytes": 0,
+          "relative_performance": 0
+        },
+        {
+          "formatted": false,
+          "data_bytes": 4096,
+          "metadata_bytes": 0,
+          "relative_performance": 0
+        }
+      ]
+    }
+  ],
+  "user_capacity": {
+    "blocks": 1000215216,
+    "bytes": 512110190592
+  },
+  "logical_block_size": 512,
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "nvme_firmware_update_capabilities": {
+    "value": 22,
+    "slots": 3,
+    "first_slot_is_read_only": false,
+    "activiation_without_reset": true,
+    "multiple_update_detection": false,
+    "other": 0
+  },
+  "nvme_optional_admin_commands": {
+    "value": 87,
+    "security_send_receive": true,
+    "format_nvm": true,
+    "firmware_download": true,
+    "namespace_management": false,
+    "self_test": true,
+    "directives": false,
+    "mi_send_receive": true,
+    "virtualization_management": false,
+    "doorbell_buffer_config": false,
+    "get_lba_status": false,
+    "command_and_feature_lockdown": false,
+    "other": 0
+  },
+  "nvme_optional_nvm_commands": {
+    "value": 223,
+    "compare": true,
+    "write_uncorrectable": true,
+    "dataset_management": true,
+    "write_zeroes": true,
+    "save_select_feature_nonzero": true,
+    "reservations": false,
+    "timestamp": true,
+    "verify": true,
+    "copy": false,
+    "other": 0
+  },
+  "nvme_log_page_attributes": {
+    "value": 47,
+    "smart_health_per_namespace": true,
+    "commands_effects_log": true,
+    "extended_get_log_page_cmd": true,
+    "telemetry_log": true,
+    "persistent_event_log": false,
+    "supported_log_pages_log": true,
+    "telemetry_data_area_4": false,
+    "other": 0
+  },
+  "nvme_maximum_data_transfer_pages": 128,
+  "nvme_composite_temperature_threshold": {
+    "warning": 85,
+    "critical": 85
+  },
+  "temperature": {
+    "op_limit_max": 85,
+    "critical_limit_max": 85,
+    "current": 53
+  },
+  "nvme_power_states": [
+    {
+      "non_operational_state": false,
+      "relative_read_latency": 0,
+      "relative_read_throughput": 0,
+      "relative_write_latency": 0,
+      "relative_write_throughput": 0,
+      "entry_latency_us": 0,
+      "exit_latency_us": 0,
+      "max_power": {
+        "value": 505,
+        "scale": 2,
+        "units_per_watt": 100
+      }
+    },
+    {
+      "non_operational_state": false,
+      "relative_read_latency": 1,
+      "relative_read_throughput": 1,
+      "relative_write_latency": 1,
+      "relative_write_throughput": 1,
+      "entry_latency_us": 0,
+      "exit_latency_us": 0,
+      "max_power": {
+        "value": 293,
+        "scale": 2,
+        "units_per_watt": 100
+      }
+    },
+    {
+      "non_operational_state": false,
+      "relative_read_latency": 2,
+      "relative_read_throughput": 2,
+      "relative_write_latency": 2,
+      "relative_write_throughput": 2,
+      "entry_latency_us": 0,
+      "exit_latency_us": 0,
+      "max_power": {
+        "value": 154,
+        "scale": 2,
+        "units_per_watt": 100
+      }
+    },
+    {
+      "non_operational_state": true,
+      "relative_read_latency": 3,
+      "relative_read_throughput": 3,
+      "relative_write_latency": 3,
+      "relative_write_throughput": 3,
+      "entry_latency_us": 3000,
+      "exit_latency_us": 8500,
+      "max_power": {
+        "value": 700,
+        "scale": 1,
+        "units_per_watt": 10000
+      }
+    },
+    {
+      "non_operational_state": true,
+      "relative_read_latency": 4,
+      "relative_read_throughput": 4,
+      "relative_write_latency": 4,
+      "relative_write_throughput": 4,
+      "entry_latency_us": 3500,
+      "exit_latency_us": 46000,
+      "max_power": {
+        "value": 50,
+        "scale": 1,
+        "units_per_watt": 10000
+      }
+    }
+  ],
+  "smart_status": {
+    "passed": true,
+    "nvme": {
+      "value": 0
+    }
+  },
+  "nvme_smart_health_information_log": {
+    "nsid": -1,
+    "critical_warning": 0,
+    "temperature": 53,
+    "available_spare": 100,
+    "available_spare_threshold": 5,
+    "percentage_used": 7,
+    "data_units_read": 124883089,
+    "data_units_written": 55508360,
+    "host_reads": 1939143624,
+    "host_writes": 624454019,
+    "controller_busy_time": 6875,
+    "power_cycles": 1771,
+    "power_on_hours": 5504,
+    "unsafe_shutdowns": 20,
+    "media_errors": 0,
+    "num_err_log_entries": 0,
+    "warning_temp_time": 0,
+    "critical_comp_time": 0,
+    "temperature_sensors": [
+      71,
+      53
+    ]
+  },
+  "spare_available": {
+    "current_percent": 100,
+    "threshold_percent": 5
+  },
+  "endurance_used": {
+    "current_percent": 7
+  },
+  "power_cycle_count": 1771,
+  "power_on_time": {
+    "hours": 5504
+  },
+  "nvme_error_information_log": {
+    "size": 64,
+    "read": 16,
+    "unread": 0
+  },
+  "nvme_self_test_log": {
+    "nsid": -1,
+    "current_self_test_operation": {
+      "value": 0,
+      "string": "No self-test in progress"
+    }
+  }
+}
