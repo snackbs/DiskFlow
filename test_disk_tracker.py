@@ -428,6 +428,76 @@ def test_sata_falls_back_to_attributes_and_flags_it():
     assert snapshot.health_text == "88%"
 
 
+def test_parse_real_captured_sata_fixture():
+    """真机抓样的 SATA 盘（smartctl -x -a --json，仅脱敏）必须解析正确。
+
+    这份样本固化了三条来自真实设备的约束，手造 JSON 覆盖不到：
+    1. smartctl.exit_status = 64 = bit6「错误日志有记录」，**不是读取失败**，
+       只有 bit0/bit1 才代表设备打不开；
+    2. ata_device_statistics.pages 里会有 8 个一模一样的 "General Statistics" 页，
+       取首个匹配即可，不需要去重；
+    3. 每个统计项都带 offset/size/flags 六个字段，名称匹配必须容忍这些额外键。
+    """
+    payload = json.loads((FIXTURES / "sata_real_960gb.json").read_text(encoding="utf-8"))
+    assert payload["smartctl"]["exit_status"] == 64
+
+    snapshot = app.parse_smartctl_payload(payload, device_path="/dev/sdc")
+    assert snapshot.ok is True
+    assert snapshot.error is None
+    assert snapshot.protocol == "SATA"
+    assert snapshot.model == "Sample SATA SSD 960GB"
+    assert snapshot.serial == "S5SAMPLE0001"
+    assert snapshot.media_errors is None          # SATA 无 0E
+    assert snapshot.reallocated == 0
+    assert snapshot.pending == 0
+    assert snapshot.life_percent == 100           # 只有 177 的归一化值可用
+    assert snapshot.health_text == "100%"
+    assert snapshot.counter_source == app.COUNTER_SOURCE_DEVSTAT
+    assert snapshot.read_gb == pytest.approx(153379078144 * 512 / 1024 ** 3)
+    assert snapshot.write_gb == pytest.approx(34505424896 * 512 / 1024 ** 3)
+    assert app.fmt_size_gb(snapshot.read_gb) == "71.42 TB (73,136.84 GB)"
+    assert app.fmt_size_gb(snapshot.write_gb) == "16.07 TB (16,453.47 GB)"
+
+
+def test_real_capture_duplicate_general_statistics_pages_are_harmless():
+    """真机上 General Statistics 页会重复 8 次，取首个匹配就必须拿到同一个值。"""
+    payload = json.loads((FIXTURES / "sata_real_960gb.json").read_text(encoding="utf-8"))
+    pages = payload["ata_device_statistics"]["pages"]
+    assert len(pages) == 8
+    assert {page["name"] for page in pages} == {"General Statistics"}
+
+    values = {
+        entry["name"]: entry["value"]
+        for page in pages
+        for entry in page["table"]
+        if entry["name"] in (app.ATA_DEVSTAT_READ_NAME.title(), "Logical Sectors Read")
+    }
+    assert values  # 每个页里都有 Logical Sectors Read
+    assert app._device_statistic(payload, app.ATA_DEVSTAT_READ_NAME) == 153379078144
+    assert app._device_statistic(payload, app.ATA_DEVSTAT_WRITE_NAME) == 34505424896
+
+
+def test_real_capture_shows_attr_241_242_use_32mib_blocks():
+    """真实盘上 241/242 是按 32 MiB 块计数的，与 Logical Sectors 精确相差 65536 倍。
+
+    这是「必须优先 Device Statistics、241/242 只能兜底」的实测依据：
+    若按 512 字节/LBA 解释，71 TB 的读取量会被显示成 1.12 GB。
+    """
+    payload = json.loads((FIXTURES / "sata_real_960gb.json").read_text(encoding="utf-8"))
+    table = payload["ata_smart_attributes"]["table"]
+    attr_read = app._ata_attribute(table, 242)
+    attr_write = app._ata_attribute(table, 241)
+    devstat_read = app._device_statistic(payload, app.ATA_DEVSTAT_READ_NAME)
+    devstat_write = app._device_statistic(payload, app.ATA_DEVSTAT_WRITE_NAME)
+
+    assert attr_read == 2340379
+    assert attr_write == 526511
+    assert devstat_read / attr_read == pytest.approx(65536)
+    assert devstat_write / attr_write == pytest.approx(65536)
+    # 按 512 字节解释属性 242 会得到荒谬的小值，正是要避免的回归
+    assert attr_read * 512 / 1024 ** 3 < 2
+
+
 def test_parse_read_failure_fixture():
     payload = json.loads((FIXTURES / "smartctl_read_failure.json").read_text(encoding="utf-8"))
     snapshot = app.parse_smartctl_payload(payload, device_path="/dev/sdc")

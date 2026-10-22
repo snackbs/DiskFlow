@@ -32,7 +32,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.2.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.3.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节

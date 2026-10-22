@@ -18,7 +18,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 ```
 .
 ├─ main.py                     # 全部程序逻辑（数据读取层 / 历史存储层 / 增量计算层 / GUI 层）
-├─ test_disk_tracker.py        # pytest 用例（56 个，不依赖真实硬盘）
+├─ test_disk_tracker.py        # pytest 用例（59 个，不依赖真实硬盘）
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把对应小节贴成 Release 正文
@@ -99,6 +99,15 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 `FixturesProvider` �
 python -m pip install -r requirements.txt
 python -m pytest -v
 ```
+
+测试不碰真实硬盘：数据来源是 `FixturesProvider` 读 `fixtures/smartctl_*.json`，
+历史文件写在 pytest 的 `tmp_path` 里。其中 `fixtures/sata_real_960gb.json` 是**真机抓取**的
+SATA 样本（只脱敏了型号/序列号/固件/WWN），保留了 `exit_status=64`、重复的
+"General Statistics" 页、241/242 与 Logical Sectors 相差 65536 倍这些真机才会出现的形态。
+
+想给自己机器上的盘补一份真实样本，见 `_local/dump_smartctl.ps1`（自动提权、自动找/装
+smartmontools、按盘导出无 BOM 的 UTF-8 JSON）。注意必须管理员运行，否则 SATA/USB 盘会
+`Error=5` 打不开；`-x` 不能省，Device Statistics 靠它。
 
 打包（需要 Windows + smartctl.exe 放在项目根目录）：
 

@@ -1,0 +1,2106 @@
+{
+  "_comment": "fixture: 真机抓取的 SATA SSD 样本（smartctl -x -a --json -d sat），仅将型号/序列号/固件/WWN 脱敏。保留真实形态：smartctl.exit_status=64（bit6 = 错误日志有记录，不是读取失败）、ata_device_statistics.pages 里 8 个重复的 General Statistics 页、每项都带 offset/size/flags、26 条 SMART 属性。属性 241/242 与 Logical Sectors 恰好相差 65536 倍（32 MiB 块计数），用来锁死「优先 Device Statistics」的行为。",
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "svn_revision": "5714",
+    "platform_info": "x86_64-w64-mingw32-w11-b26300",
+    "build_info": "(AppVeyor)",
+    "argv": [
+      "smartctl",
+      "-x",
+      "-a",
+      "--json",
+      "-d",
+      "sat",
+      "/dev/sdc"
+    ],
+    "exit_status": 64
+  },
+  "local_time": {
+    "time_t": 1792689857,
+    "asctime": "Fri Oct 23 01:24:17 2026 "
+  },
+  "device": {
+    "name": "/dev/sdc",
+    "info_name": "/dev/sdc [SAT]",
+    "type": "sat",
+    "protocol": "ATA"
+  },
+  "model_name": "Sample SATA SSD 960GB",
+  "serial_number": "S5SAMPLE0001",
+  "wwn": {
+    "na": true
+  },
+  "firmware_version": "FW0001A0",
+  "user_capacity": {
+    "blocks": 1875385008,
+    "bytes": 960197124096
+  },
+  "logical_block_size": 512,
+  "physical_block_size": 512,
+  "rotation_rate": 0,
+  "form_factor": {
+    "ata_value": 3,
+    "name": "2.5 inches"
+  },
+  "trim": {
+    "supported": true,
+    "deterministic": false,
+    "zeroed": false
+  },
+  "in_smartctl_database": false,
+  "ata_version": {
+    "string": "ACS-4 T13/BSR INCITS 529 revision 5",
+    "major_value": 4092,
+    "minor_value": 94
+  },
+  "sata_version": {
+    "string": "SATA 3.2",
+    "value": 255
+  },
+  "interface_speed": {
+    "max": {
+      "sata_value": 14,
+      "string": "6.0 Gb/s",
+      "units_per_second": 60,
+      "bits_per_unit": 100000000
+    },
+    "current": {
+      "sata_value": 3,
+      "string": "6.0 Gb/s",
+      "units_per_second": 60,
+      "bits_per_unit": 100000000
+    }
+  },
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "read_lookahead": {
+    "enabled": true
+  },
+  "write_cache": {
+    "enabled": true
+  },
+  "ata_security": {
+    "state": 33,
+    "string": "Disabled, NOT FROZEN [SEC1]",
+    "enabled": false,
+    "frozen": false,
+    "master_password_id": 65534
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "ata_smart_data": {
+    "offline_data_collection": {
+      "status": {
+        "value": 0,
+        "string": "was never started"
+      },
+      "completion_seconds": 120
+    },
+    "self_test": {
+      "status": {
+        "value": 0,
+        "string": "completed without error",
+        "passed": true
+      },
+      "polling_minutes": {
+        "short": 14,
+        "extended": 28
+      }
+    },
+    "capabilities": {
+      "values": [
+        93,
+        2
+      ],
+      "exec_offline_immediate_supported": true,
+      "offline_is_aborted_upon_new_cmd": true,
+      "offline_surface_scan_supported": true,
+      "self_tests_supported": true,
+      "conveyance_self_test_supported": false,
+      "selective_self_test_supported": true,
+      "attribute_autosave_enabled": false,
+      "error_logging_supported": true,
+      "gp_logging_supported": true
+    }
+  },
+  "ata_smart_attributes": {
+    "revision": 1,
+    "table": [
+      {
+        "id": 1,
+        "name": "Raw_Read_Error_Rate",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 5,
+        "name": "Reallocated_Sector_Ct",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 9,
+        "name": "Power_On_Hours",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 7944,
+          "string": "7944"
+        }
+      },
+      {
+        "id": 12,
+        "name": "Power_Cycle_Count",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 533,
+          "string": "533"
+        }
+      },
+      {
+        "id": 160,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 161,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 19556,
+          "string": "19556"
+        }
+      },
+      {
+        "id": 163,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 164,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 28,
+          "string": "28"
+        }
+      },
+      {
+        "id": 165,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 118,
+          "string": "118"
+        }
+      },
+      {
+        "id": 166,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 4,
+          "string": "4"
+        }
+      },
+      {
+        "id": 167,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 49,
+          "string": "49"
+        }
+      },
+      {
+        "id": 168,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 169,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 100,
+          "string": "100"
+        }
+      },
+      {
+        "id": 175,
+        "name": "Program_Fail_Count_Chip",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 50331648,
+          "string": "50331648"
+        }
+      },
+      {
+        "id": 176,
+        "name": "Erase_Fail_Count_Chip",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 615385,
+          "string": "615385"
+        }
+      },
+      {
+        "id": 177,
+        "name": "Wear_Leveling_Count",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 39896442,
+          "string": "39896442"
+        }
+      },
+      {
+        "id": 178,
+        "name": "Used_Rsvd_Blk_Cnt_Chip",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 192,
+        "name": "Power-Off_Retract_Count",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 14,
+          "string": "14"
+        }
+      },
+      {
+        "id": 194,
+        "name": "Temperature_Celsius",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 40,
+          "string": "40"
+        }
+      },
+      {
+        "id": 195,
+        "name": "Hardware_ECC_Recovered",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 197,
+        "name": "Current_Pending_Sector",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 199,
+        "name": "UDMA_CRC_Error_Count",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 0,
+          "string": "0"
+        }
+      },
+      {
+        "id": 232,
+        "name": "Available_Reservd_Space",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 100,
+          "string": "100"
+        }
+      },
+      {
+        "id": 241,
+        "name": "Total_LBAs_Written",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 526511,
+          "string": "526511"
+        }
+      },
+      {
+        "id": 242,
+        "name": "Total_LBAs_Read",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 2340379,
+          "string": "2340379"
+        }
+      },
+      {
+        "id": 245,
+        "name": "Unknown_Attribute",
+        "value": 100,
+        "worst": 100,
+        "thresh": 50,
+        "when_failed": "",
+        "flags": {
+          "value": 50,
+          "string": "-O--CK ",
+          "prefailure": false,
+          "updated_online": true,
+          "performance": false,
+          "error_rate": false,
+          "event_count": true,
+          "auto_keep": true
+        },
+        "raw": {
+          "value": 1065608,
+          "string": "1065608"
+        }
+      }
+    ]
+  },
+  "spare_available": {
+    "current_percent": 100
+  },
+  "power_on_time": {
+    "hours": 7944
+  },
+  "power_cycle_count": 533,
+  "endurance_used": {
+    "current_percent": 0
+  },
+  "temperature": {
+    "current": 40
+  },
+  "ata_log_directory": {
+    "gp_dir_version": 1,
+    "smart_dir_version": 1,
+    "smart_dir_multi_sector": true,
+    "table": [
+      {
+        "address": 0,
+        "name": "Log Directory",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 1,
+        "name": "Summary SMART error log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 2,
+        "name": "Comprehensive SMART error log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 3,
+        "name": "Ext. Comprehensive SMART error log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 4,
+        "name": "Device Statistics log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 8,
+        "smart_sectors": 8
+      },
+      {
+        "address": 6,
+        "name": "SMART self-test log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 7,
+        "name": "Extended self-test log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 9,
+        "name": "Selective self-test log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 16,
+        "name": "NCQ Command Error log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 17,
+        "name": "SATA Phy Event Counters log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 48,
+        "name": "IDENTIFY DEVICE data log",
+        "read": true,
+        "write": false,
+        "gp_sectors": 9,
+        "smart_sectors": 9
+      },
+      {
+        "address": 128,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 129,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 130,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 131,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 132,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 133,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 134,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 135,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 136,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 137,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 138,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 139,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 140,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 141,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 142,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 143,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 144,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 145,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 146,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 147,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 148,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 149,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 150,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 151,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 152,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 153,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 154,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 155,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 156,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 157,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 158,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 159,
+        "name": "Host vendor specific log",
+        "read": true,
+        "write": true,
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 160,
+        "name": "Device vendor specific log",
+        "gp_sectors": 16,
+        "smart_sectors": 16
+      },
+      {
+        "address": 224,
+        "name": "SCT Command/Status",
+        "read": true,
+        "write": true,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      },
+      {
+        "address": 225,
+        "name": "SCT Data Transfer",
+        "read": true,
+        "write": true,
+        "gp_sectors": 1,
+        "smart_sectors": 1
+      }
+    ]
+  },
+  "ata_smart_error_log": {
+    "extended": {
+      "revision": 1,
+      "sectors": 1,
+      "count": 1,
+      "logged_count": 1,
+      "table": [
+        {
+          "error_number": 1,
+          "log_index": 0,
+          "lifetime_hours": 5224,
+          "device_state": {
+            "value": 0,
+            "string": "in an unknown state"
+          },
+          "completion_registers": {
+            "error": 4,
+            "status": 64,
+            "count": 1,
+            "lba": 0,
+            "device": 81,
+            "device_control": 0
+          },
+          "previous_commands": [
+            {
+              "registers": {
+                "command": 236,
+                "features": 0,
+                "count": 1,
+                "lba": 0,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32962930,
+              "command_name": "IDENTIFY DEVICE"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 8,
+                "count": 0,
+                "lba": 3875537072,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            },
+            {
+              "registers": {
+                "command": 231,
+                "features": 209,
+                "count": 1,
+                "lba": 1325449728,
+                "device": 0,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "FLUSH CACHE"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 8,
+                "count": 0,
+                "lba": 3875537096,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 72,
+                "count": 0,
+                "lba": 3825205720,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            }
+          ]
+        }
+      ]
+    },
+    "summary": {
+      "revision": 1,
+      "count": 1,
+      "logged_count": 1,
+      "table": [
+        {
+          "error_number": 1,
+          "lifetime_hours": 5224,
+          "completion_registers": {
+            "error": 4,
+            "status": 64,
+            "count": 1,
+            "lba": 0,
+            "device": 81
+          },
+          "previous_commands": [
+            {
+              "registers": {
+                "command": 236,
+                "features": 0,
+                "count": 1,
+                "lba": 0,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32962930,
+              "command_name": "IDENTIFY DEVICE"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 8,
+                "count": 0,
+                "lba": 59312,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            },
+            {
+              "registers": {
+                "command": 231,
+                "features": 209,
+                "count": 1,
+                "lba": 12734208,
+                "device": 0,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "FLUSH CACHE"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 8,
+                "count": 0,
+                "lba": 59336,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            },
+            {
+              "registers": {
+                "command": 97,
+                "features": 72,
+                "count": 0,
+                "lba": 124120,
+                "device": 64,
+                "device_control": 0
+              },
+              "powerup_milliseconds": 32958980,
+              "command_name": "WRITE FPDMA QUEUED"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "ata_smart_self_test_log": {
+    "extended": {
+      "revision": 0,
+      "sectors": 1,
+      "count": 0
+    },
+    "standard": {
+      "revision": 0,
+      "count": 0
+    }
+  },
+  "ata_smart_selective_self_test_log": {
+    "revision": 0,
+    "table": [
+      {
+        "lba_min": 0,
+        "lba_max": 0,
+        "status": {
+          "value": 0,
+          "string": "Not_testing"
+        }
+      },
+      {
+        "lba_min": 0,
+        "lba_max": 0,
+        "status": {
+          "value": 0,
+          "string": "Not_testing"
+        }
+      },
+      {
+        "lba_min": 0,
+        "lba_max": 0,
+        "status": {
+          "value": 0,
+          "string": "Not_testing"
+        }
+      },
+      {
+        "lba_min": 0,
+        "lba_max": 0,
+        "status": {
+          "value": 0,
+          "string": "Not_testing"
+        }
+      },
+      {
+        "lba_min": 0,
+        "lba_max": 0,
+        "status": {
+          "value": 0,
+          "string": "Not_testing"
+        }
+      }
+    ],
+    "flags": {
+      "value": 0,
+      "remainder_scan_enabled": false
+    },
+    "power_up_scan_resume_minutes": 0
+  },
+  "ata_device_statistics": {
+    "pages": [
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      },
+      {
+        "number": 1,
+        "name": "General Statistics",
+        "revision": 1,
+        "table": [
+          {
+            "offset": 8,
+            "name": "Lifetime Power-On Resets",
+            "size": 4,
+            "value": 533,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 16,
+            "name": "Power-on Hours",
+            "size": 4,
+            "value": 7944,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 24,
+            "name": "Logical Sectors Written",
+            "size": 6,
+            "value": 34505424896,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 32,
+            "name": "Number of Write Commands",
+            "size": 6,
+            "value": 319988086,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 40,
+            "name": "Logical Sectors Read",
+            "size": 6,
+            "value": 153379078144,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          },
+          {
+            "offset": 48,
+            "name": "Number of Read Commands",
+            "size": 6,
+            "value": 976552143,
+            "flags": {
+              "value": 192,
+              "string": "V--- ",
+              "valid": true,
+              "normalized": false,
+              "supports_dsn": false,
+              "monitored_condition_met": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "sata_phy_event_counters": {
+    "table": [
+      {
+        "id": 1,
+        "name": "Command failed due to ICRC error",
+        "size": 2,
+        "value": 0,
+        "overflow": false
+      },
+      {
+        "id": 9,
+        "name": "Transition from drive PhyRdy to drive PhyNRdy",
+        "size": 2,
+        "value": 51,
+        "overflow": false
+      },
+      {
+        "id": 10,
+        "name": "Device-to-host register FISes sent due to a COMRESET",
+        "size": 2,
+        "value": 0,
+        "overflow": false
+      },
+      {
+        "id": 11,
+        "name": "CRC errors within host-to-device FIS",
+        "size": 2,
+        "value": 0,
+        "overflow": false
+      },
+      {
+        "id": 13,
+        "name": "Non-CRC errors within host-to-device FIS",
+        "size": 2,
+        "value": 0,
+        "overflow": false
+      }
+    ],
+    "reset": false
+  },
+  "seagate_farm_log": {
+    "supported": false
+  }
+}

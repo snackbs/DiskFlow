@@ -8,6 +8,33 @@
 - 未发布的改动写在 `## [未发布]` 下（发版时把它改名成具体版本号）。
 - 小节从该标题开始，到下一个二级标题（`## `）之前为止。
 
+## [0.3.0] - 2026-10-23
+
+### 测试：用真机抓取的 SATA 样本锁住解析行为
+
+新增 `fixtures/sata_real_960gb.json`——一份从真实 SATA 固态硬盘上 `smartctl -x -a --json -d sat`
+抓下来的原始输出，只把型号、序列号、固件版本、WWN 换成假值，其余结构一字未改。
+
+之前 SATA 分支只有手写的样本，形状和真机差得远；这份样本把三个真机上才会出现的坑钉成了回归测试：
+
+- `smartctl.exit_status` 真机上经常是 **64**（bit6 = 错误日志里有历史记录），
+  这不代表读取失败。只有 bit0/bit1 才表示设备打不开，旧逻辑放过 64 是对的，现在有测试守着。
+- `ata_device_statistics.pages` 在真机上会把同一个 "General Statistics" 页**重复列 8 次**，
+  每个统计项还都带 `offset`/`size`/`flags` 等额外字段。解析器按名字取首个匹配，结果正确。
+- 属性 241/242 与 Device Statistics 的比值在这块盘上**精确等于 65536**，
+  即按 32 MiB 块计数。这条实测数据让「必须优先 Device Statistics」有了铁证：
+  若按 512 字节解释，71 TB 的累计读取会被显示成 1.12 GB。
+
+这块真实盘解析结果：累计读 71.42 TB、累计写 16.07 TB、健康度 100%、0E 不适用、
+重映射扇区 0、待映射扇区 0——全部符合预期。
+
+### 测试
+
+pytest 用例从 56 增至 59，新增：
+`test_parse_real_captured_sata_fixture`（真样本端到端解析）、
+`test_real_capture_duplicate_general_statistics_pages_are_harmless`（重复页）、
+`test_real_capture_shows_attr_241_242_use_32mib_blocks`（65536 倍关系）。
+
 ## [0.2.0] - 2026-10-22
 
 ### 修复：SATA 固态硬盘的累计读写量显示严重偏小
