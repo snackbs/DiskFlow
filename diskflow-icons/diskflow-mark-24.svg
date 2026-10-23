@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DiskFlow">
+  <title>DiskFlow 磁盘流水</title>
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow-24">
+    <path d="M1.2 12h2.2"/>
+    <path d="M3.4 10l2 2-2 2"/>
+    <path d="M18.6 12h2.2"/>
+    <path d="M20.6 10l2 2-2 2"/>
+  </g>
+  <!-- 磁盘：盘片 + 主轴 -->
+  <g id="df-disk-24">
+    <circle cx="12" cy="12" r="5"/>
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title df-desc">
+  <title id="df-title">DiskFlow 磁盘流水（透明底）</title>
+  <desc id="df-desc">DiskFlow 透明底标识：白色磁盘与青色数据流箭头，适用于深色或彩色背景。</desc>
+
+  <defs>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0F172A" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow" fill="url(#df-stream)" filter="url(#df-shadow)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- 磁盘：白色盘片（主轴孔镂空）+ 磁道弧 -->
+  <g id="df-disk" filter="url(#df-shadow)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#93C5FD" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>

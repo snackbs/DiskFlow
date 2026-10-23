@@ -1,0 +1,734 @@
+<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>DiskFlow 图标 · 交付预览与使用规范</title><style>
+:root{--bg:#f1f5f9;--card:#ffffff;--ink:#0f172a;--sub:#475569;--muted:#94a3b8;--line:#e2e8f0;--blue:#2563eb;--sky:#0ea5e9}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.65;padding:48px 20px 64px}
+.wrap{max-width:920px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px}
+h1{font-size:26px;letter-spacing:.5px}
+h2{font-size:18px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+h2::before{content:"";width:4px;height:18px;background:linear-gradient(180deg,var(--sky),var(--blue));border-radius:2px}
+.sub{color:var(--sub);font-size:14px}
+.hero{display:flex;gap:28px;align-items:center;flex-wrap:wrap}
+.hero .iconbox{width:152px;height:152px;flex:none;filter:drop-shadow(0 10px 24px rgba(37,99,235,.28))}
+.tag{display:inline-block;background:#eff6ff;color:var(--blue);border:1px solid #bfdbfe;font-size:12px;padding:2px 10px;border-radius:999px;margin:0 6px 6px 0}
+.tiles{display:flex;gap:20px;flex-wrap:wrap}
+.tile{display:flex;flex-direction:column;align-items:center;gap:8px}
+.tilebox{display:flex;align-items:center;justify-content:center;padding:8px;border-radius:12px}
+.checker{background-image:conic-gradient(#e2e8f0 90deg,#f8fafc 90deg 180deg,#e2e8f0 180deg 270deg,#f8fafc 270deg);background-size:16px 16px}
+.tilecap{font-size:12px;color:var(--sub);text-align:center}
+.tilecap b{display:block;color:var(--ink);font-size:13px}
+.darkstrip{background:#0f172a;border-radius:14px;padding:12px 20px;display:flex;align-items:center;gap:14px;color:#e2e8f0;font-size:14px}
+.darkstrip b{font-size:15px}
+.variants{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+.variant{border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;align-items:center;text-align:center}
+.variant .stage{border-radius:12px;display:flex;align-items:center;justify-content:center;width:100%;height:132px}
+.variant .name{font-weight:600;font-size:14px}
+.variant .use{font-size:12px;color:var(--sub)}
+.swatches{display:flex;gap:12px;flex-wrap:wrap}
+.sw{width:108px;border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:11px}
+.sw .c{height:42px}
+.sw .t{padding:6px 8px;color:var(--sub)}
+.sw .t b{display:block;color:var(--ink);font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#f8fafc;font-weight:600;white-space:nowrap}
+code{background:#f1f5f9;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:640px){.cols{grid-template-columns:1fr}}
+ul{padding-left:4px;list-style:none;font-size:13px;color:var(--sub)}
+li{margin:5px 0}
+.ok{color:#15803d;font-weight:700}.no{color:#b91c1c;font-weight:700}
+.states{display:flex;gap:28px;align-items:flex-end;flex-wrap:wrap}
+.state{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;color:var(--sub)}
+.footer{font-size:12px;color:var(--muted);text-align:center}
+</style></head><body><div class='wrap'>
+<div class="card hero">
+  <div class="iconbox"><svg style="width:100%;height:100%" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__1 df-desc__1">
+  <title id="df-title__1">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__1">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__1" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__1">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__1)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__1)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__1" fill="url(#df-stream__1)" filter="url(#df-shadow__1)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__1" filter="url(#df-shadow__1)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div>
+  <div style="flex:1;min-width:260px">
+    <h1>DiskFlow · 磁盘流水</h1>
+    <p class="sub" style="margin:8px 0 12px">应用图标交付 —— 生产级可编辑 SVG + 多尺寸 ICO/PNG</p>
+    <div>
+      <span class="tag">白色盘片 = 磁盘本体</span>
+      <span class="tag">青色数据流 = 读写流水</span>
+      <span class="tag">左箭头写入 / 右箭头读出</span>
+      <span class="tag">蓝渐变方底 = Windows 11 图标规范</span>
+    </div>
+    <p class="sub" style="margin-top:10px">概念：一枚白色磁盘被两道青色数据流穿过 —— 左箭头流入（写入）、右箭头流出（读取），
+    直观表达 DiskFlow「磁盘累计读写量与增量监测」的核心功能；主轴孔镂空透出底色，与背景浑然一体。</p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>主图标 · 多尺寸预览</h2>
+  <p class="sub" style="margin-bottom:16px">同一份 SVG 矢量缩放，16px 下箭头与盘片仍保持可识别。棋盘格仅用于展示透明区域。</p>
+  <div class="tiles"><div class='tile'><div class='tilebox checker'><svg style="width:128px;height:128px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__2 df-desc__2">
+  <title id="df-title__2">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__2">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__2" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__2">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__2)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__2)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__2" fill="url(#df-stream__2)" filter="url(#df-shadow__2)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__2" filter="url(#df-shadow__2)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>128px</b>关于对话框 / 高 DPI</div></div><div class='tile'><div class='tilebox checker'><svg style="width:64px;height:64px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__3 df-desc__3">
+  <title id="df-title__3">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__3">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__3" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__3">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__3)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__3)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__3" fill="url(#df-stream__3)" filter="url(#df-shadow__3)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__3" filter="url(#df-shadow__3)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>64px</b>桌面 / 文件管理器</div></div><div class='tile'><div class='tilebox checker'><svg style="width:48px;height:48px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__4 df-desc__4">
+  <title id="df-title__4">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__4">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__4" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__4" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__4" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__4">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__4)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__4)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__4" fill="url(#df-stream__4)" filter="url(#df-shadow__4)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__4" filter="url(#df-shadow__4)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>48px</b>资源管理器</div></div><div class='tile'><div class='tilebox checker'><svg style="width:32px;height:32px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__5 df-desc__5">
+  <title id="df-title__5">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__5">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__5" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__5" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__5" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__5" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__5">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__5)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__5)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__5" fill="url(#df-stream__5)" filter="url(#df-shadow__5)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__5" filter="url(#df-shadow__5)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>32px</b>设置页 / 对话框标题</div></div><div class='tile'><div class='tilebox checker'><svg style="width:24px;height:24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__6 df-desc__6">
+  <title id="df-title__6">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__6">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__6" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__6" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__6" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__6" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__6">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__6)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__6)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__6" fill="url(#df-stream__6)" filter="url(#df-shadow__6)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__6" filter="url(#df-shadow__6)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>24px</b>菜单 / 工具栏</div></div><div class='tile'><div class='tilebox checker'><svg style="width:16px;height:16px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__7 df-desc__7">
+  <title id="df-title__7">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__7">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__7" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__7" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__7" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__7" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__7">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__7)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__7)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__7" fill="url(#df-stream__7)" filter="url(#df-shadow__7)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__7" filter="url(#df-shadow__7)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div><div class='tilecap'><b>16px</b>任务栏 / 列表</div></div></div>
+</div>
+
+<div class="card">
+  <h2>深色环境预览</h2>
+  <p class="sub" style="margin-bottom:14px">蓝渐变方底在深色任务栏 / 深色主题背景上均保持清晰轮廓。</p>
+  <div class="darkstrip"><svg style="width:40px;height:40px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__8 df-desc__8">
+  <title id="df-title__8">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__8">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__8" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__8" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__8" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__8" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__8">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__8)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__8)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__8" fill="url(#df-stream__8)" filter="url(#df-shadow__8)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__8" filter="url(#df-shadow__8)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+<b>DiskFlow</b><span style="color:#94a3b8">磁盘流水 · SMART 读写流水监测</span></div>
+</div>
+
+<div class="card">
+  <h2>底稿变体</h2>
+  <div class="variants">
+    <div class="variant">
+      <div class="stage" style="background:#f8fafc;border:1px solid var(--line)"><svg style="width:104px;height:104px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__9 df-desc__9">
+  <title id="df-title__9">DiskFlow 磁盘流水</title>
+  <desc id="df-desc__9">DiskFlow 应用图标：蓝色渐变圆角方形背景上，一枚白色磁盘被两道青色数据流箭头穿过，象征磁盘读写流水监测。</desc>
+
+  <defs>
+    <!-- 背景渐变：科技蓝（135°） -->
+    <linearGradient id="df-bg__9" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset=".55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="df-gloss__9" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".26"/>
+      <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__9" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__9" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".38"/>
+    </filter>
+  </defs>
+
+  <!-- ① 背景：Windows 11 风格圆角方形（rx=58，约 22.7%） -->
+  <g id="df-background__9">
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-bg__9)"/>
+    <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#df-gloss__9)"/>
+    <rect x="1" y="1" width="254" height="254" rx="57" fill="none" stroke="#FFFFFF" stroke-opacity=".22" stroke-width="2"/>
+  </g>
+
+  <!-- ② 数据流：左箭头流入磁盘（写入）/ 右箭头流出磁盘（读取），绘于磁盘下层 -->
+  <g id="df-flow__9" fill="url(#df-stream__9)" filter="url(#df-shadow__9)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- ③ 磁盘：白色盘片（evenodd 挖出主轴孔，透出背景）+ 磁道弧 -->
+  <g id="df-disk__9" filter="url(#df-shadow__9)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#BFDBFE" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div>
+      <div class="name">diskflow-icon.svg</div><div class="use">主图标（渐变方底）· 默认首选，任何背景通用</div>
+    </div>
+    <div class="variant">
+      <div class="stage" style="background:#0f172a"><svg style="width:104px;height:104px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__10 df-desc__10">
+  <title id="df-title__10">DiskFlow 磁盘流水（透明底）</title>
+  <desc id="df-desc__10">DiskFlow 透明底标识：白色磁盘与青色数据流箭头，适用于深色或彩色背景。</desc>
+
+  <defs>
+    <!-- 数据流渐变：青 -->
+    <linearGradient id="df-stream__10" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__10" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0F172A" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__10" fill="url(#df-stream__10)" filter="url(#df-shadow__10)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- 磁盘：白色盘片（主轴孔镂空）+ 磁道弧 -->
+  <g id="df-disk__10" filter="url(#df-shadow__10)">
+    <path fill-rule="evenodd" fill="#FFFFFF" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#93C5FD" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div>
+      <div class="name">diskflow-mark.svg</div><div class="use">透明底（白/青）· 深色或彩色背景</div>
+    </div>
+    <div class="variant">
+      <div class="stage checker"><svg style="width:104px;height:104px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="df-title__11 df-desc__11">
+  <title id="df-title__11">DiskFlow 磁盘流水（透明底 · 浅色版）</title>
+  <desc id="df-desc__11">DiskFlow 透明底标识浅色版：蓝色磁盘与天青数据流，适用于白色/浅色背景，如 README 与浅色界面。</desc>
+
+  <defs>
+    <!-- 数据流渐变：天青 -->
+    <linearGradient id="df-stream__11-light__11" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <!-- 统一投影 -->
+    <filter id="df-shadow__11" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#1E3A8A" flood-opacity=".3"/>
+    </filter>
+  </defs>
+
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__11" fill="url(#df-stream__11-light__11)" filter="url(#df-shadow__11)">
+    <rect x="20" y="119" width="30" height="18" rx="9"/>
+    <path d="M50 111 L66 128 L50 145 Z"/>
+    <rect x="190" y="119" width="30" height="18" rx="9"/>
+    <path d="M220 111 L236 128 L220 145 Z"/>
+  </g>
+
+  <!-- 磁盘：蓝色盘片（主轴孔镂空，透出浅色底）+ 磁道弧 -->
+  <g id="df-disk__11" filter="url(#df-shadow__11)">
+    <path fill-rule="evenodd" fill="#1D4ED8" d="M128 76a52 52 0 1 0 0 104 52 52 0 1 0 0-104ZM128 119a9 9 0 1 0 0 18 9 9 0 1 0 0-18Z"/>
+    <path d="M97 116.7A33 33 0 1 0 159 116.7" fill="none" stroke="#60A5FA" stroke-width="5" stroke-linecap="round"/>
+  </g>
+</svg>
+</div>
+      <div class="name">diskflow-mark-light.svg</div><div class="use">透明底（蓝）· 浅色背景、README、文档</div>
+    </div>
+    <div class="variant">
+      <div class="stage" style="background:#f8fafc;border:1px solid var(--line);color:#334155"><svg style="width:48px;height:48px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DiskFlow">
+  <title>DiskFlow 磁盘流水</title>
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__12-24">
+    <path d="M1.2 12h2.2"/>
+    <path d="M3.4 10l2 2-2 2"/>
+    <path d="M18.6 12h2.2"/>
+    <path d="M20.6 10l2 2-2 2"/>
+  </g>
+  <!-- 磁盘：盘片 + 主轴 -->
+  <g id="df-disk__12-24">
+    <circle cx="12" cy="12" r="5"/>
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
+</div>
+      <div class="name">diskflow-mark-24.svg</div><div class="use">24×24 界面线性标 · currentColor 跟随文字色（此处 2× 放大展示）</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>界面标颜色语义</h2>
+  <p class="sub" style="margin-bottom:16px">24 标不写死颜色，通过 CSS <code>color</code> 继承，天然适配浅色/深色主题与各交互态。</p>
+  <div class="states"><div class='state' style='color:#334155'><svg style="width:24px;height:24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DiskFlow">
+  <title>DiskFlow 磁盘流水</title>
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__13-24">
+    <path d="M1.2 12h2.2"/>
+    <path d="M3.4 10l2 2-2 2"/>
+    <path d="M18.6 12h2.2"/>
+    <path d="M20.6 10l2 2-2 2"/>
+  </g>
+  <!-- 磁盘：盘片 + 主轴 -->
+  <g id="df-disk__13-24">
+    <circle cx="12" cy="12" r="5"/>
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
+<span>默认 · 跟随文字色</span></div><div class='state' style='color:#2563eb'><svg style="width:24px;height:24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DiskFlow">
+  <title>DiskFlow 磁盘流水</title>
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__14-24">
+    <path d="M1.2 12h2.2"/>
+    <path d="M3.4 10l2 2-2 2"/>
+    <path d="M18.6 12h2.2"/>
+    <path d="M20.6 10l2 2-2 2"/>
+  </g>
+  <!-- 磁盘：盘片 + 主轴 -->
+  <g id="df-disk__14-24">
+    <circle cx="12" cy="12" r="5"/>
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
+<span>悬停 / 选中</span></div><div class='state' style='color:#94a3b8'><svg style="width:24px;height:24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="DiskFlow">
+  <title>DiskFlow 磁盘流水</title>
+  <!-- 数据流：左箭头流入磁盘 / 右箭头流出磁盘 -->
+  <g id="df-flow__15-24">
+    <path d="M1.2 12h2.2"/>
+    <path d="M3.4 10l2 2-2 2"/>
+    <path d="M18.6 12h2.2"/>
+    <path d="M20.6 10l2 2-2 2"/>
+  </g>
+  <!-- 磁盘：盘片 + 主轴 -->
+  <g id="df-disk__15-24">
+    <circle cx="12" cy="12" r="5"/>
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
+<span>禁用</span></div></div>
+</div>
+
+<div class="card">
+  <h2>色板</h2>
+  <div class="swatches"><div class='sw'><div class='c' style='background:#3B82F6'></div><div class='t'><b>背景渐变起点</b>#3B82F6<br>科技蓝</div></div><div class='sw'><div class='c' style='background:#2563EB'></div><div class='t'><b>背景渐变中段</b>#2563EB<br>专业稳定</div></div><div class='sw'><div class='c' style='background:#1E3A8A'></div><div class='t'><b>背景渐变终点</b>#1E3A8A<br>深蓝收底</div></div><div class='sw'><div class='c' style='background:#FFFFFF'></div><div class='t'><b>盘片</b>#FFFFFF<br>高对比</div></div><div class='sw'><div class='c' style='background:#67E8F9'></div><div class='t'><b>数据流起点</b>#67E8F9<br>青色·数据</div></div><div class='sw'><div class='c' style='background:#22D3EE'></div><div class='t'><b>数据流终点</b>#22D3EE<br>青色·活力</div></div><div class='sw'><div class='c' style='background:#BFDBFE'></div><div class='t'><b>磁道弧</b>#BFDBFE<br>细节层次</div></div></div>
+</div>
+
+<div class="card">
+  <h2>使用规范</h2>
+  <h3 style="font-size:14px;margin:14px 0 8px">尺寸档位</h3>
+  <table>
+    <tr><th>档位</th><th>典型场景</th><th>建议文件</th></tr>
+    <tr><td>16</td><td>任务栏、列表视图、favicon</td><td><code>diskflow.ico</code> / <code>png/diskflow-16.png</code></td></tr>
+    <tr><td>24</td><td>菜单、工具栏、行内图标</td><td><code>diskflow-mark-24.svg</code></td></tr>
+    <tr><td>32</td><td>设置页、对话框标题栏</td><td><code>diskflow.ico</code> / <code>png/diskflow-32.png</code></td></tr>
+    <tr><td>48</td><td>桌面、文件管理器</td><td><code>diskflow.ico</code> / <code>png/diskflow-48.png</code></td></tr>
+    <tr><td>64</td><td>高 DPI 桌面</td><td><code>diskflow.ico</code> / <code>png/diskflow-64.png</code></td></tr>
+    <tr><td>128</td><td>关于对话框、应用商店</td><td><code>diskflow.ico</code> / <code>png/diskflow-128.png</code></td></tr>
+    <tr><td>256</td><td>安装程序、启动画面、超高 DPI</td><td><code>diskflow.ico</code> / <code>diskflow-icon.svg</code></td></tr>
+  </table>
+
+  <h3 style="font-size:14px;margin:18px 0 8px">绘制基准与安全区</h3>
+  <ul>
+    <li>· 画布 <b>256×256</b>，圆角 <b>rx=58</b>（约 22.7%，对齐 Windows 11 应用图标规范）</li>
+    <li>· 内容（磁盘 + 数据流）居中，四周留白 ≥ 10%（约 26px），任何尺寸下不得裁切圆角</li>
+    <li>· 磁盘 r=52、数据流高 18、磁道弧 r=33，关键结构落在 8px 网格上（弧线端点为视觉微调）</li>
+    <li>· SVG 不写死 width/height，由使用方（CSS / 组件 / 转换工具）控制尺寸</li>
+  </ul>
+
+  <h3 style="font-size:14px;margin:18px 0 8px">颜色语义</h3>
+  <table>
+    <tr><th>元素</th><th>色值</th><th>语义</th></tr>
+    <tr><td>背景</td><td>#3B82F6 → #2563EB → #1E3A8A</td><td>科技蓝渐变，专业、稳定</td></tr>
+    <tr><td>盘片</td><td>#FFFFFF</td><td>磁盘本体，最高对比</td></tr>
+    <tr><td>数据流</td><td>#67E8F9 → #22D3EE</td><td>青色=数据，箭头表读写方向</td></tr>
+    <tr><td>磁道弧</td><td>#BFDBFE</td><td>盘片细节层次</td></tr>
+    <tr><td>主轴孔</td><td>镂空（透出底色）</td><td>与背景呼应，「透视」质感</td></tr>
+  </table>
+
+  <h3 style="font-size:14px;margin:18px 0 8px">命名约定</h3>
+  <ul>
+    <li>· 文件：kebab-case，<code>diskflow-{用途}[-{底稿}].svg</code></li>
+    <li>· SVG id：统一 <code>df-</code> 前缀；分组 <code>df-background / df-flow / df-disk</code></li>
+    <li>· 渐变 <code>df-bg / df-gloss / df-stream</code>，滤镜 <code>df-shadow</code></li>
+    <li>· 图层顺序：背景 → 数据流 → 磁盘（改色时按组整组替换，不要单点改）</li>
+  </ul>
+
+  <h3 style="font-size:14px;margin:18px 0 8px">集成方式</h3>
+  <ul>
+    <li>· PyInstaller：<code>--icon diskflow.ico</code>（或重命名为 <code>app.ico</code> 后加进 build.bat）</li>
+    <li>· README：<code>![DiskFlow](png/diskflow-256.png)</code>（GitHub 不渲染 SVG，故用 PNG）</li>
+    <li>· GUI：标题栏 / 关于框可用 <code>diskflow-mark-24.svg</code> 或对应 PNG</li>
+  </ul>
+
+  <h3 style="font-size:14px;margin:18px 0 8px">Do / Don't</h3>
+  <div class="cols">
+    <ul>
+      <li><span class="ok">✓</span> 按尺寸档位选用对应文件</li>
+      <li><span class="ok">✓</span> 换品牌色时整组同色系替换（背景/数据流一起改）</li>
+      <li><span class="ok">✓</span> 24 标用 <code>currentColor</code> 适配深浅主题</li>
+      <li><span class="ok">✓</span> ICO 内含 16–256 全尺寸，可直接用于 <code>--icon</code></li>
+    </ul>
+    <ul>
+      <li><span class="no">✗</span> 非等比拉伸 / 压缩</li>
+      <li><span class="no">✗</span> 在盘片上叠加文字或徽标</li>
+      <li><span class="no">✗</span> 转换格式时丢失 <code>viewBox</code></li>
+      <li><span class="no">✗</span> 用于 DiskFlow 以外的产品</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <h2>交付清单</h2>
+  <table>
+    <tr><th>文件</th><th>说明</th></tr>
+    <tr><td><code>diskflow-icon.svg</code></td><td>主图标，256 viewBox，渐变方底，可无限缩放</td></tr>
+    <tr><td><code>diskflow-mark.svg</code></td><td>透明底标识（白/青），深色或彩色背景</td></tr>
+    <tr><td><code>diskflow-mark-light.svg</code></td><td>透明底标识（蓝），浅色背景</td></tr>
+    <tr><td><code>diskflow-mark-24.svg</code></td><td>24×24 界面线性标，currentColor</td></tr>
+    <tr><td><code>diskflow.ico</code></td><td>多尺寸图标 16/24/32/48/64/128/256，供 <code>--icon</code></td></tr>
+    <tr><td><code>png/diskflow-*.png</code></td><td>各尺寸透明 PNG（矢量直出），README / 发布页用</td></tr>
+  </table>
+</div>
+<div class='footer'>本图标为 DiskFlow 原创设计，未使用任何第三方商标图形；DiskFlow 名称与软件著作权归你所有。<br>生成日期 2026-10-24 · viewBox 0 0 256 256 · MIT</div></div></body></html>
