@@ -984,7 +984,9 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     outcome = window.run_pipeline_sync()
     tk_root.update_idletasks()
 
-    assert len(window.tree["columns"]) == 13
+    # 表格视图固定 8 列（成对指标合并成「左 / 右」一格），默认视图就是表格
+    assert window.view_key == app.VIEW_TABLE
+    assert len(window.tree["columns"]) == 8
     assert len(window.tree.get_children()) == 2
 
     tags_by_iid = {iid: tuple(window.tree.item(iid, "tags")) for iid in window.tree.get_children()}
@@ -1008,8 +1010,19 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
 
     # 表头/列标题与需求一致
     headings = [window.tree.heading(col)["text"] for col in window.tree["columns"]]
-    assert headings[:3] == ["磁盘型号", "序列号(截断)", "协议"]
-    assert headings[-3:] == ["健康度", "0E", "状态"]   # 健康度列紧挨在 0E 之前
+    assert headings == [spec[1] for spec in app.COLUMN_SPECS]
+    assert headings[:3] == ["磁盘 / 序列号", "协议", "累计读 / 写"]
+    assert headings[-2:] == ["0E / 健康", "状态"]   # 0E 与健康度合成一格
+    # 合并列里读/写两个值都要出现，且共用同一个分隔符
+    first_values = window.tree.item(window.tree.get_children()[0], "values")
+    # 首列型号与序列号上下两行，序列号不再被截断
+    assert app.PAIR_SEPARATOR in first_values[0]
+    model_line, serial_line = first_values[0].split(app.PAIR_SEPARATOR)
+    assert model_line and serial_line and "..." not in serial_line
+    assert app.PAIR_SEPARATOR in first_values[2]      # 累计读 / 写
+    assert app.PAIR_SEPARATOR in first_values[4]      # 本次读增 / 写增
+    assert app.PAIR_SEPARATOR in first_values[5]      # 历史读增 / 写增
+    assert app.PAIR_SEPARATOR in first_values[6]      # 0E / 健康
 
     window.root.destroy()
 
@@ -1230,7 +1243,7 @@ REQUIRED_THEME_KEYS = (
     "head_bold", "zebra", "alert_bg", "alert_fg", "muted_fg", "select_bg", "select_fg",
     "rowheight", "padx", "pady", "kpi", "dark_bar", "title_fg", "title_pt",
     "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
-    "card_lbl", "num_family", "card_pt",
+    "card_lbl", "num_family", "card_pt", "scroll_thumb", "scroll_thumb_hover",
 )
 
 
@@ -1393,6 +1406,161 @@ def test_gui_theme_choice_is_persisted_and_restored(tk_root, tmp_path):
     second_root.destroy()
 
 
+def test_settings_store_persists_view_choice(tmp_path):
+    """视图偏好与主题一样存 settings.json：往返正常、非法值收敛到表格。"""
+    store = app.SettingsStore(tmp_path)
+    assert store.load()["view"] == app.DEFAULT_VIEW == app.VIEW_TABLE
+
+    store.save({"view": app.VIEW_GRID})
+    assert json.loads(store.path.read_text(encoding="utf-8"))["view"] == app.VIEW_GRID
+    assert store.load()["view"] == app.VIEW_GRID
+
+    store.save({"view": "hologram"})
+    assert store.load()["view"] == app.VIEW_TABLE
+    assert app.normalize_view_key(None) == app.VIEW_TABLE
+    assert app.normalize_view_key(app.VIEW_CARDS) == app.VIEW_CARDS
+
+
+def test_column_specs_are_eight_merged_columns():
+    """表格合并成 8 列，合并列必须成对出现（读/写、0E/健康）。"""
+    assert len(app.COLUMN_SPECS) == 8
+    keys = [spec[0] for spec in app.COLUMN_SPECS]
+    assert keys == ["model", "protocol", "rw", "interval", "cur", "hist", "media", "status"]
+    # 合并不代表丢数据：读与写、0E 与健康都必须还在
+    assert app.fmt_size_short(1024) == "1.00 TB"
+    assert app.fmt_size_short(512) == "512.00 GB"
+    assert app.fmt_size_short(None) == "—"
+    # 自然宽度必须小于合并前的 1515px，否则「8 列」没有意义
+    assert app.TABLE_NATURAL_WIDTH < 1515
+
+
+def test_slim_scrollbar_set_get_and_hide(tk_root):
+    """细条滚动条实现滚动条协议：set/get 可用，全可见时自动隐藏。"""
+    bar = app.SlimScrollbar(tk_root, orient="vertical", command=lambda *a: None,
+                            track="#FFFFFF", thumb="#C6CDD6")
+    bar.pack(fill="y")
+    tk_root.update_idletasks()
+
+    bar.set("0.0", "1.0")                       # 全部可见
+    assert bar.get() == (0.0, 1.0)
+    assert bar.visible is False
+    assert bar.find_withtag("thumb") == ()      # 不画滑块，不占视觉
+
+    bar.set("0.25", "0.5")                      # 有滚动空间
+    assert bar.get() == (0.25, 0.5)
+    assert bar.visible is True
+    bar.recolor("#000000", "#7C8A99", "#9AA9B8")   # 换主题不重建控件
+    assert bar.thumb_color == "#7C8A99"
+
+    # 非法输入不能抛异常（滚动条回调在 Tk 内部被调用，抛了就崩）
+    bar.set("abc", None)
+    assert bar.get() == (0.0, 1.0)
+
+
+def test_gui_view_switch_keeps_single_widget_set(tk_root, tmp_path):
+    """三视图切换：默认表格，切卡片/双列不重建 Treeview，切回表格数据还在。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+
+    tree_before = window.tree
+    rows_before = len(window.tree.get_children())
+    assert window.view_key == app.VIEW_TABLE
+    assert window.seg_buttons[app.VIEW_TABLE].cget("text") == "表格"
+    assert set(window.seg_buttons) == set(app.VIEW_ORDER)
+
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+    assert window.view_key == app.VIEW_CARDS
+    assert window.tree is tree_before                     # Treeview 没被重建
+    assert len(window.card_rows()) == rows_before         # 卡片数量与行数一致
+    # 卡片是真实控件：每块盘一张卡，卡里带型号文本
+    assert len(window.cards_inner.winfo_children()) == rows_before
+
+    window.set_view(app.VIEW_GRID)
+    tk_root.update_idletasks()
+    assert window.view_key == app.VIEW_GRID
+    assert len(window.cards_inner.winfo_children()) == rows_before
+
+    window.set_view(app.VIEW_TABLE)
+    tk_root.update_idletasks()
+    assert window.view_key == app.VIEW_TABLE
+    assert len(window.tree.get_children()) == rows_before
+    # 切回表格：table_frame 重新被 pack，cards_frame 被移出布局
+    # （tk_root 是 withdraw 状态，winfo_ismapped() 恒为 0，所以用 winfo_manager() 判定）
+    assert window.table_frame.winfo_manager() == "pack"
+    assert window.cards_frame.winfo_manager() == ""
+
+
+def test_gui_card_view_marks_alert_and_muted(tk_root, tmp_path):
+    """卡片视图同样要区分告警盘与读取失败的盘（颜色取自当前主题）。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Test NVMe", serial="SN1",
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=5),
+        app.DiskSnapshot(device_path="/dev/sdc", protocol="SATA",
+                         model="Broken HDD", serial="SN2",
+                         error="读取失败：Permission denied"),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+
+    rows = window.card_rows()
+    assert any(row.alert for row in rows)
+    assert any(row.failed for row in rows)
+    cards = window.cards_inner.winfo_children()
+    assert len(cards) == len(rows)
+    colors = {card.cget("bg") for card in cards}
+    theme = window.theme
+    assert theme["alert_bg"] in colors        # 告警卡用告警底色
+    assert theme["card_bg"] in colors         # 普通/失败卡用常规底色
+    # 卡片视图下复制表格也不能崩（不依赖 Treeview 的 values）
+    window.copy_table()
+    assert "磁盘 / 序列号" in tk_root.clipboard_get()
+
+
+def test_gui_view_choice_is_persisted_and_restored(tk_root, tmp_path):
+    """在顶栏切到双列后，下次启动仍是双列；切视图不得改写 history.json。"""
+    settings = app.SettingsStore(tmp_path)
+    store = _gui_store(tmp_path)
+
+    import tkinter
+
+    first_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(first_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False, settings=settings)
+    window.run_pipeline_sync()
+    # 记录「本次运行写入完成后」的历史快照，之后只切视图不该再动它
+    history_after_run = store.path.read_text(encoding="utf-8")
+    records_after_run = len(json.loads(history_after_run)["records"])
+
+    window.seg_buttons[app.VIEW_GRID].invoke()      # 等同用户点顶栏的分段按钮
+    tk_root.update_idletasks()
+    assert window.view_key == app.VIEW_GRID
+    assert settings.load()["view"] == app.VIEW_GRID
+    assert settings.path.exists()
+    # 视图偏好写进 settings.json，不写 history.json
+    assert store.path.read_text(encoding="utf-8") == history_after_run
+    assert len(json.loads(store.path.read_text(encoding="utf-8"))["records"]) == records_after_run
+    first_root.destroy()
+
+    second_root = tkinter.Toplevel(tk_root)
+    second = app.DiskTrackerApp(second_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False, settings=settings)
+    tk_root.update_idletasks()
+    assert second.view_key == app.VIEW_GRID
+    second_root.destroy()
+
+
 def test_gui_menu_actions_do_not_crash(tk_root, tmp_path):
     """复制表格 / 诊断信息 / 重置排序 / 关闭 都应该安全（不弹真对话框）。"""
     store = _gui_store(tmp_path)
@@ -1403,7 +1571,7 @@ def test_gui_menu_actions_do_not_crash(tk_root, tmp_path):
     tk_root.update_idletasks()
 
     window.copy_table()
-    assert "磁盘型号" in tk_root.clipboard_get()
+    assert "磁盘 / 序列号" in tk_root.clipboard_get()
 
     text = window.diagnostics_text()
     assert app.APP_DISPLAY_NAME in text
