@@ -2261,3 +2261,240 @@ def test_v2_reading_without_timestamp_is_rejected(tmp_path):
     result = store.load()
     assert result.recovered is True
     assert "timestamp 无法解析" in result.message
+
+
+# ---------------------------------------------------------------------------
+# 13. 盘符映射层（v0.6.0）
+# ---------------------------------------------------------------------------
+def _descriptor_bytes(vendor, product, serial, bus_type):
+    """按实测偏移拼一个 STORAGE_DEVICE_DESCRIPTOR 缓冲：12/16/24 为字符串偏移，28 为 BusType。"""
+    import struct
+
+    buf = bytearray(128)
+    offset = 32
+    positions = {}
+    for name, text in (("vendor", vendor), ("product", product), ("serial", serial)):
+        positions[name] = offset
+        raw = text.encode("utf-8") + b"\x00"
+        buf[offset:offset + len(raw)] = raw
+        offset += len(raw)
+    struct.pack_into("<I", buf, 0, 40)                    # Version
+    struct.pack_into("<I", buf, 8, 40)                    # Size
+    struct.pack_into("<I", buf, 12, positions["vendor"])
+    struct.pack_into("<I", buf, 16, positions["product"])
+    struct.pack_into("<I", buf, 24, positions["serial"])
+    struct.pack_into("<I", buf, 28, bus_type)
+    return bytes(buf)
+
+
+def _geometry_bytes(size):
+    """DISK_GEOMETRY_EX 的 DiskSize 在偏移 24。"""
+    import struct
+
+    buf = bytearray(112)
+    struct.pack_into("<q", buf, 24, size)
+    return bytes(buf)
+
+
+def _extents_bytes(*numbers):
+    """VOLUME_DISK_EXTENTS：NumberOfDiskExtents(u32) + 保留(4) + DISK_EXTENT[24]。"""
+    import struct
+
+    buf = bytearray(8 + 24 * len(numbers))
+    struct.pack_into("<I", buf, 0, len(numbers))
+    for index, number in enumerate(numbers):
+        struct.pack_into("<I", buf, 8 + index * 24, number)
+        struct.pack_into("<q", buf, 8 + index * 24 + 8, 0)
+        struct.pack_into("<q", buf, 8 + index * 24 + 16, 1024)
+    return bytes(buf)
+
+
+def test_parse_storage_descriptor_reads_model_and_bus_type():
+    """描述符偏移固定为 12/16/24/28；厂商与型号要拼成一个型号串并归一化空格。"""
+    raw = _descriptor_bytes("Colorful", " SL500 960GB    ", "E2E438EE1A62", app.BUS_TYPE_ATA[1])
+    parsed = app.parse_storage_descriptor(raw)
+    assert parsed["model"] == "Colorful SL500 960GB", "厂商 + 型号，且多余空格要合并"
+    assert parsed["serial"] == "E2E438EE1A62"
+    assert parsed["bus_type"] == 7
+
+    nvme = app.parse_storage_descriptor(
+        _descriptor_bytes("", "WDC PC SN730 SDBPNTY-256G-1101", "001B_444A_44DD_7B03.", 17))
+    assert nvme["model"] == "WDC PC SN730 SDBPNTY-256G-1101", "厂商为空时只留型号"
+    assert nvme["bus_type"] == app.BUS_TYPE_NVME
+
+    # 缓冲太短 / 偏移越界都不能抛异常
+    assert app.parse_storage_descriptor(b"")["model"] == ""
+    assert app.parse_storage_descriptor(bytes(16))["bus_type"] == 0
+
+
+def test_parse_disk_geometry_and_volume_extents():
+    """几何信息取偏移 24 的 DiskSize；卷的盘号来自 extents 记录。"""
+    assert app.parse_disk_geometry(_geometry_bytes(960197124096)) == 960197124096
+    assert app.parse_disk_geometry(b"") is None
+    assert app.parse_disk_geometry(_geometry_bytes(0)) is None
+
+    assert app.parse_volume_extents(_extents_bytes(2)) == [2]
+    assert app.parse_volume_extents(_extents_bytes(0, 1)) == [0, 1], "跨盘卷要列出全部盘号"
+    assert app.parse_volume_extents(b"") == []
+    assert app.parse_volume_extents(bytes(8)) == []
+
+
+def test_models_close_and_capacities_close_tolerances():
+    """型号归一化后相等或互为前缀算同一块盘；容量允许 2 GiB / 2% 的差异。"""
+    assert app.models_close("Colorful SL500 960GB", "COLORFUL  SL500  960GB")
+    assert app.models_close("WDC PC SN730 SDBPNTY-256G-1101", "WDC PC SN730 SDBPNTY-256G")
+    assert not app.models_close("Samsung SSD 980 PRO 1TB", "Samsung SSD 970 EVO 1TB")
+    assert not app.models_close("", "Samsung SSD 980 PRO 1TB")
+
+    assert app.capacities_close(960197124096, 960197124096)
+    assert app.capacities_close(256060514304, 256010000000), "2 GiB 内视为同一块盘"
+    assert not app.capacities_close(256060514304, 512110190592)
+    assert not app.capacities_close(0, 0)
+    assert not app.capacities_close(None, 100)
+
+
+def test_match_drive_letters_pairs_by_model_and_capacity():
+    """同型号不同容量必须区分开；容量对不上时宁可不给盘符，也不能张冠李戴。"""
+    model = "WDC PC SN730 SDBPNTY-256G-1101"
+    small = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model=model,
+                             serial="SN-A", capacity_bytes=256060514304)
+    big = app.DiskSnapshot(device_path="/dev/nvme1", protocol="NVMe", model=model,
+                           serial="SN-B", capacity_bytes=1024204886016)
+    disks = [
+        app.PhysicalDisk(number=0, model=model, serial="S0", bus_type=17,
+                         capacity_bytes=256060514304),
+        app.PhysicalDisk(number=1, model=model, serial="S1", bus_type=17,
+                         capacity_bytes=1024204886016),
+    ]
+    mounts = [
+        app.VolumeMount(letter="C:", disk_number=0, capacity_bytes=250000000000),
+        app.VolumeMount(letter="D:", disk_number=1, capacity_bytes=1000000000000),
+    ]
+    mapping = app.match_drive_letters([small, big], disks, mounts)
+    assert mapping[app.disk_key(model, "SN-A")] == "C:"
+    assert mapping[app.disk_key(model, "SN-B")] == "D:"
+
+    # 型号对得上但容量差一倍以上：不给盘符（避免把另一块盘的数据标上来）
+    odd = app.DiskSnapshot(device_path="/dev/sdb", protocol="NVMe", model=model,
+                           serial="SN-C", capacity_bytes=512110190592)
+    assert app.match_drive_letters([odd], disks, mounts) == {}
+
+    # 总线类型对不上（NVMe 快照 vs ATA 物理盘）也不能匹配
+    sata_snapshot = app.DiskSnapshot(device_path="/dev/sda", protocol="SATA", model=model,
+                                     serial="SN-D", capacity_bytes=256060514304)
+    assert app.match_drive_letters([sata_snapshot], disks, mounts) == {}
+
+
+def test_match_drive_letters_lists_every_partition_of_one_disk():
+    """一块盘分两个区（C: 与 D:）时两个盘符都要列出来，且按字母排序。"""
+    model = "Colorful SL500 960GB"
+    snapshot = app.DiskSnapshot(device_path="/dev/sda", protocol="SATA", model=model,
+                                serial="SN-E", capacity_bytes=960197124096)
+    disks = [app.PhysicalDisk(number=2, model=model, serial="E2E438EE1A62", bus_type=7,
+                              capacity_bytes=960197124096)]
+    mounts = [
+        app.VolumeMount(letter="D:", disk_number=2, capacity_bytes=400000000000),
+        app.VolumeMount(letter="C:", disk_number=2, capacity_bytes=560000000000),
+    ]
+    mapping = app.match_drive_letters([snapshot], disks, mounts)
+    assert mapping[app.disk_key(model, "SN-E")] == "C:, D:"
+    assert app.DRIVE_LETTER_JOINER == ", "
+
+
+def test_match_drive_letters_skips_ambiguous_and_failed_disks():
+    """同型号同容量的两块盘无法区分时宁可不标；读取失败的盘不参与匹配。"""
+    model = "Sample NVMe 512GB"
+    snapshot = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model=model,
+                                serial="SN-F", capacity_bytes=512110190592)
+    disks = [
+        app.PhysicalDisk(number=0, model=model, serial="X", bus_type=17,
+                         capacity_bytes=512110190592),
+        app.PhysicalDisk(number=1, model=model, serial="Y", bus_type=17,
+                         capacity_bytes=512110190592),
+    ]
+    mounts = [app.VolumeMount(letter="C:", disk_number=0),
+              app.VolumeMount(letter="D:", disk_number=1)]
+    assert app.match_drive_letters([snapshot], disks, mounts) == {}, "并列时不能猜"
+
+    failed = app.DiskSnapshot(device_path="/dev/sdc", protocol="SATA", model=model,
+                              serial="SN-G", error="读取失败", capacity_bytes=512110190592)
+    assert app.match_drive_letters([failed], disks[:1], mounts[:1]) == {}
+
+
+def test_attach_drive_letters_degrades_to_empty_when_no_mounts():
+    """枚举不到盘符（非 Windows / 权限不足）时整层静默降级，drives 留空且不抛异常。"""
+    snapshot = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model="M", serial="S",
+                                read_bytes=1024 ** 3, write_bytes=1024 ** 3)
+
+    def broken(_snapshots):
+        raise RuntimeError("枚举失败")
+
+    assert app.attach_drive_letters([snapshot], broken) == {}
+    assert snapshot.drives == ""
+
+    def fake(_snapshots):
+        return {app.disk_key("M", "S"): "C:"}
+
+    assert app.attach_drive_letters([snapshot], fake) == {app.disk_key("M", "S"): "C:"}
+    assert snapshot.drives == "C:"
+
+
+def test_perform_run_injected_resolver_reaches_cards(tk_root, tmp_path):
+    """盘符从 provider -> perform_run -> DiskRow -> 卡片徽章一路贯通（结果与 runner 无关）。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Test NVMe", serial="SN1", capacity_bytes=256060514304,
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=0),
+    ])
+    window = app.DiskTrackerApp(
+        tk_root, provider=provider, store=store,
+        resolver=lambda snapshots: {app.disk_key("Test NVMe", "SN1"): "C:"},
+        autostart=False,
+        now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8),
+        settings=app.SettingsStore(tmp_path / "pref"),
+        theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+
+    assert window.rows[0].drives == "C:"
+    labels = [w for w in _descendants(window.cards_inner) if w.winfo_class() == "Label"]
+    badge_texts = [label.cget("text") for label in labels]
+    assert "NVMe" in badge_texts
+    assert "C:" in badge_texts, f"卡片上必须有盘符徽章，实际={badge_texts}"
+    protocol_badge = labels[badge_texts.index("NVMe")]
+    letter_badge = labels[badge_texts.index("C:")]
+    assert protocol_badge.master is letter_badge.master, "盘符徽章要跟协议徽章同一行"
+    siblings = protocol_badge.master.winfo_children()
+    assert siblings.index(protocol_badge) < siblings.index(letter_badge), \
+        "盘符徽章必须排在协议徽章后面"
+    window.root.destroy()
+
+
+def test_cards_hide_drive_badge_when_letter_unknown(tk_root, tmp_path):
+    """拿不到盘符时不渲染空徽章（避免出现一个空白小方块）。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Test NVMe", serial="SN1",
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=0),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store,
+                                resolver=lambda snapshots: {},
+                                autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8),
+                                settings=app.SettingsStore(tmp_path / "pref"),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    assert window.rows[0].drives == ""
+    texts = [str(w.cget("text")) for w in _descendants(window.cards_inner)
+             if w.winfo_class() == "Label"]
+    assert "NVMe" in texts
+    assert not any(text.endswith(":") and len(text) <= 3 for text in texts), \
+        f"不该出现空盘符徽章，实际={texts}"
+    window.root.destroy()
