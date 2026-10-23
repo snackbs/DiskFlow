@@ -1244,6 +1244,7 @@ REQUIRED_THEME_KEYS = (
     "rowheight", "padx", "pady", "kpi", "dark_bar", "title_fg", "title_pt",
     "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
     "card_lbl", "num_family", "card_pt", "scroll_thumb", "scroll_thumb_hover",
+    "scroll_idle",
     "seg_sel_bg", "seg_sel_fg", "seg_hover_bg", "seg_hover_fg", "seg_border",
 )
 
@@ -1270,6 +1271,9 @@ def test_theme_table_covers_every_theme_with_same_keys():
                           "seg_hover_fg", "seg_border"):
             assert isinstance(table[seg_field], str) and table[seg_field].startswith("#"), \
                 f"{name} 的 {seg_field} 不是颜色值"
+        # 空闲态细条必须存在且与窗口底色不同（否则「滚动条消失」那个观感问题会回来）
+        assert isinstance(table["scroll_idle"], str) and table["scroll_idle"].startswith("#")
+        assert table["scroll_idle"] != table["win_bg"], f"{name} 的空闲滚动条与背景同色"
 
 
 def test_system_theme_follows_light_and_dark():
@@ -1448,10 +1452,14 @@ def test_slim_scrollbar_set_get_and_hide(tk_root):
     bar.pack(fill="y")
     tk_root.update_idletasks()
 
+    bar._length = lambda: 300                   # withdraw 状态没有真实高度，给个虚拟长度
     bar.set("0.0", "1.0")                       # 全部可见
     assert bar.get() == (0.0, 1.0)
     assert bar.visible is False
-    assert bar.find_withtag("thumb") == ()      # 不画滑块，不占视觉
+    # 全部可见时不画可拖的滑块，但依然画一条很淡的整条，右侧不会空出一道留白
+    idle_items = bar.find_withtag("thumb")
+    assert len(idle_items) == 1
+    assert bar.itemcget(idle_items[0], "fill") == bar.idle_color
 
     bar.set("0.25", "0.5")                      # 有滚动空间
     assert bar.get() == (0.25, 0.5)
@@ -1837,6 +1845,122 @@ def test_kpi_row_and_card_row_share_right_edge(tk_root, tmp_path):
     tk_root.update_idletasks()
     grid_cards = window.cards_inner.winfo_children()
     assert len(grid_cards) >= 2
+    # 双列：左列右侧留半个列间距，右列左侧留半个，两列等宽
     padx_first = _pixels(grid_cards[0].grid_info().get("padx", "0"))
-    assert padx_first[-1] == app.CARD_GAP, "双列视图第一张卡右侧应留列间距"
+    assert padx_first[-1] == app.CARD_GAP // 2, "双列视图左列应留半个列间距"
+    padx_second = _pixels(grid_cards[1].grid_info().get("padx", "0"))
+    assert padx_second[0] == app.CARD_GAP // 2
+    assert padx_second[-1] == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. 双列对齐 / 卡片细节 / 关于（v0.5.3）
+# ---------------------------------------------------------------------------
+def test_fmt_delta_gb_always_carries_unit():
+    """卡片里的增量必须带单位，否则「+348.80」看不出是 GB 还是次数。"""
+    assert app.fmt_delta_gb(348.8) == "+348.80 GB"
+    assert app.fmt_delta_gb(0.0) == "+0.00 GB"
+    assert app.fmt_delta_gb(-12.345) == "-12.35 GB"
+    assert app.fmt_delta_gb(None) == "—"
+    # 表格列头写了 (GB)，表格里的增量保持不带单位
+    assert app.fmt_delta(348.8) == "+348.80"
+    assert any(field.endswith("_delta_gb") for _, field in app.CARD_METRICS)
+
+
+def test_gui_card_deltas_show_unit_and_badge_follows_model(tk_root, tmp_path):
+    """卡片增量带 GB；协议徽章紧跟型号，不被挤到状态文字跟前。"""
+    # 历史里有一条 100/200 GB 的记录，本次读到 300/400 GB，增量才有具体数字
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Test NVMe", serial="SN1",
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=5),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=_gui_store(tmp_path),
+                                autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+
+    entries = [w for w in _descendants(window.cards_inner) if w.winfo_class() == "Entry"]
+    texts = [entry.get() for entry in entries]
+    unit_texts = [text for text in texts if text.endswith(" GB")]
+    assert len(unit_texts) >= 4, f"卡片里的增量没有全部带单位：{texts}"
+    assert any(text.startswith("+") for text in unit_texts)
+
+    # 协议徽章必须与型号同处标题行（紧跟在型号后面，而不是被推到最右）
+    card = window.cards_inner.winfo_children()[0]
+    models = {row.model for row in window.card_rows()}
+    model_entry = None
+    for widget in _descendants(card):
+        if widget.winfo_class() == "Entry" and widget.get() in models:
+            model_entry = widget
+            break
+    assert model_entry is not None, "卡片里应该有型号（只读 Entry）"
+    badges = [w for w in _descendants(card)
+              if w.winfo_class() == "Label" and w.cget("text") in ("NVMe", "SATA")]
+    assert badges, "卡片里应该有协议徽章"
+    assert all(badge.master is model_entry.master for badge in badges), \
+        "协议徽章必须与型号同处标题行"
+    # 型号 Entry 不能 fill 拉伸：否则徽章会被挤到状态文字旁边
+    assert model_entry.pack_info().get("fill") in ("none", "", None)
+
+
+def test_gui_grid_columns_have_equal_width(tk_root, tmp_path):
+    """双列视图两列必须等宽（列间距对称），否则左右两列看着一宽一窄。"""
+    import tkinter
+
+    window_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(window_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    window_root.geometry("1100x640")
+    window.set_view(app.VIEW_GRID)
+    window_root.update()
+    window.flush_card_layout()
+    window_root.update()
+
+    cards = window.cards_inner.winfo_children()
+    assert len(cards) >= 2
+    widths = [card.winfo_width() for card in cards]
+    assert max(widths) - min(widths) <= 2, f"双列卡片宽度不一致：{widths}"
+    lefts = {card.winfo_rootx() for card in cards}
+    assert len(lefts) == 2, f"双列应该只有两个起始 x：{lefts}"
+    window_root.destroy()
+
+
+def test_gui_scrollbar_keeps_a_faint_track_when_everything_fits(tk_root, tmp_path):
+    """内容全部可见时右侧仍有一条淡色细条，不能整条消失（看起来像滚动条丢了）。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+    bar = window.cards_scroll
+    assert bar.winfo_width() == app.SCROLL_GUTTER
+    assert bar.idle_color == window.theme["scroll_idle"]
+    assert bar.idle_color != window.theme["win_bg"]
+    bar._length = lambda: 300
+    bar.set("0.0", "1.0")
+    items = bar.find_withtag("thumb")
+    assert len(items) == 1
+    assert bar.itemcget(items[0], "fill") == window.theme["scroll_idle"]
+
+
+def test_about_text_mentions_author_and_ai_assistance():
+    """关于框要写清作者与开发方式（版本号仍只来自 APP_VERSION）。"""
+    text = app.about_text("D:/tmp/history.json")
+    assert app.APP_DISPLAY_NAME in text
+    assert f"v{app.APP_VERSION}" in text
+    assert app.APP_AUTHOR in text
+    assert "AI" in text
+    assert app.APP_EXE_NAME in text
+    assert app.APP_STORAGE_ID in text
+
 
