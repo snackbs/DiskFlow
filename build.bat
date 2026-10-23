@@ -16,6 +16,7 @@ if errorlevel 1 (
 
 for /f "usebackq delims=" %%i in (`python -c "import main as m; print(m.APP_EXE_NAME)"`) do set "APP_EXE_NAME=%%i"
 for /f "usebackq delims=" %%i in (`python -c "import main as m; print(m.APP_DISPLAY_NAME)"`) do set "APP_DISPLAY_NAME=%%i"
+for /f "usebackq delims=" %%i in (`python -c "import main as m; print(m.locate_app_icon() or '')"`) do set "APP_ICON_PATH=%%i"
 
 if "%APP_EXE_NAME%"=="" (
   echo [错误] 无法从 main.py 读取 APP_EXE_NAME。
@@ -29,6 +30,12 @@ if errorlevel 1 (
   python -m pip install pyinstaller
 )
 
+if "%APP_ICON_PATH%"=="" (
+  echo [错误] 找不到应用图标 diskflow-icons\diskflow.ico。
+  exit /b 1
+)
+echo 应用图标：%APP_ICON_PATH%
+
 if not exist "smartctl.exe" (
   echo [警告] 当前目录没有 smartctl.exe。
   echo        打包会失败或产出一个读不到磁盘的 exe。
@@ -41,7 +48,7 @@ if not exist "smartctl.exe" (
   pause
 )
 
-python -m PyInstaller --onefile --noconsole --uac-admin --name "%APP_EXE_NAME%" --add-binary "smartctl.exe;." main.py
+python -m PyInstaller --onefile --noconsole --uac-admin --name "%APP_EXE_NAME%" --icon "%APP_ICON_PATH%" --add-binary "smartctl.exe;." --add-data "%APP_ICON_PATH%;." main.py
 if errorlevel 1 (
   echo [错误] PyInstaller 失败。
   exit /b 1

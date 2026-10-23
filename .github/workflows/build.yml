@@ -87,10 +87,15 @@ jobs:
           $artifact = (python -c "import main as m; print(m.APP_ARTIFACT_NAME)").Trim()
           $display  = (python -c "import main as m; print(m.APP_DISPLAY_NAME)").Trim()
           $version  = (python -c "import main as m; print(m.APP_VERSION)").Trim()
+          $icon     = (python -c "import main as m; print(m.locate_app_icon() or '')").Trim()
           Write-Host "APP_DISPLAY_NAME = $display"
           Write-Host "APP_EXE_NAME     = $exeName"
           Write-Host "APP_ARTIFACT_NAME= $artifact"
           Write-Host "APP_VERSION      = $version"
+          Write-Host "APP_ICON_PATH    = $icon"
+          if (-not $icon -or -not (Test-Path $icon)) {
+            throw '找不到应用图标 diskflow.ico（应从仓库 diskflow-icons/ 下取到）'
+          }
           if ($exeName -notmatch '^[A-Za-z0-9]{1,20}$') {
             throw "APP_EXE_NAME '$exeName' 必须是 1-20 位纯字母数字（PyInstaller --name / exe 文件名要求）"
           }
@@ -111,6 +116,7 @@ jobs:
           "app_version=$version"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "APP_EXE_NAME=$exeName"   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "APP_VERSION=$version"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_ICON_PATH=$icon"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install PyInstaller
         run: |
@@ -203,10 +209,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # 名称来自 main.py 的 APP_EXE_NAME（上一步写入 GITHUB_ENV），不写死
+          # 名称与图标来自 main.py 的常量（上一步写入 GITHUB_ENV），不写死
+          #  --icon         ：exe 自身的图标（资源管理器 / 任务栏 / 快捷方式）
+          #  --add-binary   ：smartctl.exe 打进包（真二进制）
+#  --add-data     ：diskflow.ico 作为资源文件打进包，
+          #                   运行时由 sys._MEIPASS 解析，窗口图标才不是空白
           python -m PyInstaller --onefile --noconsole --uac-admin `
             --name "$env:APP_EXE_NAME" `
+            --icon "$env:APP_ICON_PATH" `
             --add-binary "smartctl.exe;." `
+            --add-data "$env:APP_ICON_PATH;." `
             main.py
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller 退出码 $LASTEXITCODE" }
 

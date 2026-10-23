@@ -159,12 +159,18 @@ REM 1) 取 smartctl.exe 放到项目根目录（见下节）
 REM 2) 打包
 python -m pip install pyinstaller
 python -m PyInstaller --onefile --noconsole --uac-admin ^
-  --name DiskFlow --add-binary "smartctl.exe;." main.py
+  --name DiskFlow --icon diskflow-icons\diskflow.ico ^
+  --add-binary "smartctl.exe;." ^
+  --add-data "diskflow-icons\diskflow.ico;." main.py
 ```
 
 也可以直接跑仓库里的 `build.bat`。产物在 `dist\DiskFlow.exe`。
 
-`app.ico` 可选：把图标放到项目根目录，并在命令里加 `--icon app.ico`。
+图标用仓库里的 `diskflow-icons/diskflow.ico`（16~256 共七种尺寸）：`--icon` 决定 exe 在资源管理器、
+任务栏、快捷方式上显示的图标；`--add-data` 把同一个 .ico 打进单文件包，程序运行时的窗口图标
+也从包里取（先找 `sys._MEIPASS`，再找 exe 同目录与源码目录）。两个参数都要有：只给 `--icon` 时
+exe 有图标但窗口没有，只给 `--add-data` 时窗口有图标但 exe 没有。图标缺失只会退回系统默认图标，
+不会让程序起不来。`build.bat` 与 CI 都从 `main.py` 的 `locate_app_icon()` 取路径，不写死。
 
 ### smartctl.exe 从哪来
 
@@ -210,9 +216,9 @@ python -m pytest -v
 双列两列等宽、卡片增量自带 GB 单位、协议徽章紧跟型号），
 以及双列中缝与 KPI 第 2/3 张卡分界的像素级对齐、卡片区「放得下就贴顶且不能滚 / 放不下仍可滚」
 两条不变量，以及历史文件 v2 的盘档案结构、折叠规则（首条末条永久保留）、连跑 90 次后的
-体积上限、v1 静默迁移与升级前备份、v2 结构损坏的备份重建，以及盘符映射层（描述符/几何信息/卷盘号三处二进制解析、型号与容量容差、同型号不同容量区分、并列时拒绝猜测）。
+体积上限、v1 静默迁移与升级前备份、v2 结构损坏的备份重建，以及盘符映射层（描述符/几何信息/卷盘号三处二进制解析、型号与容量容差、同型号不同容量区分、并列时拒绝猜测），还有应用图标（.ico 多尺寸、打包优先取包内副本、缺图标只降级不抛异常）。
 
-当前共 111 条用例，用 `python -m pytest -v` 一次跑完。
+当前共 117 条用例，用 `python -m pytest -v` 一次跑完。
 
 GUI 用例在没有图形环境的机器上会以明确的 `skip` 上报原因，不会静默通过。CI 的两个
 Windows job 会真实跑完整套用例，任何一个失败都不会进入打包步骤。
@@ -253,6 +259,7 @@ Windows job 会真实跑完整套用例，任何一个失败都不会进入打�
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把它贴成 Release 正文
+├─ diskflow-icons/             # 应用图标：.ico（exe / 窗口图标）+ 各尺寸 PNG + SVG 源
 ├─ build.bat                   # 本地 Windows 手动打包脚本
 └─ .github/workflows/build.yml # CI：test → build → artifact → Release
 ```

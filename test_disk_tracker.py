@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import sys
+import tkinter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2498,3 +2499,80 @@ def test_cards_hide_drive_badge_when_letter_unknown(tk_root, tmp_path):
     assert not any(text.endswith(":") and len(text) <= 3 for text in texts), \
         f"不该出现空盘符徽章，实际={texts}"
     window.root.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 14. 应用图标（v0.6.0）
+# ---------------------------------------------------------------------------
+def test_app_icon_exists_and_is_a_multi_size_ico():
+    """仓库里必须有可用的 .ico：exe 图标与窗口图标都靠它，缺了构建就该失败。"""
+    path = app.locate_app_icon()
+    assert path is not None, "找不到 diskflow.ico（应从 diskflow-icons/ 下取到）"
+    icon = Path(path)
+    assert icon.is_file()
+    assert icon.name == app.APP_ICON_FILENAME
+    raw = icon.read_bytes()
+    assert raw[:4] == b"\x00\x00\x01\x00", ".ico 文件头不对"
+    count = int.from_bytes(raw[4:6], "little")
+    assert count >= 3, f"图标里至少要有多个尺寸，实际 {count} 个"
+
+    sizes = set()
+    for index in range(count):
+        offset = 6 + index * 16
+        width = raw[offset] or 256
+        height = raw[offset + 1] or 256
+        assert width == height, "图标条目必须是正方形"
+        sizes.add(width)
+    assert {16, 32, 256} <= sizes, f"缺少常用尺寸，实际 {sorted(sizes)}"
+
+
+def test_locate_app_icon_prefers_the_bundled_copy(tmp_path, monkeypatch):
+    """打包后图标在 sys._MEIPASS 里，必须优先用它（而不是源码目录那份）。"""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    copied = bundle / app.APP_ICON_FILENAME
+    copied.write_bytes(Path(app.locate_app_icon()).read_bytes())
+    monkeypatch.setattr(app.sys, "_MEIPASS", str(bundle), raising=False)
+    assert app.locate_app_icon() == str(copied)
+
+
+def test_locate_app_icon_returns_none_instead_of_raising(monkeypatch):
+    """图标缺失只返回 None：界面照常启动，绝不能因为图标让程序起不来。"""
+    monkeypatch.setattr(app, "APP_ICON_FILENAME", "no-such-icon.ico", raising=False)
+    assert app.locate_app_icon() is None
+    assert app.locate_app_icon([str(Path("missing") / "x.ico")]) is None
+
+
+def test_apply_window_icon_sets_title_bar_icon(tk_root):
+    """窗口图标要真的设上：Windows 下走 iconbitmap(.ico)，任务栏与标题栏同时生效。"""
+    window = tkinter.Toplevel(tk_root)
+    try:
+        used = app.apply_window_icon(window)
+        assert used is not None
+        assert Path(used).name == app.APP_ICON_FILENAME
+        # 路径无效时静默降级，窗口必须还活着
+        assert app.apply_window_icon(window, str(Path("missing") / "nope.ico")) is None
+        assert window.winfo_exists() == 1
+    finally:
+        window.destroy()
+
+
+def test_build_workflow_passes_icon_to_pyinstaller():
+    """CI 打包必须带 --icon 并把 .ico 用 --add-binary 打进 onefile 包，否则 exe 会没图标。"""
+    workflow = (Path(__file__).resolve().parent / ".github" / "workflows" / "build.yml").read_text(
+        encoding="utf-8")
+    assert "--icon \"$env:APP_ICON_PATH\"" in workflow, "缺少 --icon"
+    assert "--add-data \"$env:APP_ICON_PATH;.\"" in workflow, "缺少图标的 --add-data"
+    assert "APP_ICON_PATH" in workflow
+    # 图标路径同样从 main.py 读，不在 workflow 里写死文件名
+    assert "locate_app_icon" in workflow
+    assert "--name \"$env:APP_EXE_NAME\"" in workflow, "名称仍必须是单一配置点"
+
+
+def test_build_bat_uses_the_same_single_source_of_names():
+    """本地 build.bat 与 CI 必须同源：名称与图标都从 main.py 读，不能各自写死。"""
+    script = (Path(__file__).resolve().parent / "build.bat").read_text(encoding="utf-8")
+    assert "locate_app_icon" in script
+    assert "--icon \"%APP_ICON_PATH%\"" in script
+    assert "--add-data \"%APP_ICON_PATH%;.\"" in script
+    assert "--name \"%APP_EXE_NAME%\"" in script

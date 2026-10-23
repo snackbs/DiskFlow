@@ -70,6 +70,8 @@ SATA_LIFE_RAW_PERCENT = (231, 202, 233, 169)   # 这些属性的 raw.value 通�
 # 177 Wear_Leveling_Count 的 raw 是磨损循环次数，只有归一化 value 才是剩余百分比
 HEALTH_NOT_AVAILABLE = "不适用"
 
+APP_ICON_FILENAME = "diskflow.ico"                  # 应用图标文件名（随 exe 打包）
+APP_ICON_DIRNAME = "diskflow-icons"                # 仓库里放图标的目录（源码运行时从这里找）
 SMARTCTL_EXE = "smartctl.exe"
 
 
@@ -648,6 +650,44 @@ def _default_run_command(args: Sequence[str], timeout: float = 25.0) -> tuple[in
     err = (proc.stderr or b"").decode("utf-8", "replace")
     return proc.returncode, out, err
 
+
+def locate_app_icon(extra_candidates: Iterable[str | None] = ()) -> str | None:
+    """查找应用图标 diskflow.ico。
+
+    顺序与 smartctl 保持一致：sys._MEIPASS（打包资源目录）-> exe 所在目录
+    -> 源码目录 -> 源码目录下的 diskflow-icons/。
+    找不到返回 None：界面照常启动，只是窗口图标退回系统默认，不报错。
+    """
+    candidates: list[str] = []
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(str(Path(meipass) / APP_ICON_FILENAME))
+
+    try:
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(str(exe_dir / APP_ICON_FILENAME))
+    except (OSError, ValueError):
+        pass
+
+    try:
+        source_dir = Path(__file__).resolve().parent
+        candidates.append(str(source_dir / APP_ICON_FILENAME))
+        candidates.append(str(source_dir / APP_ICON_DIRNAME / APP_ICON_FILENAME))
+    except (OSError, ValueError):
+        pass
+
+    for extra in extra_candidates:
+        if extra:
+            candidates.append(str(extra))
+
+    for candidate in candidates:
+        try:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        except OSError:
+            continue
+    return None
 
 class SmartctlProvider:
     """默认实现：真实调用 smartctl。所有 smartctl 调用只出现在这一层。"""
@@ -3518,15 +3558,43 @@ class DiskTrackerApp:
 # ---------------------------------------------------------------------------
 
 
+def apply_window_icon(window: Any, icon_path: str | None = None) -> str | None:
+    """给窗口设置应用图标，返回实际使用的 .ico 路径（没设上返回 None）。
+
+    Windows 下优先 iconbitmap（.ico 多尺寸，任务栏/标题栏/Alt+Tab 都正确）；
+    非 Windows 或 .ico 不可用时退回 iconphoto。失败一律静默：图标是锦上添花，
+    绝不能因为图标缺失或格式问题让主窗口起不来。
+    """
+    path = icon_path if icon_path else locate_app_icon()
+    if not path:
+        return None
+    try:
+        window.iconbitmap(default=path)
+        return path
+    except Exception:
+        pass
+    try:
+        import tkinter as tk
+
+        photo = tk.PhotoImage(file=path)
+        window.iconphoto(True, photo)
+        # 必须留住引用，否则 PhotoImage 被回收后图标会变空白
+        window._app_icon_photo = photo  # type: ignore[attr-defined]
+        return path
+    except Exception:
+        return None
+
+
 def create_app(provider: Any = None, store: HistoryStore | None = None,
                root: Any = None, settings: SettingsStore | None = None,
-               theme: str | None = None) -> DiskTrackerApp:
+               theme: str | None = None, icon_path: str | None = None) -> DiskTrackerApp:
     import tkinter as tk
 
     owns_root = root is None
     window = root if root is not None else tk.Tk()
     app = DiskTrackerApp(window, provider=provider, store=store, autostart=False,
                          settings=settings, theme=theme)
+    apply_window_icon(window, icon_path)
     if owns_root:
         app.owns_root = True
     return app
@@ -3536,6 +3604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import tkinter as tk
 
     root = tk.Tk()
+    apply_window_icon(root)
     store = HistoryStore()
     DiskTrackerApp(root, provider=SmartctlProvider(), store=store, autostart=True,
                    settings=SettingsStore(store.resolve_dir()))
