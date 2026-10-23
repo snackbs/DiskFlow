@@ -32,7 +32,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.4.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.5.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -187,6 +187,19 @@ def fmt_size_gb(value: float | None, digits: int = 2) -> str:
         return "—"
     if abs(value) >= 1024.0:
         return f"{value / 1024.0:,.{digits}f} TB ({value:,.{digits}f} GB)"
+    return f"{value:,.{digits}f} GB"
+
+
+def fmt_size_short(value: float | None, digits: int = 2) -> str:
+    """累计量紧凑显示：>= 1 TB 用 TB，否则用 GB。
+
+    表格把「累计读 / 累计写」合并成一列，双单位写法放不下，这里只给主单位；
+    精确 GB 值仍可在导出 TSV、诊断信息与区块提示里看到。
+    """
+    if value is None:
+        return "—"
+    if abs(value) >= 1024.0:
+        return f"{value / 1024.0:,.{digits}f} TB"
     return f"{value:,.{digits}f} GB"
 
 
@@ -1237,11 +1250,12 @@ THEMES: dict[str, dict[str, Any]] = {
         "head_bg": None, "head_fg": "#1A1A1A", "head_bold": False,
         "zebra": None, "alert_bg": None, "alert_fg": "#C00000", "muted_fg": "#808080",
         "select_bg": "#0078D7", "select_fg": "#FFFFFF",
-        "rowheight": 24, "padx": 10, "pady": 8, "kpi": None, "dark_bar": False,
+        "rowheight": 38, "padx": 10, "pady": 8, "kpi": None, "dark_bar": False,
         "title_fg": "#000000", "title_pt": 11,
         "hint_fg": "#8A6D00", "note_fg": "#606060", "summary_fg": "#1A1A1A",
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#606060", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
     },
     THEME_LEDGER: {
         "key": THEME_LEDGER, "label": "数据台账", "base": "clam",
@@ -1250,11 +1264,12 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#F7F9FB", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
         "muted_fg": "#8A8A8A",
         "select_bg": "#DCE9F7", "select_fg": "#1F2933",
-        "rowheight": 26, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": False,
+        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": False,
         "title_fg": "#2B3440", "title_pt": 12,
         "hint_fg": "#8A6D00", "note_fg": "#7B8794", "summary_fg": "#1F2933",
         "card_bg": "#F4F7FA", "card_border": None, "card_val": "#1F2933",
         "card_lbl": "#7B8794", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
     },
     THEME_DARK: {
         "key": THEME_DARK, "label": "深色专业", "base": "clam",
@@ -1263,11 +1278,12 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#272D34", "alert_bg": "#3A2427", "alert_fg": "#FF8A7A",
         "muted_fg": "#6B7580",
         "select_bg": "#35526B", "select_fg": "#FFFFFF",
-        "rowheight": 26, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": True,
+        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": True,
         "title_fg": "#E6EDF3", "title_pt": 12,
         "hint_fg": "#E0C070", "note_fg": "#8B97A3", "summary_fg": "#D6DEE7",
         "card_bg": "#262C33", "card_border": None, "card_val": "#7FC8A9",
         "card_lbl": "#8B97A3", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#7C8A99", "scroll_thumb_hover": "#9AA9B8",
     },
     THEME_GAUGE: {
         "key": THEME_GAUGE, "label": "清爽仪表", "base": "clam",
@@ -1276,11 +1292,12 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#FAFCFE", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
         "muted_fg": "#93A1AE",
         "select_bg": "#DCE9F7", "select_fg": "#1B6FB8",
-        "rowheight": 28, "padx": 16, "pady": 14, "kpi": "bordered", "dark_bar": False,
+        "rowheight": 44, "padx": 16, "pady": 14, "kpi": "bordered", "dark_bar": False,
         "title_fg": "#1B2A38", "title_pt": 13,
         "hint_fg": "#8A6D00", "note_fg": "#7C8B99", "summary_fg": "#22303C",
         "card_bg": "#FFFFFF", "card_border": "#DCE4EC", "card_val": "#1B6FB8",
         "card_lbl": "#7C8B99", "num_family": "Consolas", "card_pt": 15,
+        "scroll_thumb": "#C8D3DE", "scroll_thumb_hover": "#9DB0C4",
     },
     THEME_MINIMAL: {
         "key": THEME_MINIMAL, "label": "极简留白", "base": "clam",
@@ -1288,11 +1305,12 @@ THEMES: dict[str, dict[str, Any]] = {
         "head_bg": "#FFFFFF", "head_fg": "#8A8A8A", "head_bold": False,
         "zebra": None, "alert_bg": None, "alert_fg": "#D0342C", "muted_fg": "#A0A0A0",
         "select_bg": "#EFEFEF", "select_fg": "#1A1A1A",
-        "rowheight": 30, "padx": 22, "pady": 18, "kpi": None, "dark_bar": False,
+        "rowheight": 46, "padx": 22, "pady": 18, "kpi": None, "dark_bar": False,
         "title_fg": "#1A1A1A", "title_pt": 12,
         "hint_fg": "#8A6D00", "note_fg": "#A0A0A0", "summary_fg": "#2A2A2A",
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#A0A0A0", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#D8D8D8", "scroll_thumb_hover": "#B8B8B8",
     },
 }
 
@@ -1333,11 +1351,47 @@ def resolve_theme(key: Any, dark_mode: bool | None = None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 数据展示视图（三种）：表格 / 卡片 / 双列
+#   视图偏好记在 settings.json 的 "view" 键里，绝不写进 history.json。
+# ---------------------------------------------------------------------------
+
+VIEW_TABLE = "table"
+VIEW_CARDS = "cards"
+VIEW_GRID = "grid"
+VIEW_ORDER: tuple[str, ...] = (VIEW_TABLE, VIEW_CARDS, VIEW_GRID)
+VIEW_LABELS = {VIEW_TABLE: "表格", VIEW_CARDS: "卡片", VIEW_GRID: "双列"}
+DEFAULT_VIEW = VIEW_TABLE
+
+# 卡片视图里每块盘展示的指标格：(标题, DiskRow 字段名)
+CARD_METRICS: tuple[tuple[str, str], ...] = (
+    ("累计读取", "read_gb"),
+    ("累计写入", "write_gb"),
+    ("距上次", "interval_text"),
+    ("本次读增", "read_delta_gb"),
+    ("本次写增", "write_delta_gb"),
+    ("历史读增", "hist_read_delta_gb"),
+    ("历史写增", "hist_write_delta_gb"),
+    ("0E", "media_text"),
+    ("健康度", "health_text"),
+)
+# 指标格每行几列：单列卡片宽，放 5 列；双列时每张卡只有一半宽度，放 3 列
+CARD_METRIC_COLUMNS = 5
+CARD_METRIC_COLUMNS_GRID = 3
+
+
+def normalize_view_key(key: Any) -> str:
+    """把任意输入收敛成合法视图键，非法值回落表格视图。"""
+    if isinstance(key, str) and key in VIEW_ORDER:
+        return key
+    return DEFAULT_VIEW
+
+
+# ---------------------------------------------------------------------------
 # 界面偏好存储层（独立 settings.json，不碰 history.json 的 schema）
 # ---------------------------------------------------------------------------
 
 SETTINGS_FILENAME = "settings.json"
-DEFAULT_SETTINGS: dict[str, Any] = {"theme": THEME_SYSTEM}
+DEFAULT_SETTINGS: dict[str, Any] = {"theme": THEME_SYSTEM, "view": DEFAULT_VIEW}
 
 
 class SettingsStore:
@@ -1367,6 +1421,9 @@ class SettingsStore:
         theme = payload.get("theme")
         if isinstance(theme, str):
             data["theme"] = normalize_theme_key(theme)
+        view = payload.get("view")
+        if isinstance(view, str):
+            data["view"] = normalize_view_key(view)
         return data
 
     def save(self, data: dict[str, Any]) -> Path:
@@ -1375,6 +1432,7 @@ class SettingsStore:
             if isinstance(key, str):
                 merged[key] = value
         merged["theme"] = normalize_theme_key(merged.get("theme"))
+        merged["view"] = normalize_view_key(merged.get("view"))
         self.directory.mkdir(parents=True, exist_ok=True)
         text = json.dumps(merged, ensure_ascii=False, indent=2)
         tmp = self.path.with_name(self.path.name + ".tmp")
@@ -1387,25 +1445,203 @@ class SettingsStore:
 # GUI 层（不含任何 smartctl 调用）
 # ---------------------------------------------------------------------------
 
-# 列宽按「实测文字像素宽度 + 单元格内边距」定，合计约 1450px：
-# 默认窗口按屏幕大小开到足够宽，13 列在常见 1920 宽屏上不需要横向滚动。
+# 细圆角滚动条：ttk.Scrollbar 的滑块由主题元素绘制，永远是直角矩形且带上下滑轨，
+# 想做成"圆角细条"只能自绘。这里用 tk.Canvas 画，并实现 Treeview/Canvas 需要的
+# set()/get() 协议，因此可以直接挂在 yscrollcommand / xscrollcommand 上。
+try:                                   # 无 Tk 的环境也能 import 本模块（测试可只跑逻辑层）
+    import tkinter as _tk_for_scrollbar
+except Exception:                       # pragma: no cover - 依赖系统 Tk
+    _tk_for_scrollbar = None
+
+_SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
+
+
+class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
+    """极细的圆角滚动条。内容全部可见时自动隐藏，不占视觉。"""
+
+    MIN_THUMB = 28          # 滑块最短像素，太短会点不中
+    INSET = 2               # 轨道左右留白，让条看起来更细
+
+    def __init__(self, master: Any, orient: str = "vertical", command: Any = None, *,
+                 track: str = "#FFFFFF", thumb: str = "#C6CDD6",
+                 thumb_hover: str = "#9AA6B2", thickness: int = 10,
+                 radius: int = 3, **kwargs: Any) -> None:
+        super().__init__(master, highlightthickness=0, bd=0, bg=track,
+                         width=thickness if orient == "vertical" else 1,
+                         height=thickness if orient == "horizontal" else 1, **kwargs)
+        self.orient = orient
+        self.command = command
+        self.track_color = track
+        self.thumb_color = thumb
+        self.thumb_hover_color = thumb_hover
+        self.thickness = thickness
+        self.radius = radius
+        self.first = 0.0
+        self.last = 1.0
+        self._hover = False
+        self._drag_origin: float | None = None
+        self._drag_first = 0.0
+        self._alive = True
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Configure>", lambda _event: self._redraw())
+        self.bind("<Destroy>", self._on_destroy)
+
+    # ---- 滚动条协议 ----
+    def set(self, first: Any, last: Any) -> None:
+        """Treeview / Canvas 通过这个回调告诉我们可见区间。"""
+        try:
+            self.first = max(0.0, min(1.0, float(first)))
+            self.last = max(0.0, min(1.0, float(last)))
+        except (TypeError, ValueError):
+            self.first, self.last = 0.0, 1.0
+        self._redraw()
+
+    def get(self) -> tuple[float, float]:
+        return (self.first, self.last)
+
+    def recolor(self, track: str, thumb: str, thumb_hover: str) -> None:
+        """主题切换时重配颜色（不重建控件）。"""
+        self.track_color = track
+        self.thumb_color = thumb
+        self.thumb_hover_color = thumb_hover
+        try:
+            self.configure(bg=track)
+        except Exception:
+            pass
+        self._redraw()
+
+    # ---- 绘制 ----
+    @property
+    def visible(self) -> bool:
+        return (self.last - self.first) < 0.999
+
+    def _length(self) -> int:
+        try:
+            value = self.winfo_height() if self.orient == "vertical" else self.winfo_width()
+        except Exception:
+            return 0
+        return int(value or 0)
+
+    def _thumb_span(self, length: int | None = None) -> int:
+        total = self._length() if length is None else length
+        span = int((self.last - self.first) * total)
+        return max(span, self.MIN_THUMB)
+
+    def _thumb_start(self, length: int | None = None) -> int:
+        total = self._length() if length is None else length
+        span = self._thumb_span(total)
+        start = int(round(self.first * total))
+        return max(self.INSET, min(start, max(total - span - self.INSET, self.INSET)))
+
+    def _redraw(self) -> None:
+        if not self._alive:
+            return
+        try:
+            self.delete("thumb")
+        except Exception:
+            return
+        if not self.visible:
+            return
+        length = self._length()
+        if length <= self.thickness + 2 * self.INSET:
+            return
+        span = self._thumb_span(length)
+        start = self._thumb_start(length)
+        end = min(start + span, length - self.INSET)
+        start = max(self.INSET, end - span)
+        color = self.thumb_hover_color if self._hover else self.thumb_color
+        low, high = self.INSET, max(self.thickness - self.INSET, self.INSET + 2)
+        radius = max(1, min(self.radius, (high - low) // 2))
+        if self.orient == "vertical":
+            self.create_oval(low, start, high, start + 2 * radius, fill=color, outline="",
+                             tags="thumb")
+            self.create_oval(low, end - 2 * radius, high, end, fill=color, outline="",
+                             tags="thumb")
+            self.create_rectangle(low, start + radius, high, end - radius, fill=color,
+                                  outline="", tags="thumb")
+        else:
+            self.create_oval(start, low, start + 2 * radius, high, fill=color, outline="",
+                             tags="thumb")
+            self.create_oval(end - 2 * radius, low, end, high, fill=color, outline="",
+                             tags="thumb")
+            self.create_rectangle(start + radius, low, end - radius, high, fill=color,
+                                  outline="", tags="thumb")
+
+    # ---- 交互 ----
+    def _on_press(self, event: Any) -> None:
+        length = self._length()
+        if length <= 0 or self.command is None:
+            return
+        position = event.y if self.orient == "vertical" else event.x
+        span = self._thumb_span(length)
+        start = self._thumb_start(length)
+        if start <= position <= start + span:
+            self._drag_origin = position
+            self._drag_first = self.first
+            return
+        # 点空白处翻一页（翻 90% 的可视高度，和系统滚动条手感一致）
+        page = 0.9 * max(self.last - self.first, 0.1)
+        target = self.first + (page if position > start + span else -page)
+        self.command("moveto", max(0.0, min(1.0 - (self.last - self.first), target)))
+
+    def _on_drag(self, event: Any) -> None:
+        if self._drag_origin is None or self.command is None:
+            return
+        length = self._length()
+        if length <= 0:
+            return
+        position = event.y if self.orient == "vertical" else event.x
+        delta = (position - self._drag_origin) / length
+        limit = max(0.0, 1.0 - (self.last - self.first))
+        self.command("moveto", max(0.0, min(limit, self._drag_first + delta)))
+
+    def _on_release(self, _event: Any) -> None:
+        self._drag_origin = None
+
+    def _on_enter(self, _event: Any) -> None:
+        self._hover = True
+        self._redraw()
+
+    def _on_leave(self, _event: Any) -> None:
+        self._hover = False
+        self._drag_origin = None
+        self._redraw()
+
+    def _on_destroy(self, _event: Any) -> None:
+        self._alive = False
+
+
+# 工具 → 排序 子菜单（卡片视图没有表头，排序必须也能从这里触发）
+SORT_MENU_ITEMS: tuple[tuple[str, str], ...] = (
+    ("model", "按磁盘型号"),
+    ("rw", "按累计读取"),
+    ("interval", "按距上次时间"),
+    ("cur", "按本次读增"),
+    ("hist", "按历史读增"),
+    ("media", "按 0E 状态"),
+    ("status", "按状态"),
+)
+
+# 表格视图固定 8 列：把成对的读/写指标合进同一格（"左  /  右"），
+# 型号与序列号也合并到首列，这样默认窗口下一屏放得下，不需要横向拖动。
 COLUMN_SPECS: tuple[tuple[str, str, int, str], ...] = (
-    ("model", "磁盘型号", 185, "text"),
-    ("serial", "序列号(截断)", 126, "text"),
-    ("protocol", "协议", 52, "text"),
-    ("read_gb", "累计读取(GB/TB)", 152, "num"),
-    ("write_gb", "累计写入(GB/TB)", 152, "num"),
-    ("interval", "距上次", 132, "text"),
-    ("read_delta", "本次读增(GB)", 95, "num"),
-    ("write_delta", "本次写增(GB)", 95, "num"),
-    ("hist_read_delta", "历史读增(GB)", 95, "num"),
-    ("hist_write_delta", "历史写增(GB)", 95, "num"),
-    ("health", "健康度", 58, "text"),
-    ("media", "0E", 88, "text"),
-    ("status", "状态", 190, "text"),
+    ("model", "磁盘 / 序列号", 250, "text"),
+    ("protocol", "协议", 62, "text"),
+    ("rw", "累计读 / 写", 120, "num"),
+    ("interval", "距上次", 152, "text"),
+    ("cur", "本次读增 / 写增", 108, "num"),
+    ("hist", "历史读增 / 写增", 108, "num"),
+    ("media", "0E / 健康", 104, "text"),
+    ("status", "状态", 200, "text"),
 )
 # 表格自然宽度（列宽合计），用于按屏幕挑选默认窗口大小
 TABLE_NATURAL_WIDTH = sum(spec[2] for spec in COLUMN_SPECS)
+
+
 
 ROW_ALERT_TAG = "alert_row"
 ROW_MUTED_TAG = "muted_row"
@@ -1463,39 +1699,55 @@ def _truncate(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+# 合并列在同一格里上下两行显示：上面的值对应表头「/」左边，下面的对应右边。
+PAIR_SEPARATOR = "\n"
+# 导出 TSV 时换行会破坏表格结构，所以剪贴板里用斜杠分隔
+TSV_PAIR_SEPARATOR = " / "
+
+
+def _pair(left: str, right: str) -> str:
+    """把一对读/写（或 0E/健康）值上下叠在同一格：第一行左值，第二行右值。"""
+    return f"{left}{PAIR_SEPARATOR}{right}"
+
+
+def _short_serial(serial: str) -> str:
+    """序列号只做清洗，不再截断——首列改成上下两行后放得下完整序列号。"""
+    return (serial or "").strip() or "—"
+
+
 def _row_values(row: DiskRow) -> tuple[str, ...]:
-    serial = row.serial if len(row.serial) <= 16 else row.serial[:13] + "..."
+    """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。"""
     return (
-        row.model,
-        serial,
+        f"{row.model}\n{_short_serial(row.serial)}",
         row.protocol,
-        fmt_size_gb(row.read_gb),
-        fmt_size_gb(row.write_gb),
+        _pair(fmt_size_short(row.read_gb), fmt_size_short(row.write_gb)),
         row.interval_text,
-        fmt_delta(row.read_delta_gb),
-        fmt_delta(row.write_delta_gb),
-        fmt_delta(row.hist_read_delta_gb),
-        fmt_delta(row.hist_write_delta_gb),
-        row.health_text,
-        row.media_text,
+        _pair(fmt_delta(row.read_delta_gb), fmt_delta(row.write_delta_gb)),
+        _pair(fmt_delta(row.hist_read_delta_gb), fmt_delta(row.hist_write_delta_gb)),
+        _pair(row.media_text, row.health_text),
         _truncate(row.status_text),
     )
 
 
 def _row_sort_value(row: DiskRow, column: str) -> Any:
+    # 8 列视图的排序键。合并列按「左值优先」排序（读增优先于写增），
+    # 快捷列名（serial/read_delta/…）保留下来，旧调用点与菜单排序仍然可用。
     mapping = {
         "model": row.model,
         "serial": row.serial,
         "protocol": row.protocol,
+        "rw": row.read_gb,
         "read_gb": row.read_gb,
         "write_gb": row.write_gb,
         "interval": row.interval_text,
+        "cur": row.read_delta_gb,
         "read_delta": row.read_delta_gb,
         "write_delta": row.write_delta_gb,
+        "hist": row.hist_read_delta_gb,
         "hist_read_delta": row.hist_read_delta_gb,
         "hist_write_delta": row.hist_write_delta_gb,
-        "health": row.health_text,
         "media": row.media_text,
+        "health": row.health_text,
         "status": row.status_text,
     }
     value = mapping.get(column)
@@ -1536,10 +1788,13 @@ class DiskTrackerApp:
 
         saved = self._load_settings()
         self.theme_key = normalize_theme_key(theme if theme is not None else saved.get("theme"))
+        self.view_key = normalize_view_key(saved.get("view"))
+        self._card_rows: list[Any] = []
 
         self._build_menubar()
         self._build_widgets()
         self.apply_theme(self.theme_key, persist=False)
+        self.set_view(self.view_key, persist=False)
         if autostart:
             self.refresh_async()
 
@@ -1573,7 +1828,15 @@ class DiskTrackerApp:
         tools_menu.add_command(label="复制表格到剪贴板(&C)", command=self.copy_table)
         tools_menu.add_command(label="打开数据目录(&D)", command=self.open_data_dir)
         tools_menu.add_separator()
+        # 卡片视图没有表头，排序必须也能从菜单触发
+        sort_menu = tk.Menu(tools_menu, tearoff=False)
+        for column, title in SORT_MENU_ITEMS:
+            sort_menu.add_command(label=title, command=lambda c=column: self.sort_by(c))
+        sort_menu.add_separator()
+        sort_menu.add_command(label="恢复默认顺序(&R)", command=self.reset_sort)
+        tools_menu.add_cascade(label="排序(&O)", menu=sort_menu)
         tools_menu.add_command(label="重置排序(&S)", command=self.reset_sort)
+        self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
         disk_menu.add_command(label="重新扫描并记录(&R)", command=self.refresh_async)
@@ -1618,9 +1881,23 @@ class DiskTrackerApp:
         outer.pack(fill="both", expand=True)
         self.outer = outer
 
-        # 左上角程序名 + 版本号：文字来自 window_title()，与窗口标题同源
-        self.title_label = ttk.Label(outer, text=window_title(), style="Title.TLabel", anchor="w")
-        self.title_label.pack(fill="x")
+        # 顶栏：左侧程序名 + 版本号（文字来自 window_title()，与窗口标题同源），
+        # 右侧数据视图分段切换（表格 / 卡片 / 双列），切换不重建窗口。
+        head = ttk.Frame(outer, style="App.TFrame")
+        head.pack(fill="x")
+        self.title_label = ttk.Label(head, text=window_title(), style="Title.TLabel", anchor="w")
+        self.title_label.pack(side="left")
+
+        self._view_var = self.tk.StringVar(master=self.root, value=self.view_key)
+        self.seg_frame = ttk.Frame(head, style="App.TFrame")
+        self.seg_frame.pack(side="right")
+        self.seg_buttons: dict[str, Any] = {}
+        for index, key in enumerate(VIEW_ORDER):
+            button = ttk.Radiobutton(self.seg_frame, text=VIEW_LABELS[key], value=key,
+                                     variable=self._view_var, style="Seg.Toolbutton",
+                                     command=lambda k=key: self.set_view(k))
+            button.pack(side="left", padx=(0 if index == 0 else 1, 0))
+            self.seg_buttons[key] = button
 
         self.hint_parts: list[str] = []
         self.hint_label = ttk.Label(outer, text="", style="Hint.TLabel", anchor="w")
@@ -1651,7 +1928,13 @@ class DiskTrackerApp:
             self.kpi_values[key] = value
         self.kpi_visible = False
 
-        table_frame = ttk.Frame(outer, style="App.TFrame")
+        # 数据区：三种视图叠在同一个容器里，按需 pack/pack_forget（控件只建一次）。
+        # 注意这里先不 pack —— pack 按调用顺序分配空间，expand 的数据区必须先让
+        # 底部条与注释行占好位置，最后再把它塞进剩余空间。
+        body = ttk.Frame(outer, style="App.TFrame")
+        self.body = body
+
+        table_frame = ttk.Frame(body, style="App.TFrame")
         table_frame.pack(fill="both", expand=True)
         self.table_frame = table_frame
 
@@ -1660,17 +1943,47 @@ class DiskTrackerApp:
         for key, title, width, _kind in COLUMN_SPECS:
             self.tree.heading(key, text=title, command=lambda c=key: self.sort_by(c))
             self.tree.column(key, width=width, minwidth=60, anchor="w", stretch=(key == "status"))
-        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        # 细圆角滚动条（自绘，ttk.Scrollbar 做不出圆角），竖向常显、横向按需
+        self.yscroll = SlimScrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.xscroll = SlimScrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=self.yscroll.set, xscrollcommand=self.xscroll.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        xscroll.grid(row=1, column=0, sticky="ew")
+        self.yscroll.grid(row=0, column=1, sticky="ns")
+        self.xscroll.grid(row=1, column=0, sticky="ew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
+        # 卡片视图（单列 / 双列共用同一个 Canvas 容器）
+        cards_frame = ttk.Frame(body, style="App.TFrame")
+        self.cards_frame = cards_frame
+        self.cards_canvas = self.tk.Canvas(cards_frame, highlightthickness=0, bd=0,
+                                           bg=self.theme["win_bg"])
+        self.cards_scroll = SlimScrollbar(cards_frame, orient="vertical",
+                                          command=self.cards_canvas.yview)
+        self.cards_canvas.configure(yscrollcommand=self.cards_scroll.set)
+        self.cards_canvas.grid(row=0, column=0, sticky="nsew")
+        self.cards_scroll.grid(row=0, column=1, sticky="ns")
+        cards_frame.rowconfigure(0, weight=1)
+        cards_frame.columnconfigure(0, weight=1)
+        self.cards_inner = self.tk.Frame(self.cards_canvas, bg=self.theme["win_bg"])
+        self._cards_window = self.cards_canvas.create_window((0, 0), window=self.cards_inner,
+                                                             anchor="nw")
+        self.cards_inner.bind("<Configure>", self._sync_cards_scrollregion)
+        self.cards_canvas.bind("<Configure>", self._resize_cards)
+        # 鼠标滚轮在卡片区也能滚（Windows 下 delta 是 120 的倍数）
+        for widget in (self.cards_canvas, self.cards_inner):
+            widget.bind("<MouseWheel>", self._on_cards_wheel)
+
+        # 底部条与注释行先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
+        # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉
+        note = ttk.Label(outer, text=f"容量换算：{BYTES_PER_GIB_TEXT}；"
+                                     f"历史文件：{self.store.path}",
+                         style="Note.TLabel", anchor="w")
+        note.pack(side="bottom", fill="x", pady=(4, 0))
+        self.note_label = note
+
         bottom = ttk.Frame(outer, style="App.TFrame")
-        bottom.pack(fill="x", pady=(8, 0))
+        bottom.pack(side="bottom", fill="x", pady=(8, 0))
         self.summary_label = ttk.Label(bottom, text="尚无记录", style="Summary.TLabel", anchor="w")
         self.summary_label.pack(side="left")
         self.alert_label = ttk.Label(bottom, text="", style="Alert.TLabel", anchor="w")
@@ -1684,10 +1997,8 @@ class DiskTrackerApp:
         self.about_button = ttk.Button(bottom, text="关于", command=self.show_about)
         self.about_button.pack(side="right", padx=(0, 8))
 
-        self.note_label = ttk.Label(outer, text=f"容量换算：{BYTES_PER_GIB_TEXT}；"
-                                                f"历史文件：{self.store.path}",
-                                    style="Note.TLabel", anchor="w")
-        self.note_label.pack(fill="x", pady=(4, 0))
+        # 底部条与注释行已占位，数据区吃剩下的高度
+        self.body.pack(fill="both", expand=True)
 
         self._refresh_admin_label()
 
@@ -1761,11 +2072,32 @@ class DiskTrackerApp:
                   background=[("selected", theme["select_bg"])],
                   foreground=[("selected", theme["select_fg"])])
 
+        # 顶栏视图分段切换按钮：选中态用表头配色，形成"分段控件"观感（零额外依赖）
+        segment_bg = theme["card_bg"] if theme["kpi"] else theme["win_bg"]
+        style.configure("Seg.Toolbutton", background=segment_bg, foreground=theme["tree_fg"],
+                        font=(family, size), padding=(11, 4), borderwidth=1,
+                        relief="solid", anchor="center")
+        style.map("Seg.Toolbutton",
+                  background=[("selected", theme["head_bg"] or theme["select_bg"]),
+                              ("active", theme["select_bg"])],
+                  foreground=[("selected", theme["head_fg"]),
+                              ("active", theme["select_fg"])],
+                  bordercolor=[("selected", theme["head_bg"] or theme["select_bg"])])
+
         self.outer.configure(padding=(padx, pady, padx, pady))
         try:
             self.root.configure(bg=theme["win_bg"])
         except Exception:
             pass
+
+        # 细滚动条跟着主题换色（不重建控件）
+        for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
+                    getattr(self, "cards_scroll", None)):
+            if bar is not None:
+                bar.recolor(theme["win_bg"], theme["scroll_thumb"], theme["scroll_thumb_hover"])
+        if hasattr(self, "cards_canvas"):
+            self.cards_canvas.configure(bg=theme["win_bg"])
+            self.cards_inner.configure(bg=theme["win_bg"])
 
         zebra_bg = theme["zebra"] or theme["tree_bg"]
         self.tree.tag_configure(ROW_ALERT_TAG,
@@ -1780,23 +2112,23 @@ class DiskTrackerApp:
         self._apply_titlebar(theme)
         if hasattr(self, "_theme_var"):
             self._theme_var.set(self.theme_key)
+        # 卡片视图的颜色是直接画在 tk 控件上的，主题切换后必须重画
+        if getattr(self, "view_key", VIEW_TABLE) != VIEW_TABLE and hasattr(self, "cards_inner"):
+            self.render_cards()
         if persist:
             self._save_theme(self.theme_key)
         return theme
 
     def _set_kpi_visible(self, visible: bool) -> None:
         if visible and not self.kpi_visible:
-            self.kpi_frame.pack(fill="x", pady=(0, 8), before=self.table_frame)
+            self.kpi_frame.pack(fill="x", pady=(0, 8), before=self.body)
             self.kpi_visible = True
         elif not visible and self.kpi_visible:
             self.kpi_frame.pack_forget()
             self.kpi_visible = False
 
     def _save_theme(self, key: str) -> None:
-        try:
-            self.settings.save({"theme": key})
-        except OSError as exc:  # 只读目录等，不影响使用
-            self._append_hint(f"主题偏好保存失败：{exc}")
+        self._save_setting("theme", key)
 
     def _apply_titlebar(self, theme: dict[str, Any]) -> None:
         """深色主题时把 Windows 标题栏也切深（Win10 1809+，失败静默忽略）。"""
@@ -1845,6 +2177,8 @@ class DiskTrackerApp:
                 suffix += 1
                 iid = f"{base}#{suffix}"
             self.tree.insert("", "end", iid=iid, values=_row_values(row), tags=tags)
+        if self.view_key != VIEW_TABLE:
+            self.render_cards()
 
     def _sorted_rows(self, rows: Sequence[DiskRow]) -> list[DiskRow]:
         if not self._sort_column:
@@ -1867,6 +2201,140 @@ class DiskTrackerApp:
 
     def row_tags(self) -> list[tuple[str, ...]]:
         return [tuple(self.tree.item(iid, "tags")) for iid in self.tree.get_children()]
+
+    def card_rows(self) -> list[DiskRow]:
+        """卡片视图当前渲染的盘（顺序与表格一致，用于排序/断言的统一入口）。"""
+        return list(self._card_rows)
+
+    # ---------- 视图切换：表格 / 卡片 / 双列 ----------
+    def set_view(self, key: Any, persist: bool = True) -> str:
+        """切换数据展示视图。只 pack/pack_forget，不重建控件，选中行与滚动位置不丢。"""
+        key = normalize_view_key(key)
+        self.view_key = key
+        if hasattr(self, "_view_var"):
+            self._view_var.set(key)
+        if key == VIEW_TABLE:
+            self.cards_frame.pack_forget()
+            self.table_frame.pack(fill="both", expand=True)
+        else:
+            self.table_frame.pack_forget()
+            self.cards_frame.pack(fill="both", expand=True)
+            self.render_cards()
+        if persist:
+            self._save_setting("view", key)
+        return key
+
+    def _save_setting(self, name: str, value: Any) -> None:
+        try:
+            self.settings.save({name: value})
+        except OSError as exc:      # 只读目录等，不影响使用
+            self._append_hint(f"偏好保存失败：{exc}")
+
+    def _sync_cards_scrollregion(self, _event: Any = None) -> None:
+        self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all"))
+
+    def _resize_cards(self, event: Any) -> None:
+        self.cards_canvas.itemconfigure(self._cards_window, width=event.width)
+
+    def _on_cards_wheel(self, event: Any) -> str:
+        step = -1 * int(getattr(event, "delta", 0) // 120 or 0)
+        if step:
+            self.cards_canvas.yview_scroll(step, "units")
+        return "break"
+
+    def render_cards(self) -> None:
+        """按当前视图重建卡片（单列=卡片视图，双列=两列网格）。"""
+        columns = 1 if self.view_key == VIEW_CARDS else 2
+        theme = self.theme
+        for child in self.cards_inner.winfo_children():
+            child.destroy()
+        self._card_rows = self._sorted_rows(self.rows)
+        for index, row in enumerate(self._card_rows):
+            card = self._build_card(row, theme)
+            card.grid(row=index // columns, column=index % columns, sticky="nsew",
+                      padx=(0, 10), pady=(0, 8))
+        for column in range(columns):
+            self.cards_inner.columnconfigure(column, weight=1, uniform="card")
+        self.cards_canvas.configure(bg=theme["win_bg"])
+        self.cards_inner.configure(bg=theme["win_bg"])
+        self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
+                                  theme["scroll_thumb_hover"])
+        self.root.after_idle(self._sync_cards_scrollregion)
+
+    def _build_card(self, row: DiskRow, theme: dict[str, Any]) -> Any:
+        """一块盘一张卡片：标题行（型号 + 协议 + 状态）+ 序列号行 + 指标格。"""
+        tk = self.tk
+        alert = row.alert
+        muted = row.failed or row.vanished
+        background = theme["alert_bg"] if alert and theme["alert_bg"] else theme["card_bg"]
+        foreground = (theme["alert_fg"] if alert
+                      else (theme["muted_fg"] if muted else theme["tree_fg"]))
+        border = theme["alert_fg"] if alert else (theme["card_border"] or theme["win_bg"])
+        outer = tk.Frame(self.cards_inner, bg=background, highlightbackground=border,
+                         highlightthickness=1)
+        inner = tk.Frame(outer, bg=background, padx=12, pady=9)
+        inner.pack(fill="both", expand=True)
+
+        title_row = tk.Frame(inner, bg=background)
+        title_row.pack(fill="x")
+        tk.Label(title_row, text=row.model, bg=background, fg=foreground,
+                 font=(self.base_font[0], self.base_font[1] + 1, "bold"),
+                 anchor="w").pack(side="left")
+        tk.Label(title_row, text=row.protocol, bg=theme["head_bg"] or background,
+                 fg=theme["head_fg"], font=(self.base_font[0], self.base_font[1] - 1),
+                 padx=6).pack(side="left", padx=(8, 0))
+        tk.Label(title_row, text=_truncate(row.status_text, 30), bg=background,
+                 fg=theme["alert_fg"] if alert else theme["note_fg"],
+                 font=(self.base_font[0], self.base_font[1] - 1)).pack(side="right")
+
+        tk.Label(inner, text=f"{row.serial}  ·  {row.device_path}", bg=background,
+                 fg=theme["note_fg"], font=(self.base_font[0], self.base_font[1] - 1),
+                 anchor="w").pack(fill="x", pady=(2, 7))
+
+        metric_row = tk.Frame(inner, bg=background)
+        metric_row.pack(fill="x")
+        # 等宽网格：标签与数值按列对齐，行与行之间不会错位
+        columns = (CARD_METRIC_COLUMNS_GRID if self.view_key == VIEW_GRID
+                   else CARD_METRIC_COLUMNS)
+        for column in range(columns):
+            metric_row.columnconfigure(column, weight=1, uniform="metric")
+        for index, (caption, field) in enumerate(CARD_METRICS):
+            value = getattr(row, field, None)
+            if field == "read_gb":
+                text = fmt_size_short(row.read_gb)
+            elif field == "write_gb":
+                text = fmt_size_short(row.write_gb)
+            elif field in ("read_delta_gb", "write_delta_gb",
+                           "hist_read_delta_gb", "hist_write_delta_gb"):
+                text = fmt_delta(value)
+            elif field == "interval_text":
+                text = row.interval_text
+            else:
+                text = str(value if value is not None else "—")
+            color = foreground
+            if alert and field == "media_text":
+                color = theme["alert_fg"]
+            # 只有纯数字（容量/增量/健康度）用等宽字体对齐；时长与状态文字用界面字体，
+            # 否则「22 天 12 小时 15 分钟」这种中英混排在 Consolas 里会很别扭
+            numeric = field not in ("interval_text", "media_text")
+            value_font = ((theme["num_family"], self.base_font[1] + 1, "bold") if numeric
+                          else (self.base_font[0], self.base_font[1] + 1, "bold"))
+            cell = tk.Frame(metric_row, bg=background)
+            cell.grid(row=index // columns, column=index % columns,
+                      sticky="ew", padx=(0, 14), pady=(0, 2))
+            tk.Label(cell, text=caption, bg=background, fg=theme["card_lbl"],
+                     font=(self.base_font[0], self.base_font[1] - 1), anchor="w").pack(fill="x")
+            tk.Label(cell, text=text, bg=background, fg=color,
+                     font=value_font, anchor="w").pack(fill="x")
+        return outer
+
+    def rows_to_tsv(self, rows: Sequence[DiskRow] | None = None) -> str:
+        """把行导成 TSV。与当前视图无关，卡片视图下复制表格也不会报错。"""
+        headers = [spec[1] for spec in COLUMN_SPECS]
+        lines = ["	".join(headers)]
+        for row in (self.rows if rows is None else rows):
+            lines.append("	".join(str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR) for value in _row_values(row)))
+        return "\n".join(lines)
 
     # ---------- 数据刷新 ----------
     def refresh_async(self) -> None:
@@ -1961,16 +2429,15 @@ class DiskTrackerApp:
             pass
 
     def copy_table(self) -> None:
-        """把当前表格导成 TSV 放进剪贴板。"""
-        headers = [spec[1] for spec in COLUMN_SPECS]
-        lines = ["\t".join(headers)]
-        for iid in self.tree.get_children():
-            lines.append("\t".join(str(v) for v in self.tree.item(iid, "values")))
-        text = "\n".join(lines)
+        """把当前数据导成 TSV 放进剪贴板。
+
+        直接由 rows 生成（不读 Treeview 的 values），因此卡片/双列视图下同样可用。
+        """
+        text = self.rows_to_tsv()
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-            self._append_hint(f"已复制 {len(lines) - 1} 行表格到剪贴板。")
+            self._append_hint(f"已复制 {len(self.rows)} 行数据到剪贴板。")
         except Exception as exc:
             self._append_hint(f"复制到剪贴板失败：{exc}")
 
@@ -2000,6 +2467,7 @@ class DiskTrackerApp:
             f"本次记录：{self.cur_label.cget('text')}",
             f"历史文件：{self.store.path}",
             f"偏好文件：{self.settings.path}",
+            f"视图：{VIEW_LABELS.get(self.view_key, self.view_key)}",
             f"磁盘行数：{len(self.rows)}",
         ))
 
