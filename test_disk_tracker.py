@@ -902,8 +902,14 @@ def test_end_to_end_media_error_increase_triggers_alert(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def tk_root():
+@pytest.fixture(scope="session")
+def _tk_session():
+    """整个会话只创建一个 Tk 解释器。
+
+    反复 `tk.Tk()` / `destroy()` 会偶发 `TclError: invalid command name
+    "tcl_findLibrary"`（上一个解释器销毁后 Tcl 库路径变量失效），表现为随机 skip，
+    所以这里只建一次，每个用例改用它的 Toplevel 子窗口当 root。
+    """
     tk = pytest.importorskip("tkinter")
     try:
         root = tk.Tk()
@@ -915,6 +921,22 @@ def tk_root():
     finally:
         try:
             root.destroy()
+        except Exception:
+            pass
+
+
+@pytest.fixture()
+def tk_root(_tk_session):
+    """每个用例一个独立子窗口；用例里 destroy() 它不会影响其它用例。"""
+    import tkinter
+
+    child = tkinter.Toplevel(_tk_session)
+    child.withdraw()
+    try:
+        yield child
+    finally:
+        try:
+            child.destroy()
         except Exception:
             pass
 
@@ -971,8 +993,15 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     assert len(alert_rows) == 1, f"0E 新增行应整行标红，实际 tags={tags_by_iid}"
     assert len(muted_rows) == 1, f"读取失败行应整行标灰，实际 tags={tags_by_iid}"
 
-    assert window.tree.tag_configure(app.ROW_ALERT_TAG)["foreground"] == app.ALERT_COLOR
-    assert window.tree.tag_configure(app.ROW_MUTED_TAG)["foreground"] == app.MUTED_COLOR
+    # 颜色来自当前主题（主题可切换，因此断言「与当前主题一致」而不是写死某个色值）
+    alert_tag = window.tree.tag_configure(app.ROW_ALERT_TAG)
+    muted_tag = window.tree.tag_configure(app.ROW_MUTED_TAG)
+    assert alert_tag["foreground"] == window.theme["alert_fg"]
+    assert muted_tag["foreground"] == window.theme["muted_fg"]
+    # 告警行有可见底色（数据台账/深色/仪表主题），极简主题才是纯文字色
+    assert alert_tag["background"] == (window.theme["alert_bg"] or window.theme["tree_bg"])
+    # 两套颜色必须能互相区分，否则「红/灰」在视觉上不成立
+    assert window.theme["alert_fg"] != window.theme["muted_fg"]
 
     assert outcome.media_alert is True
     assert "介质错误在累积" in window.alert_label.cget("text")
@@ -1189,3 +1218,207 @@ def test_smartctl_calls_are_confined_to_provider_class():
     provider_source = inspect.getsource(app.SmartctlProvider)
     assert '"-a"' in provider_source or "'-a'" in provider_source
     assert "subprocess" in inspect.getsource(app)
+
+
+# ---------------------------------------------------------------------------
+# 8. 主题与菜单栏
+# ---------------------------------------------------------------------------
+
+
+REQUIRED_THEME_KEYS = (
+    "key", "label", "base", "win_bg", "tree_bg", "tree_fg", "head_bg", "head_fg",
+    "head_bold", "zebra", "alert_bg", "alert_fg", "muted_fg", "select_bg", "select_fg",
+    "rowheight", "padx", "pady", "kpi", "dark_bar", "title_fg", "title_pt",
+    "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
+    "card_lbl", "num_family", "card_pt",
+)
+
+
+def test_theme_table_covers_every_theme_with_same_keys():
+    """五套主题 + 「跟随系统」都必须在表里，且键集合一致（apply_theme 不会 KeyError）。"""
+    assert set(app.THEME_ORDER) == {
+        app.THEME_SYSTEM, app.THEME_LEDGER, app.THEME_DARK,
+        app.THEME_GAUGE, app.THEME_MINIMAL, app.THEME_NATIVE,
+    }
+    assert len(app.THEME_ORDER) == 6
+    for key in app.THEME_ORDER:
+        assert key in app.THEME_LABELS, key
+    assert set(app.THEMES) == set(app.THEME_ORDER) - {app.THEME_SYSTEM}
+    for name, table in app.THEMES.items():
+        for field in REQUIRED_THEME_KEYS:
+            assert field in table, f"{name} 缺少字段 {field}"
+        assert table["key"] == name
+        assert table["alert_fg"] != table["muted_fg"], f"{name} 的红/灰无法区分"
+        assert isinstance(table["rowheight"], int) and table["rowheight"] >= 20
+
+
+def test_system_theme_follows_light_and_dark():
+    """「跟随系统」：浅色 -> 数据台账，深色 -> 深色专业。"""
+    light = app.resolve_theme(app.THEME_SYSTEM, dark_mode=False)
+    dark = app.resolve_theme(app.THEME_SYSTEM, dark_mode=True)
+    assert light["key"] == app.THEME_SYSTEM_LIGHT == app.THEME_LEDGER
+    assert dark["key"] == app.THEME_SYSTEM_DARK == app.THEME_DARK
+    assert light["win_bg"] != dark["win_bg"]
+    assert app.system_theme_name(dark_mode=False) == app.THEME_LEDGER
+    assert app.system_theme_name(dark_mode=True) == app.THEME_DARK
+
+    # 显式选定的主题不受系统配色影响
+    assert app.resolve_theme(app.THEME_MINIMAL, dark_mode=True)["key"] == app.THEME_MINIMAL
+
+
+def test_theme_key_normalization_and_registry_detection(monkeypatch):
+    """非法主题键回落「跟随系统」；注册表读不到时 detect 返回 None 而不是抛异常。"""
+    assert app.normalize_theme_key("nope") == app.THEME_SYSTEM
+    assert app.normalize_theme_key(None) == app.THEME_SYSTEM
+    assert app.normalize_theme_key(123) == app.THEME_SYSTEM
+    assert app.normalize_theme_key(app.THEME_DARK) == app.THEME_DARK
+    assert app.normalize_theme_key(app.THEME_SYSTEM) == app.THEME_SYSTEM
+
+    if app.platform.system() == "Windows":
+        assert app.detect_system_dark_mode() in (True, False, None)
+
+    def boom(key, name):  # 模拟注册表键缺失
+        raise OSError("no such value")
+
+    monkeypatch.setattr(app.platform, "system", lambda: "Windows")
+    import winreg
+    monkeypatch.setattr(winreg, "OpenKey", boom)
+    assert app.detect_system_dark_mode() is None
+
+
+def test_settings_store_roundtrip_defaults_and_corruption(tmp_path):
+    """主题偏好独立存 settings.json：读写往返、损坏/缺失都回落默认值。"""
+    store = app.SettingsStore(tmp_path)
+    assert store.path.name == app.SETTINGS_FILENAME
+    assert store.load() == dict(app.DEFAULT_SETTINGS)
+
+    store.save({"theme": app.THEME_DARK})
+    assert json.loads(store.path.read_text(encoding="utf-8"))["theme"] == app.THEME_DARK
+    assert store.load()["theme"] == app.THEME_DARK
+
+    # 非法主题写入后被收敛
+    store.save({"theme": "bogus"})
+    assert store.load()["theme"] == app.THEME_SYSTEM
+
+    # 损坏文件不抛异常，回落默认值
+    store.path.write_text("{ not json", encoding="utf-8")
+    assert store.load() == dict(app.DEFAULT_SETTINGS)
+
+    # 非 dict 内容同样回落
+    store.path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert store.load() == dict(app.DEFAULT_SETTINGS)
+
+
+def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
+    """精简版菜单栏：6 个一级菜单，主题菜单 6 个单选，语言菜单英文项禁用。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+
+    labels = [window.menubar.entrycget(i, "label") for i in range(6)]
+    assert labels == ["文件(&F)", "主题(&T)", "工具(&U)", "硬盘(&D)", "帮助(&H)", "语言(&L)"]
+
+    theme_entries = [window.theme_menu.entrycget(i, "label")
+                     for i in range(window.theme_menu.index("end") + 1)]
+    assert theme_entries == [app.THEME_LABELS[k] for k in app.THEME_ORDER]
+    assert "跟随系统" in theme_entries
+
+    assert window.lang_menu.entrycget(1, "state") == "disabled"
+    window.root.destroy()
+
+
+def test_gui_theme_switch_updates_colors_and_kpi_visibility(tk_root, tmp_path):
+    """切换主题：表格配色/行高/表头、指标卡可见性都跟着变，控件不重建。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    tree_before = window.tree
+    rows_before = len(window.tree.get_children())
+
+    ledger = app.THEMES[app.THEME_LEDGER]
+    assert window.kpi_visible is True          # 数据台账有指标卡
+    assert window.tree.tag_configure(app.ROW_ALERT_TAG)["foreground"] == ledger["alert_fg"]
+    assert window.tree.tag_configure(app.ROW_ALERT_TAG)["background"] == ledger["alert_bg"]
+    assert int(float(window.ttk.Style(window.root).lookup("Treeview", "rowheight"))) == ledger["rowheight"]
+
+    window.apply_theme(app.THEME_MINIMAL)
+    tk_root.update_idletasks()
+    minimal = app.THEMES[app.THEME_MINIMAL]
+    assert window.kpi_visible is False         # 极简留白无指标卡
+    assert window.tree is tree_before          # 表格控件没被重建
+    assert len(window.tree.get_children()) == rows_before
+    assert window.tree.tag_configure(app.ROW_ALERT_TAG)["foreground"] == minimal["alert_fg"]
+    assert window.theme_key == app.THEME_MINIMAL
+
+    window.apply_theme(app.THEME_DARK)
+    tk_root.update_idletasks()
+    dark = app.THEMES[app.THEME_DARK]
+    assert window.kpi_visible is True
+    assert window.tree.tag_configure(app.ROW_MUTED_TAG)["foreground"] == dark["muted_fg"]
+    assert window.theme["dark_bar"] is True
+    window.root.destroy()
+
+
+def test_gui_theme_choice_is_persisted_and_restored(tk_root, tmp_path):
+    """菜单里选主题会写进 settings.json，下次启动沿用（不碰 history.json）。"""
+    settings = app.SettingsStore(tmp_path)
+    store = _gui_store(tmp_path)
+    history_before = store.path.read_text(encoding="utf-8")
+
+    import tkinter
+
+    # 用 Toplevel 承载：第一个窗口销毁后还要再开第二个（验证偏好被沿用）
+    first_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(first_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False, settings=settings)
+    index = app.THEME_ORDER.index(app.THEME_GAUGE)
+    window.theme_menu.invoke(index)            # 等同用户点菜单
+    tk_root.update_idletasks()
+    assert window.theme_key == app.THEME_GAUGE
+    assert window._theme_var.get() == app.THEME_GAUGE
+    assert settings.load()["theme"] == app.THEME_GAUGE
+    # 主题偏好不得写进 history.json
+    assert store.path.read_text(encoding="utf-8") == history_before
+    first_root.destroy()
+
+    second_root = tkinter.Toplevel(tk_root)
+    second = app.DiskTrackerApp(second_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False, settings=settings)
+    tk_root.update_idletasks()
+    assert second.theme_key == app.THEME_GAUGE
+    assert second.theme["key"] == app.THEME_GAUGE
+    second_root.destroy()
+
+
+def test_gui_menu_actions_do_not_crash(tk_root, tmp_path):
+    """复制表格 / 诊断信息 / 重置排序 / 关闭 都应该安全（不弹真对话框）。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+
+    window.copy_table()
+    assert "磁盘型号" in tk_root.clipboard_get()
+
+    text = window.diagnostics_text()
+    assert app.APP_DISPLAY_NAME in text
+    assert str(store.path) in text
+    assert str(window.settings.path) in text
+
+    window.sort_by("read_gb")
+    window.reset_sort()
+    assert window._sort_column is None
+
+    window.close()
+    # 关闭后窗口必须已经不存在（Tk 根窗口销毁后再访问会抛 TclError，
+    # Toplevel 子窗口销毁后 winfo_exists() 返回 0；两种都算「确实关掉了」）
+    try:
+        still_there = bool(window.root.winfo_exists())
+    except Exception:
+        still_there = False
+    assert still_there is False, "关闭后窗口仍然存在，说明有残留窗口"
