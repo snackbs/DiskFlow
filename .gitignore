@@ -1,6 +1,10 @@
 # ---- 本地私有目录：会话交接文档等，绝不推送到 GitHub ----
 _local/
 
+# 图标设计稿的交互式预览页：只在本地查看，不进仓库
+# （仓库里只放 diskflow.ico / png / svg 这些真正会被打包或引用的资产）
+diskflow-icons/diskflow-icon-preview.html
+
 # ---- Python ----
 __pycache__/
 *.py[cod]

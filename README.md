@@ -1,5 +1,9 @@
 # 磁盘流水 DiskFlow
 
+<p align="center">
+  <img src="diskflow-icons/png/diskflow-256.png" width="128" alt="DiskFlow 图标">
+</p>
+
 Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD / HDD）的**累计读写量**与
 **0E 介质错误**，把每次读数追加进 `history.json`，并与上一次、第一次记录做增量对比。
 
@@ -216,7 +220,8 @@ python -m pytest -v
 双列两列等宽、卡片增量自带 GB 单位、协议徽章紧跟型号），
 以及双列中缝与 KPI 第 2/3 张卡分界的像素级对齐、卡片区「放得下就贴顶且不能滚 / 放不下仍可滚」
 两条不变量，以及历史文件 v2 的盘档案结构、折叠规则（首条末条永久保留）、连跑 90 次后的
-体积上限、v1 静默迁移与升级前备份、v2 结构损坏的备份重建，以及盘符映射层（描述符/几何信息/卷盘号三处二进制解析、型号与容量容差、同型号不同容量区分、并列时拒绝猜测），还有应用图标（.ico 多尺寸、打包优先取包内副本、缺图标只降级不抛异常）。
+体积上限、v1 静默迁移与升级前备份、v2 结构损坏的备份重建，以及盘符映射层（描述符/几何信息/卷盘号三处二进制解析、型号与容量容差、同型号不同容量区分、并列时拒绝猜测），还有应用图标（.ico 多尺寸、打包优先取包内副本、缺图标只降级不抛异常），
+以及 `build.yml` / `build.bat` 必须把同一个图标同时交给 `--icon` 与 `--add-data`。
 
 当前共 117 条用例，用 `python -m pytest -v` 一次跑完。
 
@@ -250,6 +255,58 @@ Windows job 会真实跑完整套用例，任何一个失败都不会进入打�
 想让 JSON 可以直接被解析，用 `[IO.File]::WriteAllText($path, $out, (New-Object Text.UTF8Encoding($false)))`
 写成无 BOM 的 UTF-8。
 
+## 图标
+
+<p>
+  <img src="diskflow-icons/png/diskflow-16.png" width="16" alt="16px">
+  <img src="diskflow-icons/png/diskflow-24.png" width="24" alt="24px">
+  <img src="diskflow-icons/png/diskflow-32.png" width="32" alt="32px">
+  <img src="diskflow-icons/png/diskflow-48.png" width="48" alt="48px">
+  <img src="diskflow-icons/png/diskflow-64.png" width="64" alt="64px">
+  <img src="diskflow-icons/png/diskflow-128.png" width="128" alt="128px">
+  <img src="diskflow-icons/png/diskflow-256.png" width="256" alt="256px">
+</p>
+
+一枚白色磁盘被两道青色数据流穿过——左箭头流入（写入）、右箭头流出（读取），
+表达「累计读写量与增量监测」；主轴孔镂空透出背景，蓝色渐变方底对齐 Windows 11 应用图标规范。
+
+| 文件 | 用途 |
+| --- | --- |
+| `diskflow.ico` | 多尺寸图标（16/24/32/48/64/128/256），用于 `--icon` |
+| `png/diskflow-*.png` | 各尺寸透明 PNG，README 与发布页用 |
+| `diskflow-icon.svg` | 主图标矢量源，256 viewBox，可无限缩放 |
+| `diskflow-mark.svg` | 透明底标识（白/青），适合深色或彩色背景 |
+| `diskflow-mark-light.svg` | 透明底标识（蓝），适合浅色背景 |
+| `diskflow-mark-24.svg` | 24×24 界面线性标，描边用 `currentColor` 跟随文字色 |
+
+尺寸档位（取自图标设计稿的交付规范）：
+
+| 尺寸 | 典型场景 |
+| --- | --- |
+| 16 | 任务栏、列表视图、favicon |
+| 24 | 菜单、工具栏、行内图标 |
+| 32 | 设置页、对话框标题栏 |
+| 48 | 桌面、文件管理器 |
+| 64 | 高 DPI 桌面 |
+| 128 | 关于对话框、应用商店 |
+| 256 | 安装程序、启动画面、超高 DPI |
+
+绘制基准：画布 256×256、圆角 `rx=58`（约 22.7%）；内容居中且四周留白 ≥ 10%（约 26px），
+任何尺寸下都不裁切圆角；SVG 不写死 `width`/`height`，由使用方控制尺寸。
+
+颜色语义：
+
+| 元素 | 色值 | 语义 |
+| --- | --- | --- |
+| 背景 | `#3B82F6` → `#2563EB` → `#1E3A8A` | 科技蓝渐变 |
+| 盘片 | `#FFFFFF` | 磁盘本体，最高对比 |
+| 数据流 | `#67E8F9` → `#22D3EE` | 青色=数据，箭头表读写方向 |
+| 磁道弧 | `#BFDBFE` | 盘片细节层次 |
+| 主轴孔 | 镂空 | 透出底色，「透视」质感 |
+
+改图标时注意：按组整组替换（背景 → 数据流 → 磁盘，SVG id 用 `df-` 前缀），
+不要单个图层调色；不要非等比拉伸、不要在盘片上叠文字、不要转格式时丢掉 `viewBox`。
+
 ## 项目结构
 
 ```
@@ -260,6 +317,7 @@ Windows job 会真实跑完整套用例，任何一个失败都不会进入打�
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把它贴成 Release 正文
 ├─ diskflow-icons/             # 应用图标：.ico（exe / 窗口图标）+ 各尺寸 PNG + SVG 源
+│                              # （设计稿的预览 html 只在本地，不进仓库）
 ├─ build.bat                   # 本地 Windows 手动打包脚本
 └─ .github/workflows/build.yml # CI：test → build → artifact → Release
 ```
