@@ -1693,3 +1693,150 @@ def test_gui_menu_actions_do_not_crash(tk_root, tmp_path):
     except Exception:
         still_there = False
     assert still_there is False, "关闭后窗口仍然存在，说明有残留窗口"
+
+
+# ---------------------------------------------------------------------------
+# 9. 卡片细节与布局打磨（v0.5.2）
+# ---------------------------------------------------------------------------
+def _descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _descendants(child)
+
+
+def _pixels(value):
+    """把 Tk 的像素值统一成 int 列表。
+
+    同一份代码在不同 Tk 版本上可能拿到 `4`、`"0 0 10 0"` 或
+    `(<pixel object: '0'>, ..., <pixel object: '10'>)`，测试里必须都能解析。
+    """
+    if isinstance(value, (tuple, list)):
+        return [int(str(item)) for item in value]
+    text = str(value).replace("{", "").replace("}", "")
+    if "pixel object" in text:
+        import re
+
+        return [int(match) for match in re.findall(r"'(-?\d+)'", text)]
+    return [int(part) for part in text.split()]
+
+
+def test_card_status_width_counts_cjk_as_two_columns():
+    """Entry 的 width 单位是平均字符宽度，中文必须按 2 列算，否则状态被截断。"""
+    assert app.DiskTrackerApp._display_width("已更新记录") == 10
+    assert app.DiskTrackerApp._display_width("ABC") == 3
+    assert app.DiskTrackerApp._display_width("") == 0
+    # 中文与英文混排：3 个汉字 + 2 个字符 = 6 + 2
+    assert app.DiskTrackerApp._display_width("新盘AB") == 6
+
+
+def test_gui_card_text_is_readonly_entry_and_wheel_reaches_canvas(tk_root, tmp_path):
+    """卡片文字必须是可选中复制的只读 Entry；滚轮在卡片内任意位置都能滚动。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+
+    widgets = list(_descendants(window.cards_inner))
+    assert widgets, "卡片视图应该建出控件"
+
+    entries = [w for w in widgets if w.winfo_class() == "Entry"]
+    assert entries, "卡片里的文字必须用只读 Entry，否则无法选中复制"
+    for entry in entries:
+        assert entry.cget("state") == "readonly"
+        assert entry.cget("relief") == "flat"
+        assert int(entry.cget("highlightthickness")) == 0
+
+    sample = entries[0]
+    text = sample.get()
+    assert text
+    # 只读 Entry 仍允许选择：选前几个字符并断言确实选上了
+    sample.configure(state="normal")
+    sample.selection_range(0, min(3, len(text)))
+    assert sample.selection_present() is True
+    sample.configure(state="readonly")
+
+    # 滚轮：卡片内每一个控件都要绑上滚轮处理，否则鼠标停在卡片上滚不动
+    missing = [w.winfo_class() for w in widgets if not w.bind("<MouseWheel>")]
+    assert missing == [], f"这些控件没绑滚轮，卡片内滚动会失灵：{missing}"
+
+
+def test_gui_card_resize_is_debounced_until_flush(tk_root, tmp_path):
+    """拖动窗口时宽度重排要延后合并，flush_card_layout 才立即下发。"""
+    from types import SimpleNamespace
+
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+
+    before = window._cards_width
+    target = before + 137
+    window._resize_cards(SimpleNamespace(width=target))
+    assert window._pending_cards_width == target
+    assert window._cards_resize_id is not None, "应该挂起一个定时器而不是立刻重排"
+    assert window._cards_width == before, "拖动过程中不应立刻下发宽度"
+
+    window.flush_card_layout()
+    assert window._cards_resize_id is None
+    assert window._cards_width == target
+    assert int(float(window.cards_canvas.itemcget(window._cards_window, "width"))) == target
+
+    # 宽度没变化时不应再排一次重排（否则 <Configure> 会形成反馈环）
+    window._resize_cards(SimpleNamespace(width=target))
+    assert window._cards_resize_id is None
+
+
+def test_slim_scrollbar_thumb_is_single_rounded_capsule(tk_root):
+    """滑块用一条圆头粗线画，只有一个图元，才不会在圆角处漏出 1 像素。"""
+    bar = app.SlimScrollbar(tk_root, orient="vertical", command=lambda *args: None)
+    bar.pack(fill="y")
+    tk_root.update_idletasks()
+    # tk_root 是 withdraw 状态，控件没有真实像素高度；直接给一个虚拟长度，
+    # 这样断言的才是「绘制逻辑」本身，而不是宿主窗口有没有显示出来。
+    bar._length = lambda: 300
+    bar.set("0.1", "0.4")
+
+    items = bar.find_withtag("thumb")
+    assert len(items) == 1, "滑块必须是单个图元，多个图元拼接会露缝"
+    assert bar.type(items[0]) == "line"
+    assert bar.itemcget(items[0], "capstyle") == "round"
+    assert bar.thickness == app.SCROLL_GUTTER
+
+
+def test_kpi_row_and_card_row_share_right_edge(tk_root, tmp_path):
+    """KPI 指标行与下面卡片的右边缘必须对齐（都让出滚动条那一条宽度）。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert window.kpi_visible is True
+
+    # ttk 的 padding 顺序是 (left, top, right, bottom)
+    padding = _pixels(window.kpi_frame.cget("padding"))
+    assert len(padding) == 4
+    assert padding[2] == app.SCROLL_GUTTER, "KPI 行右侧必须给滚动条留位"
+    assert int(window.cards_scroll.cget("width")) == app.SCROLL_GUTTER
+
+    window.set_view(app.VIEW_CARDS)
+    tk_root.update_idletasks()
+    cards = window.cards_inner.winfo_children()
+    assert cards
+    # 单列视图：每张卡都独占一行，右侧不留间距（贴住滚动条，与 KPI 行右缘齐平）
+    for card in cards:
+        padx = _pixels(card.grid_info().get("padx", "0"))
+        assert padx[-1] == 0, f"最右列卡片的右边距应为 0，实际 {padx}"
+
+    window.set_view(app.VIEW_GRID)
+    tk_root.update_idletasks()
+    grid_cards = window.cards_inner.winfo_children()
+    assert len(grid_cards) >= 2
+    padx_first = _pixels(grid_cards[0].grid_info().get("padx", "0"))
+    assert padx_first[-1] == app.CARD_GAP, "双列视图第一张卡右侧应留列间距"
+
