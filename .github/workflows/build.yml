@@ -212,7 +212,7 @@ jobs:
           # 名称与图标来自 main.py 的常量（上一步写入 GITHUB_ENV），不写死
           #  --icon         ：exe 自身的图标（资源管理器 / 任务栏 / 快捷方式）
           #  --add-binary   ：smartctl.exe 打进包（真二进制）
-#  --add-data     ：diskflow.ico 作为资源文件打进包，
+          #  --add-data     ：diskflow.ico 作为资源文件打进包，
           #                   运行时由 sys._MEIPASS 解析，窗口图标才不是空白
           python -m PyInstaller --onefile --noconsole --uac-admin `
             --name "$env:APP_EXE_NAME" `
