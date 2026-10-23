@@ -1244,6 +1244,7 @@ REQUIRED_THEME_KEYS = (
     "rowheight", "padx", "pady", "kpi", "dark_bar", "title_fg", "title_pt",
     "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
     "card_lbl", "num_family", "card_pt", "scroll_thumb", "scroll_thumb_hover",
+    "seg_sel_bg", "seg_sel_fg", "seg_hover_bg", "seg_hover_fg", "seg_border",
 )
 
 
@@ -1263,6 +1264,12 @@ def test_theme_table_covers_every_theme_with_same_keys():
         assert table["key"] == name
         assert table["alert_fg"] != table["muted_fg"], f"{name} 的红/灰无法区分"
         assert isinstance(table["rowheight"], int) and table["rowheight"] >= 20
+        # 分段按钮：选中/悬停配色必须与常态可区分，否则用户看不出当前视图
+        assert table["seg_sel_bg"] != table["seg_hover_bg"], f"{name} 的选中/悬停底色相同"
+        for seg_field in ("seg_sel_bg", "seg_sel_fg", "seg_hover_bg",
+                          "seg_hover_fg", "seg_border"):
+            assert isinstance(table[seg_field], str) and table[seg_field].startswith("#"), \
+                f"{name} 的 {seg_field} 不是颜色值"
 
 
 def test_system_theme_follows_light_and_dark():
@@ -1559,6 +1566,102 @@ def test_gui_view_choice_is_persisted_and_restored(tk_root, tmp_path):
     tk_root.update_idletasks()
     assert second.view_key == app.VIEW_GRID
     second_root.destroy()
+
+
+
+
+def test_gui_segment_buttons_are_self_drawn_and_theme_driven(tk_root, tmp_path):
+    """顶栏分段按钮必须是自绘控件：悬停/选中配色只来自主题表，不能被系统主题盖掉。
+
+    回归 v0.5.0 的 bug：用 ttk.Radiobutton + 自定义 style 时，vista 主题下
+    鼠标悬停会被系统 element 画成系统蓝 + 虚线焦点框。
+    """
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_NATIVE)
+    tk_root.update_idletasks()
+
+    for button in window.seg_buttons.values():
+        assert isinstance(button, app.SegButton)
+        assert not isinstance(button, window.ttk.Radiobutton)
+
+    theme = window.theme
+    table_button = window.seg_buttons[app.VIEW_TABLE]
+    assert table_button.selected is True
+    assert table_button.cget("background") == theme["seg_sel_bg"]
+    assert table_button.cget("foreground") == theme["seg_sel_fg"]
+
+    # 未选中的按钮：常态配色来自主题，不是系统灰
+    cards_button = window.seg_buttons[app.VIEW_CARDS]
+    assert cards_button.selected is False
+    assert cards_button.cget("background") != theme["seg_sel_bg"]
+
+    # 模拟鼠标悬停：底色换成主题的 hover 色，且绝不是系统蓝 #0078D7（原生主题除外）
+    cards_button._on_enter()
+    if theme["seg_hover_bg"] != theme["seg_sel_bg"]:
+        assert cards_button.cget("background") == theme["seg_hover_bg"]
+    cards_button._on_leave()
+    assert cards_button.cget("background") != theme["seg_hover_bg"] or \
+        theme["seg_hover_bg"] == theme["seg_sel_bg"]
+
+    # 切换主题后按钮配色跟着换（控件不重建）
+    buttons_before = dict(window.seg_buttons)
+    window.apply_theme(app.THEME_DARK)
+    tk_root.update_idletasks()
+    dark = app.THEMES[app.THEME_DARK]
+    assert window.seg_buttons == buttons_before
+    assert window.seg_buttons[app.VIEW_TABLE].cget("background") == dark["seg_sel_bg"]
+    # 每个主题的悬停色都与选中色不同，否则用户分不清「当前视图」和「鼠标在这」
+    for name, table in app.THEMES.items():
+        assert table["seg_hover_bg"] != table["seg_sel_bg"], name
+    window.root.destroy()
+
+
+def test_gui_switch_grid_then_cards_restores_full_width(tk_root, tmp_path):
+    """双列 -> 卡片必须回到满宽。
+
+    回归 v0.5.0 的 bug：render_cards() 只给当前视图的列配 weight/uniform，
+    切回单列时第二列的 weight=1、uniform="card" 还留着，卡片只占一半宽度，
+    看起来仍然像双列。
+    """
+    import tkinter
+
+    window_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(window_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    window.run_pipeline_sync()
+    window_root.geometry("1100x640")
+    window_root.update()
+
+    def weights():
+        return [window.cards_inner.columnconfigure(index)["weight"] for index in range(3)]
+
+    window.set_view(app.VIEW_CARDS)
+    window_root.update()
+    assert weights()[0] == 1 and weights()[1] == 0
+
+    window.set_view(app.VIEW_GRID)
+    window_root.update()
+    assert weights()[0] == 1 and weights()[1] == 1
+
+    window.set_view(app.VIEW_CARDS)
+    window_root.update()
+    # 回到单列：第 2 列的 weight 与 uniform 必须清掉
+    assert weights()[1] == 0, "切回卡片视图后第 2 列仍有 weight，卡片会只占一半宽度"
+    assert window.cards_inner.columnconfigure(1)["uniform"] in ("", None)
+    cards = window.cards_inner.winfo_children()
+    assert len(cards) == len(window.card_rows()) >= 2
+    inner_width = window.cards_inner.winfo_width()
+    if inner_width > 100:          # withdraw/无真实布局时不比宽度
+        for card in cards:
+            assert card.winfo_width() > inner_width * 0.8, "卡片没有铺满整行，仍在双列布局"
+    # 再切回双列也要正常
+    window.set_view(app.VIEW_GRID)
+    window_root.update()
+    assert weights()[0] == 1 and weights()[1] == 1
+    window_root.destroy()
 
 
 def test_gui_menu_actions_do_not_crash(tk_root, tmp_path):

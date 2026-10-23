@@ -32,7 +32,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.5.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.5.1"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -1256,6 +1256,9 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#606060", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
+        "seg_sel_bg": "#0078D7", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#E5F1FB", "seg_hover_fg": "#1A1A1A",
+        "seg_border": "#B8B8B8",
     },
     THEME_LEDGER: {
         "key": THEME_LEDGER, "label": "数据台账", "base": "clam",
@@ -1270,6 +1273,9 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#F4F7FA", "card_border": None, "card_val": "#1F2933",
         "card_lbl": "#7B8794", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
+        "seg_sel_bg": "#2B3440", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#E3E9F0", "seg_hover_fg": "#1F2933",
+        "seg_border": "#D5DDE6",
     },
     THEME_DARK: {
         "key": THEME_DARK, "label": "深色专业", "base": "clam",
@@ -1284,6 +1290,9 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#262C33", "card_border": None, "card_val": "#7FC8A9",
         "card_lbl": "#8B97A3", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#7C8A99", "scroll_thumb_hover": "#9AA9B8",
+        "seg_sel_bg": "#3E6E8E", "seg_sel_fg": "#F2F7FB",
+        "seg_hover_bg": "#2F3942", "seg_hover_fg": "#D6DEE7",
+        "seg_border": "#3A444D",
     },
     THEME_GAUGE: {
         "key": THEME_GAUGE, "label": "清爽仪表", "base": "clam",
@@ -1298,6 +1307,9 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": "#DCE4EC", "card_val": "#1B6FB8",
         "card_lbl": "#7C8B99", "num_family": "Consolas", "card_pt": 15,
         "scroll_thumb": "#C8D3DE", "scroll_thumb_hover": "#9DB0C4",
+        "seg_sel_bg": "#1B6FB8", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#E6EEF6", "seg_hover_fg": "#1B2A38",
+        "seg_border": "#DCE4EC",
     },
     THEME_MINIMAL: {
         "key": THEME_MINIMAL, "label": "极简留白", "base": "clam",
@@ -1311,6 +1323,9 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#A0A0A0", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#D8D8D8", "scroll_thumb_hover": "#B8B8B8",
+        "seg_sel_bg": "#2A2A2A", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#F0F0F0", "seg_hover_fg": "#1A1A1A",
+        "seg_border": "#E2E2E2",
     },
 }
 
@@ -1454,6 +1469,7 @@ except Exception:                       # pragma: no cover - 依赖系统 Tk
     _tk_for_scrollbar = None
 
 _SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
+_LABEL_BASE: Any = _tk_for_scrollbar.Label if _tk_for_scrollbar else object
 
 
 class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
@@ -1613,6 +1629,91 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
 
     def _on_destroy(self, _event: Any) -> None:
         self._alive = False
+
+
+class SegButton(_LABEL_BASE):   # type: ignore[misc,valid-type]
+    """顶栏「表格 / 卡片 / 双列」分段切换按钮——自绘的 tk.Label。
+
+    不用 ttk.Radiobutton 的原因：vista 主题下 radiobutton 由系统 element 绘制，
+    style.map() 里配的 active 配色会被系统配色盖掉，鼠标悬停就变成系统蓝 + 虚线焦点框，
+    和自定义主题冲突（原生默认主题下最明显）。改用 tk.Label 完全自绘后，
+    常态 / 悬停 / 选中三种状态的颜色都只取自主题表，跨 ttk 主题表现一致。
+    接口保留 invoke()，与 ttk.Radiobutton 兼容，便于测试直接触发。
+    """
+
+    def __init__(self, master: Any, text: str, value: str, command: Any = None,
+                 **kwargs: Any) -> None:
+        kwargs.setdefault("bd", 0)
+        kwargs.setdefault("takefocus", 0)
+        kwargs.setdefault("cursor", "hand2")
+        kwargs.setdefault("anchor", "center")
+        super().__init__(master, text=text, highlightthickness=1, **kwargs)
+        self.value = value
+        self.command = command
+        self.selected = False
+        self._hover = False
+        self._palette: dict[str, str] = {
+            "bg": "#FFFFFF", "fg": "#1A1A1A",
+            "sel_bg": "#0078D7", "sel_fg": "#FFFFFF",
+            "hover_bg": "#E5F1FB", "hover_fg": "#1A1A1A",
+            "border": "#B8B8B8",
+        }
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    # ---- 外观 ----
+    def apply_palette(self, theme: dict[str, Any], base_font: tuple[str, int]) -> None:
+        """按主题重配配色与字体（不重建控件，选中态不变）。"""
+        self._palette = {
+            "bg": theme["card_bg"] if theme["kpi"] else theme["win_bg"],
+            "fg": theme["tree_fg"],
+            "sel_bg": theme["seg_sel_bg"],
+            "sel_fg": theme["seg_sel_fg"],
+            "hover_bg": theme["seg_hover_bg"],
+            "hover_fg": theme["seg_hover_fg"],
+            "border": theme["seg_border"],
+        }
+        family, size = base_font
+        self.configure(font=(family, size), padx=11, pady=4)
+        self.refresh()
+
+    def set_selected(self, selected: bool) -> None:
+        self.selected = bool(selected)
+        self.refresh()
+
+    def refresh(self) -> None:
+        palette = self._palette
+        if self.selected:
+            background, foreground = palette["sel_bg"], palette["sel_fg"]
+        elif self._hover:
+            background, foreground = palette["hover_bg"], palette["hover_fg"]
+        else:
+            background, foreground = palette["bg"], palette["fg"]
+        border = palette["sel_bg"] if self.selected else palette["border"]
+        try:
+            self.configure(background=background, foreground=foreground,
+                           highlightbackground=border, highlightcolor=border)
+        except Exception:       # pragma: no cover - 控件已销毁
+            pass
+
+    # ---- 交互 ----
+    def invoke(self) -> None:
+        """与 ttk.Radiobutton 同名：触发一次选择（测试也走这条路径）。"""
+        if self.command is not None:
+            self.command()
+
+    def _on_click(self, _event: Any = None) -> str:
+        self.invoke()
+        return "break"
+
+    def _on_enter(self, _event: Any = None) -> None:
+        self._hover = True
+        self.refresh()
+
+    def _on_leave(self, _event: Any = None) -> None:
+        self._hover = False
+        self.refresh()
 
 
 # 工具 → 排序 子菜单（卡片视图没有表头，排序必须也能从这里触发）
@@ -1790,6 +1891,7 @@ class DiskTrackerApp:
         self.theme_key = normalize_theme_key(theme if theme is not None else saved.get("theme"))
         self.view_key = normalize_view_key(saved.get("view"))
         self._card_rows: list[Any] = []
+        self._card_columns = 0
 
         self._build_menubar()
         self._build_widgets()
@@ -1891,12 +1993,11 @@ class DiskTrackerApp:
         self._view_var = self.tk.StringVar(master=self.root, value=self.view_key)
         self.seg_frame = ttk.Frame(head, style="App.TFrame")
         self.seg_frame.pack(side="right")
-        self.seg_buttons: dict[str, Any] = {}
+        self.seg_buttons: dict[str, SegButton] = {}
         for index, key in enumerate(VIEW_ORDER):
-            button = ttk.Radiobutton(self.seg_frame, text=VIEW_LABELS[key], value=key,
-                                     variable=self._view_var, style="Seg.Toolbutton",
-                                     command=lambda k=key: self.set_view(k))
-            button.pack(side="left", padx=(0 if index == 0 else 1, 0))
+            button = SegButton(self.seg_frame, text=VIEW_LABELS[key], value=key,
+                               command=lambda k=key: self.set_view(k))
+            button.pack(side="left", padx=(0 if index == 0 else 2, 0))
             self.seg_buttons[key] = button
 
         self.hint_parts: list[str] = []
@@ -2072,17 +2173,11 @@ class DiskTrackerApp:
                   background=[("selected", theme["select_bg"])],
                   foreground=[("selected", theme["select_fg"])])
 
-        # 顶栏视图分段切换按钮：选中态用表头配色，形成"分段控件"观感（零额外依赖）
-        segment_bg = theme["card_bg"] if theme["kpi"] else theme["win_bg"]
-        style.configure("Seg.Toolbutton", background=segment_bg, foreground=theme["tree_fg"],
-                        font=(family, size), padding=(11, 4), borderwidth=1,
-                        relief="solid", anchor="center")
-        style.map("Seg.Toolbutton",
-                  background=[("selected", theme["head_bg"] or theme["select_bg"]),
-                              ("active", theme["select_bg"])],
-                  foreground=[("selected", theme["head_fg"]),
-                              ("active", theme["select_fg"])],
-                  bordercolor=[("selected", theme["head_bg"] or theme["select_bg"])])
+        # 顶栏视图分段切换按钮：自绘 tk.Label，配色全部来自主题表
+        # （ttk.Radiobutton 在 vista 主题下由系统 element 绘制，悬停会被系统蓝盖掉）
+        for button in getattr(self, "seg_buttons", {}).values():
+            button.apply_palette(theme, self.base_font)
+            button.set_selected(button.value == self.view_key)
 
         self.outer.configure(padding=(padx, pady, padx, pady))
         try:
@@ -2213,6 +2308,8 @@ class DiskTrackerApp:
         self.view_key = key
         if hasattr(self, "_view_var"):
             self._view_var.set(key)
+        for button_key, button in getattr(self, "seg_buttons", {}).items():
+            button.set_selected(button_key == key)
         if key == VIEW_TABLE:
             self.cards_frame.pack_forget()
             self.table_frame.pack(fill="both", expand=True)
@@ -2248,13 +2345,19 @@ class DiskTrackerApp:
         theme = self.theme
         for child in self.cards_inner.winfo_children():
             child.destroy()
+        # 先把上一种视图留下的列配置清干净：双列给每列配了 weight/uniform，
+        # 切回单列时若不清，卡片只会占一半宽度（看起来仍像双列）。
+        widest = max(columns, getattr(self, "_card_columns", 0))
+        for column in range(widest):
+            self.cards_inner.columnconfigure(column, weight=0, uniform="")
+        self._card_columns = columns
         self._card_rows = self._sorted_rows(self.rows)
         for index, row in enumerate(self._card_rows):
             card = self._build_card(row, theme)
             card.grid(row=index // columns, column=index % columns, sticky="nsew",
                       padx=(0, 10), pady=(0, 8))
         for column in range(columns):
-            self.cards_inner.columnconfigure(column, weight=1, uniform="card")
+            self.cards_inner.columnconfigure(column, weight=1, uniform="card", minsize=0)
         self.cards_canvas.configure(bg=theme["win_bg"])
         self.cards_inner.configure(bg=theme["win_bg"])
         self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
