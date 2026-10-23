@@ -1964,3 +1964,141 @@ def test_about_text_mentions_author_and_ai_assistance():
     assert app.APP_STORAGE_ID in text
 
 
+# ---------------------------------------------------------------------------
+# 11. 双列中缝对齐 KPI 分界 / 卡片区"放得下就不能滚"（v0.5.4）
+# ---------------------------------------------------------------------------
+def test_kpi_cards_use_symmetric_gaps_and_equal_columns(tk_root, tmp_path):
+    """KPI 四张卡必须等宽、间距两侧对称：否则第 2/3 张的分界线不在 50% 上。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+
+    cards = window.kpi_frame.winfo_children()
+    assert len(cards) == len(app.KPI_SPECS)
+    gaps = [_pixels(card.grid_info().get("padx", "0")) for card in cards]
+    half_gap = app.CARD_GAP // 2
+    for index, gap in enumerate(gaps):
+        left, right = gap[0], gap[-1]
+        if index == 0:
+            assert (left, right) == (0, half_gap), f"首张卡间距应为 (0,{half_gap})：{gap}"
+        elif index == len(gaps) - 1:
+            assert (left, right) == (half_gap, 0), f"末张卡间距应为 ({half_gap},0)：{gap}"
+        else:
+            assert (left, right) == (half_gap, half_gap), f"中间卡间距应两侧对称：{gap}"
+        # 每列权重相同且共用 uniform，卡宽才会严格一致
+        assert int(window.kpi_frame.columnconfigure(index, "weight")) == 1
+        assert str(window.kpi_frame.columnconfigure(index, "uniform")) == "kpi"
+
+
+def test_gui_kpi_boundary_matches_card_gutter(tk_root, tmp_path):
+    """双列卡片的中缝必须落在 KPI 第 2、3 张卡的分界线上（允许 1px 误差）。"""
+    import tkinter
+
+    window_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(window_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    window_root.geometry("1240x830")
+    window.set_view(app.VIEW_GRID)
+    window_root.update()
+    window.flush_card_layout()
+    window_root.update()
+
+    assert window.kpi_visible is True
+    # KPI：用 grid_bbox 取每列的精确占位（含 padx），第 2 列右缘与第 3 列左缘的中点
+    first = window.kpi_frame.grid_bbox(1, 0)
+    second = window.kpi_frame.grid_bbox(2, 0)
+    assert first and second, "KPI 两列都应该有几何信息"
+    kpi_boundary = window.kpi_frame.winfo_rootx() + (first[0] + first[2] + second[0]) / 2.0
+
+    cards = window.cards_inner.winfo_children()
+    assert len(cards) >= 4, "需要至少 4 张卡才构成两列两行"
+    left_card, right_card = cards[0], cards[1]
+    card_gutter = (left_card.winfo_rootx() + left_card.winfo_width()
+                   + right_card.winfo_rootx()) / 2.0
+
+    assert abs(kpi_boundary - card_gutter) <= 1.0, (
+        f"卡片中缝 {card_gutter} 与 KPI 2/3 分界 {kpi_boundary} 没对齐"
+    )
+    # 中缝还必须落在整行宽度的正中，否则"对齐"只是巧合
+    kpi_span = window.kpi_frame.winfo_width() - app.SCROLL_GUTTER
+    assert abs((kpi_boundary - window.kpi_frame.winfo_rootx()) - kpi_span / 2.0) <= 1.0
+    window_root.destroy()
+
+
+def test_gui_cards_stay_pinned_when_content_fits(tk_root, tmp_path):
+    """内容放得下时：滚轮不能把卡片推下去，内容永远贴顶（消掉大片空白）。"""
+    import tkinter
+
+    window_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(window_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_DARK)
+    window.run_pipeline_sync()
+    window_root.geometry("1240x900")     # 足够高，双列 3 张卡全部可见
+    window.set_view(app.VIEW_GRID)
+    window_root.update()
+    window.flush_card_layout()
+    window_root.update()
+
+    canvas = window.cards_canvas
+    assert window._cards_fit() is True
+    assert canvas.yview() == (0.0, 1.0)
+    assert canvas.canvasy(0) == 0
+    region = [int(v) for v in str(canvas.cget("scrollregion")).split()]
+    assert region[3] >= canvas.winfo_height(), "滚动区域高度至少要覆盖视口"
+
+    # 在卡片最深的控件上滚 8 格，位置必须一点不动
+    targets = [w for w in _descendants(window.cards_inner) if w.winfo_class() == "Entry"]
+    assert targets
+    deepest = targets[-1]
+    for _ in range(8):
+        deepest.event_generate("<MouseWheel>", delta=-120)
+    window_root.update()
+    assert canvas.yview() == (0.0, 1.0)
+    assert canvas.canvasy(0) == 0
+    assert window.cards_inner.winfo_y() == 0
+    window_root.destroy()
+
+
+def test_gui_cards_still_scroll_when_content_overflows(tk_root, tmp_path):
+    """内容确实放不下时必须还能滚，否则多盘用户看不到下面的卡片。"""
+    import tkinter
+
+    snapshots = [
+        app.DiskSnapshot(device_path=f"/dev/nvme{i}", protocol="NVMe",
+                         model=f"Fake Disk {i} 1TB", serial=f"SN{i:04d}",
+                         capacity_bytes=1024 ** 4,
+                         read_bytes=int(6000 * 1024 ** 3),
+                         write_bytes=int(7500 * 1024 ** 3),
+                         media_errors=0)
+        for i in range(8)
+    ]
+    window_root = tkinter.Toplevel(tk_root)
+    window = app.DiskTrackerApp(window_root, provider=_FakeProvider(snapshots),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_DARK)
+    window.run_pipeline_sync()
+    window_root.geometry("1000x560")
+    window.set_view(app.VIEW_CARDS)      # 单列 8 张卡，一定超出视口
+    window_root.update()
+    window.flush_card_layout()
+    window_root.update()
+
+    canvas = window.cards_canvas
+    assert window._cards_fit() is False
+    start = canvas.yview()[0]
+    assert start == 0.0
+    for _ in range(10):
+        window._on_cards_wheel(type("E", (), {"delta": -120})())
+    window_root.update()
+    assert canvas.yview()[0] > start, "内容放不下时滚轮必须能滚"
+    assert canvas.canvasy(0) > 0
+    window_root.destroy()

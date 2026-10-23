@@ -33,7 +33,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.5.3"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.5.4"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 APP_AUTHOR = "snackbs"                             # 「关于」里显示的作者
 APP_AI_NOTE = "由 AI 辅助编写"                      # 「关于」里的开发方式说明
 
@@ -2065,11 +2065,21 @@ class DiskTrackerApp:
         # 同一条右边界，否则最右一张卡会伸出去，和卡片右缘对不齐（v0.5.1 的观感问题）。
         self.kpi_frame = ttk.Frame(outer, style="App.TFrame", padding=(0, 0, SCROLL_GUTTER, 0))
         self.kpi_values: dict[str, Any] = {}
+        # 间距必须两侧对称（各 CARD_GAP//2），否则第一张卡比后面每张宽 CARD_GAP，
+        # 四张卡宽度就会 290/272 交替；叠加 uniform 后每张卡严格等宽，
+        # 第 2、3 张卡的分界线正好落在整行宽度的 50%，与双列卡片的中缝重合。
+        kpi_half_gap = CARD_GAP // 2
+        kpi_count = len(KPI_SPECS)
         for index, (key, caption) in enumerate(KPI_SPECS):
             card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(12, 8))
-            card.grid(row=0, column=index, sticky="ew",
-                      padx=(0 if index == 0 else CARD_GAP, 0))
-            self.kpi_frame.columnconfigure(index, weight=1)
+            if index == 0:
+                kpi_padx = (0, kpi_half_gap)
+            elif index == kpi_count - 1:
+                kpi_padx = (kpi_half_gap, 0)
+            else:
+                kpi_padx = (kpi_half_gap, kpi_half_gap)
+            card.grid(row=0, column=index, sticky="ew", padx=kpi_padx)
+            self.kpi_frame.columnconfigure(index, weight=1, uniform="kpi")
             value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
             value.pack(fill="x")
             label = ttk.Label(card, text=caption, style="CardLabel.TLabel", anchor="w")
@@ -2405,17 +2415,46 @@ class DiskTrackerApp:
         except Exception:
             self._scroll_sync_id = None
 
-    def _apply_cards_scrollregion(self) -> None:
-        self._scroll_sync_id = None
+    def _cards_viewport(self) -> tuple[int, int, int, int]:
+        """(宽, 高, 内容宽, 内容高)：内容尺寸取内部 Frame 的请求尺寸。"""
         try:
-            bbox = self.cards_canvas.bbox("all")
+            width = max(int(self.cards_canvas.winfo_width()), 1)
+            height = max(int(self.cards_canvas.winfo_height()), 1)
+            content_w = max(int(self.cards_inner.winfo_reqwidth()), 1)
+            content_h = max(int(self.cards_inner.winfo_reqheight()), 1)
         except Exception:
+            return (1, 1, 1, 1)
+        return (width, height, content_w, content_h)
+
+    def _cards_fit(self) -> bool:
+        """内容是否完全放得下（放得下就不该能滚动，也不该出现空白带）。"""
+        _, height, _, content_h = self._cards_viewport()
+        return content_h <= height
+
+    def _apply_cards_scrollregion(self) -> None:
+        """重算滚动区域，并保证「放得下 ⇒ 贴顶且不能滚」这条不变量。
+
+        两个曾经踩过的坑：
+        1) 缓存只比 bbox，窗口变高时 bbox 不变会直接早退，滚动区域停在旧值；
+           所以缓存的键改成 (内容尺寸, 视口尺寸)。
+        2) 内容比视口矮时，滚动区域若比视口高，滚轮就能把卡片推下去，
+           露出上方一大片空白（用户截图里的"可以滑下去"）。
+           这里把区域高度补到视口高度并强制回到顶部，从根上消掉。
+        """
+        self._scroll_sync_id = None
+        width, height, content_w, content_h = self._cards_viewport()
+        key = (content_w, content_h, width, height)
+        if key == self._cards_bbox:
             return
-        if bbox is None or bbox == self._cards_bbox:
-            return
-        self._cards_bbox = bbox
+        self._cards_bbox = key
+        region_w = max(content_w, width)
+        region_h = max(content_h, height)
         try:
-            self.cards_canvas.configure(scrollregion=bbox)
+            # 内部 Frame 永远贴 (0,0)：任何历史遗留的纵向偏移都在这里被抹平。
+            self.cards_canvas.coords(self._cards_window, 0, 0)
+            self.cards_canvas.configure(scrollregion=(0, 0, region_w, region_h))
+            if content_h <= height:
+                self.cards_canvas.yview_moveto(0.0)
         except Exception:
             pass
 
@@ -2472,8 +2511,16 @@ class DiskTrackerApp:
             self.cards_canvas.itemconfigure(self._cards_window, width=width)
         except Exception:
             pass
+        # 宽度变了必然要重算滚动区域：只靠 inner 的 <Configure> 不够，
+        # 窗口放大时 inner 尺寸常不变（宽度被 itemconfigure 拉满但内容不换行），
+        # 滚动区域就会停在旧值上，缩小窗口后便凭空多出一段能滚动的空白。
+        self._apply_cards_scrollregion()
 
     def _on_cards_wheel(self, event: Any) -> str:
+        # 内容放得下时滚轮什么都不做：否则滚动区域一旦被撑大，
+        # 滚轮就能把整块卡片推下去，露出上方一大片空白。
+        if self._cards_fit():
+            return "break"
         step = -1 * int(getattr(event, "delta", 0) // 120 or 0)
         if step:
             try:
