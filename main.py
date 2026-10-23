@@ -32,7 +32,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.3.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.4.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -421,6 +421,25 @@ def _normalize_protocol(raw: Any, payload: dict) -> str:
     return "未知"
 
 
+def _smartctl_message_text(messages: Any) -> str:
+    """smartctl 的 messages 可能是字符串数组，也可能是 {"string": ...} 对象数组（7.x）。
+
+    两种都要取到可读文本，否则界面上会出现 "{'string': '...'}" 这种 Python 字典字面量。
+    """
+    if not isinstance(messages, (list, tuple)):
+        return ""
+    parts: list[str] = []
+    for item in messages:
+        if isinstance(item, dict):
+            text = item.get("string") or item.get("message") or ""
+        else:
+            text = item
+        text = str(text).strip()
+        if text:
+            parts.append(text)
+    return "; ".join(parts)
+
+
 def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
     """把 smartctl --json 输出解析成 DiskSnapshot。纯函数，不触碰磁盘。"""
     if not isinstance(payload, dict):
@@ -434,8 +453,7 @@ def parse_smartctl_payload(payload: Any, device_path: str = "") -> DiskSnapshot:
 
     smartctl_block = payload.get("smartctl") if isinstance(payload.get("smartctl"), dict) else {}
     exit_status = _as_int(smartctl_block.get("exit_status")) or 0
-    messages = smartctl_block.get("messages") or []
-    message_text = "; ".join(str(m) for m in messages if m)
+    message_text = _smartctl_message_text(smartctl_block.get("messages"))
 
     protocol = _normalize_protocol(device_block.get("protocol") or device_block.get("type"), payload)
     model = str(payload.get("model_name") or device_block.get("model_name")
@@ -816,9 +834,9 @@ def build_rows(history_records: Sequence[dict],
             row.hist_write_delta_gb = _diff(current_write, first_write)
 
             if row.read_delta_gb is not None and row.read_delta_gb < 0:
-                row.status_text = "累计读数小于历史值（计数重置或硬件变动）"
+                row.status_text = "累计读数回退，疑似计数重置"
             elif row.write_delta_gb is not None and row.write_delta_gb < 0:
-                row.status_text = "累计写数小于历史值（计数重置或硬件变动）"
+                row.status_text = "累计写数回退，疑似计数重置"
             else:
                 row.status_text = "已更新记录"
 
@@ -858,7 +876,7 @@ def build_rows(history_records: Sequence[dict],
             health_text="—",
             media_text="—",
             media_kind="unavailable",
-            status_text="本次未检测到该磁盘（可能已移除或读取失败）",
+            status_text="本次未检测到（已移除或读取失败）",
             vanished=True,
         ))
 
@@ -881,10 +899,19 @@ def _record_0e(record: dict) -> int | None:
     return _as_int(value)
 
 
+# 历史里存的是保留 4 位小数的 GB 值，本次是原始精度，直接相减可能出现 -0.0001 GB
+# 这类"假回退"，被误判成"计数重置"。差值小于这个阈值一律归零。
+DELTA_EPSILON_GB = 0.01
+
+
 def _diff(current: float | None, previous: float | None) -> float | None:
     if current is None or previous is None:
         return None
-    return current - previous
+    diff = current - previous
+    # 抹掉浮点/取整噪声，避免界面出现 "-0.00" 和假的"累计量回退"
+    if abs(diff) < DELTA_EPSILON_GB:
+        return 0.0
+    return diff
 
 
 def summarize(rows: Sequence[DiskRow]) -> dict[str, float]:
@@ -1166,30 +1193,274 @@ def is_admin() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 主题层：纯数据表 + 解析函数
+#
+# 用户选定的方案是「跟随系统」：读 Windows 的「应用模式」设置，
+#   系统浅色 -> 数据台账（THEME_LEDGER）
+#   系统深色 -> 深色专业（THEME_DARK）
+# 其余四套作为手动可选项保留在「主题」菜单里。
+# 纯标准库（ctypes/winreg/ttk），不引入第三方主题包。
+# ---------------------------------------------------------------------------
+
+THEME_SYSTEM = "system"
+THEME_LEDGER = "ledger"
+THEME_DARK = "dark"
+THEME_GAUGE = "gauge"
+THEME_MINIMAL = "minimal"
+THEME_NATIVE = "native"
+
+THEME_ORDER: tuple[str, ...] = (THEME_SYSTEM, THEME_LEDGER, THEME_DARK,
+                                THEME_GAUGE, THEME_MINIMAL, THEME_NATIVE)
+THEME_LABELS = {
+    THEME_SYSTEM: "跟随系统",
+    THEME_LEDGER: "数据台账",
+    THEME_DARK: "深色专业",
+    THEME_GAUGE: "清爽仪表",
+    THEME_MINIMAL: "极简留白",
+    THEME_NATIVE: "原生默认",
+}
+# 「跟随系统」解析到的具体主题
+THEME_SYSTEM_LIGHT = THEME_LEDGER
+THEME_SYSTEM_DARK = THEME_DARK
+
+REG_PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+REG_LIGHT_VALUE = "AppsUseLightTheme"
+
+# 主题表：全部参数集中在此，apply_theme() 只照着表 set，不再有第二处颜色字面量。
+#   base        ttk 主题名（vista=系统原生；clam 支持自定义表头底色）
+#   kpi         None=无指标卡，cards=普通卡片，bordered=带描边卡片
+#   dark_bar    是否请求深色标题栏（Win10 1809+）
+THEMES: dict[str, dict[str, Any]] = {
+    THEME_NATIVE: {
+        "key": THEME_NATIVE, "label": "原生默认", "base": "vista",
+        "win_bg": "#F0F0F0", "tree_bg": "#FFFFFF", "tree_fg": "#1A1A1A",
+        "head_bg": None, "head_fg": "#1A1A1A", "head_bold": False,
+        "zebra": None, "alert_bg": None, "alert_fg": "#C00000", "muted_fg": "#808080",
+        "select_bg": "#0078D7", "select_fg": "#FFFFFF",
+        "rowheight": 24, "padx": 10, "pady": 8, "kpi": None, "dark_bar": False,
+        "title_fg": "#000000", "title_pt": 11,
+        "hint_fg": "#8A6D00", "note_fg": "#606060", "summary_fg": "#1A1A1A",
+        "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
+        "card_lbl": "#606060", "num_family": "Consolas", "card_pt": 12,
+    },
+    THEME_LEDGER: {
+        "key": THEME_LEDGER, "label": "数据台账", "base": "clam",
+        "win_bg": "#FFFFFF", "tree_bg": "#FFFFFF", "tree_fg": "#1F2933",
+        "head_bg": "#2B3440", "head_fg": "#FFFFFF", "head_bold": True,
+        "zebra": "#F7F9FB", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
+        "muted_fg": "#8A8A8A",
+        "select_bg": "#DCE9F7", "select_fg": "#1F2933",
+        "rowheight": 26, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": False,
+        "title_fg": "#2B3440", "title_pt": 12,
+        "hint_fg": "#8A6D00", "note_fg": "#7B8794", "summary_fg": "#1F2933",
+        "card_bg": "#F4F7FA", "card_border": None, "card_val": "#1F2933",
+        "card_lbl": "#7B8794", "num_family": "Consolas", "card_pt": 12,
+    },
+    THEME_DARK: {
+        "key": THEME_DARK, "label": "深色专业", "base": "clam",
+        "win_bg": "#1E2227", "tree_bg": "#23282E", "tree_fg": "#D6DEE7",
+        "head_bg": "#171B20", "head_fg": "#A8C4DC", "head_bold": True,
+        "zebra": "#272D34", "alert_bg": "#3A2427", "alert_fg": "#FF8A7A",
+        "muted_fg": "#6B7580",
+        "select_bg": "#35526B", "select_fg": "#FFFFFF",
+        "rowheight": 26, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": True,
+        "title_fg": "#E6EDF3", "title_pt": 12,
+        "hint_fg": "#E0C070", "note_fg": "#8B97A3", "summary_fg": "#D6DEE7",
+        "card_bg": "#262C33", "card_border": None, "card_val": "#7FC8A9",
+        "card_lbl": "#8B97A3", "num_family": "Consolas", "card_pt": 12,
+    },
+    THEME_GAUGE: {
+        "key": THEME_GAUGE, "label": "清爽仪表", "base": "clam",
+        "win_bg": "#F5F8FB", "tree_bg": "#FFFFFF", "tree_fg": "#22303C",
+        "head_bg": "#EAF0F6", "head_fg": "#51606F", "head_bold": True,
+        "zebra": "#FAFCFE", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
+        "muted_fg": "#93A1AE",
+        "select_bg": "#DCE9F7", "select_fg": "#1B6FB8",
+        "rowheight": 28, "padx": 16, "pady": 14, "kpi": "bordered", "dark_bar": False,
+        "title_fg": "#1B2A38", "title_pt": 13,
+        "hint_fg": "#8A6D00", "note_fg": "#7C8B99", "summary_fg": "#22303C",
+        "card_bg": "#FFFFFF", "card_border": "#DCE4EC", "card_val": "#1B6FB8",
+        "card_lbl": "#7C8B99", "num_family": "Consolas", "card_pt": 15,
+    },
+    THEME_MINIMAL: {
+        "key": THEME_MINIMAL, "label": "极简留白", "base": "clam",
+        "win_bg": "#FFFFFF", "tree_bg": "#FFFFFF", "tree_fg": "#2A2A2A",
+        "head_bg": "#FFFFFF", "head_fg": "#8A8A8A", "head_bold": False,
+        "zebra": None, "alert_bg": None, "alert_fg": "#D0342C", "muted_fg": "#A0A0A0",
+        "select_bg": "#EFEFEF", "select_fg": "#1A1A1A",
+        "rowheight": 30, "padx": 22, "pady": 18, "kpi": None, "dark_bar": False,
+        "title_fg": "#1A1A1A", "title_pt": 12,
+        "hint_fg": "#8A6D00", "note_fg": "#A0A0A0", "summary_fg": "#2A2A2A",
+        "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
+        "card_lbl": "#A0A0A0", "num_family": "Consolas", "card_pt": 12,
+    },
+}
+
+
+def detect_system_dark_mode() -> bool | None:
+    """Windows「应用模式」是否为深色。True=深色，False=浅色，None=读不到（非 Windows 等）。"""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import winreg  # 仅 Windows 才导入
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PERSONALIZE) as key:
+            value, _kind = winreg.QueryValueEx(key, REG_LIGHT_VALUE)
+        return int(value) == 0
+    except Exception:
+        return None
+
+
+def normalize_theme_key(key: Any) -> str:
+    """把任意输入收敛成合法主题键，非法值回落「跟随系统」。"""
+    if isinstance(key, str) and (key in THEMES or key == THEME_SYSTEM):
+        return key
+    return THEME_SYSTEM
+
+
+def system_theme_name(dark_mode: bool | None = None) -> str:
+    """「跟随系统」当前解析到的具体主题名。"""
+    dark = detect_system_dark_mode() if dark_mode is None else bool(dark_mode)
+    return THEME_SYSTEM_DARK if dark else THEME_SYSTEM_LIGHT
+
+
+def resolve_theme(key: Any, dark_mode: bool | None = None) -> dict[str, Any]:
+    """主题键 -> 具体主题参数表。key 为 system 时按系统配色落到浅色/深色两套之一。"""
+    normalized = normalize_theme_key(key)
+    if normalized == THEME_SYSTEM:
+        return dict(THEMES[system_theme_name(dark_mode)])
+    return dict(THEMES[normalized])
+
+
+# ---------------------------------------------------------------------------
+# 界面偏好存储层（独立 settings.json，不碰 history.json 的 schema）
+# ---------------------------------------------------------------------------
+
+SETTINGS_FILENAME = "settings.json"
+DEFAULT_SETTINGS: dict[str, Any] = {"theme": THEME_SYSTEM}
+
+
+class SettingsStore:
+    """界面偏好读写：与 history.json 同目录；文件损坏或字段缺失时静默回落默认值。"""
+
+    def __init__(self, directory: str | os.PathLike[str] | None = None,
+                 filename: str = SETTINGS_FILENAME) -> None:
+        self.directory = Path(directory) if directory else _default_app_dir()
+        self.filename = filename
+
+    @property
+    def path(self) -> Path:
+        return self.directory / self.filename
+
+    def load(self) -> dict[str, Any]:
+        data = dict(DEFAULT_SETTINGS)
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except OSError:
+            return data
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return data
+        if not isinstance(payload, dict):
+            return data
+        theme = payload.get("theme")
+        if isinstance(theme, str):
+            data["theme"] = normalize_theme_key(theme)
+        return data
+
+    def save(self, data: dict[str, Any]) -> Path:
+        merged = dict(DEFAULT_SETTINGS)
+        for key, value in (data or {}).items():
+            if isinstance(key, str):
+                merged[key] = value
+        merged["theme"] = normalize_theme_key(merged.get("theme"))
+        self.directory.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(merged, ensure_ascii=False, indent=2)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, self.path)
+        return self.path
+
+
+# ---------------------------------------------------------------------------
 # GUI 层（不含任何 smartctl 调用）
 # ---------------------------------------------------------------------------
 
+# 列宽按「实测文字像素宽度 + 单元格内边距」定，合计约 1450px：
+# 默认窗口按屏幕大小开到足够宽，13 列在常见 1920 宽屏上不需要横向滚动。
 COLUMN_SPECS: tuple[tuple[str, str, int, str], ...] = (
-    ("model", "磁盘型号", 190, "text"),
-    ("serial", "序列号(截断)", 130, "text"),
-    ("protocol", "协议", 70, "text"),
-    ("read_gb", "累计读取(GB/TB)", 190, "num"),
-    ("write_gb", "累计写入(GB/TB)", 190, "num"),
-    ("interval", "距上次", 150, "text"),
-    ("read_delta", "本次读增(GB)", 110, "num"),
-    ("write_delta", "本次写增(GB)", 110, "num"),
-    ("hist_read_delta", "历史读增(GB)", 110, "num"),
-    ("hist_write_delta", "历史写增(GB)", 110, "num"),
-    ("health", "健康度", 80, "text"),
-    ("media", "0E", 130, "text"),
-    ("status", "状态", 260, "text"),
+    ("model", "磁盘型号", 185, "text"),
+    ("serial", "序列号(截断)", 126, "text"),
+    ("protocol", "协议", 52, "text"),
+    ("read_gb", "累计读取(GB/TB)", 152, "num"),
+    ("write_gb", "累计写入(GB/TB)", 152, "num"),
+    ("interval", "距上次", 132, "text"),
+    ("read_delta", "本次读增(GB)", 95, "num"),
+    ("write_delta", "本次写增(GB)", 95, "num"),
+    ("hist_read_delta", "历史读增(GB)", 95, "num"),
+    ("hist_write_delta", "历史写增(GB)", 95, "num"),
+    ("health", "健康度", 58, "text"),
+    ("media", "0E", 88, "text"),
+    ("status", "状态", 190, "text"),
 )
+# 表格自然宽度（列宽合计），用于按屏幕挑选默认窗口大小
+TABLE_NATURAL_WIDTH = sum(spec[2] for spec in COLUMN_SPECS)
 
 ROW_ALERT_TAG = "alert_row"
 ROW_MUTED_TAG = "muted_row"
+ROW_ZEBRA_TAG = "zebra_row"
+# 原生默认主题下的颜色常量（保留为模块级常量，主题表里共用同一组取值）
 ALERT_COLOR = "#C00000"
 MUTED_COLOR = "#808080"
 BASE_FONT = ("Microsoft YaHei UI", 9)
+SMARTCTL_INSTALL_HINT = ("未找到 smartctl.exe，请执行："
+                         "winget install smartmontools.smartmontools")
+
+KPI_SPECS: tuple[tuple[str, str], ...] = (
+    ("read_delta", "本次总读增"),
+    ("write_delta", "本次总写增"),
+    ("hist_read_delta", "历史总读增"),
+    ("hist_write_delta", "历史总写增"),
+)
+
+
+def fmt_delta_compact(value: float | None, digits: int = 2) -> str:
+    """指标卡用的紧凑增量：超过 1 TB 时用 TB，否则用 GB。"""
+    if value is None:
+        return "—"
+    sign = "+" if value >= 0 else ""
+    if abs(value) >= 1024.0:
+        return f"{sign}{value / 1024.0:,.{digits}f} TB"
+    return f"{sign}{value:,.{digits}f} GB"
+
+
+def _default_geometry(root: Any) -> str:
+    """按屏幕尺寸挑一个默认窗口大小。
+
+    13 列的自然宽度约 1450px，常见 1920 宽屏可以一屏放下；窄屏则回落到
+    1280x620 并保留横向滚动条（Treeview 自带），不会因为窗口过宽跑到屏幕外。
+    """
+    try:
+        screen_w = int(root.winfo_screenwidth())
+        screen_h = int(root.winfo_screenheight())
+    except Exception:
+        screen_w, screen_h = 1280, 800
+    want_w = TABLE_NATURAL_WIDTH + 84
+    width = want_w if screen_w >= want_w + 80 else 1280
+    width = min(width, max(screen_w - 80, 980))
+    width = max(width, 980)
+    height = max(min(640, screen_h - 120), 460)
+    return f"{width}x{height}"
+
+
+# 状态列过长的报错文本按这个宽度截断（完整文本仍保留在 DiskRow 与诊断信息里）
+STATUS_TEXT_LIMIT = 24
+
+
+def _truncate(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 def _row_values(row: DiskRow) -> tuple[str, ...]:
@@ -1207,7 +1478,7 @@ def _row_values(row: DiskRow) -> tuple[str, ...]:
         fmt_delta(row.hist_write_delta_gb),
         row.health_text,
         row.media_text,
-        row.status_text,
+        _truncate(row.status_text),
     )
 
 
@@ -1237,7 +1508,9 @@ class DiskTrackerApp:
     """单窗口 GUI。数据读取全部委托给注入的 provider（后台线程执行）。"""
 
     def __init__(self, root: Any, provider: Any = None, store: HistoryStore | None = None,
-                 autostart: bool = True, now_func: Callable[[], datetime] | None = None) -> None:
+                 autostart: bool = True, now_func: Callable[[], datetime] | None = None,
+                 settings: SettingsStore | None = None,
+                 theme: str | None = None) -> None:
         import tkinter as tk
         from tkinter import ttk
 
@@ -1246,55 +1519,141 @@ class DiskTrackerApp:
         self.root = root
         self.provider = provider if provider is not None else SmartctlProvider()
         self.store = store if store is not None else HistoryStore()
+        self.settings = (settings if settings is not None
+                         else SettingsStore(self.store.resolve_dir()))
         self.now_func = now_func or (lambda: datetime.now().astimezone())
         self.rows: list[DiskRow] = []
         self._sort_column: str | None = None
         self._sort_reverse = False
         self._busy = False
+        self.base_font = BASE_FONT
+        self.theme_key = THEME_SYSTEM
+        self.theme: dict[str, Any] = dict(THEMES[THEME_LEDGER])
 
         root.title(window_title())
-        root.geometry("1280x600")
-        root.minsize(900, 420)
-        try:
-            style = ttk.Style(root)
-            style.configure(".", font=BASE_FONT)
-            style.configure("Treeview", rowheight=24)
-            style.configure("Alert.TLabel", foreground=ALERT_COLOR)
-            style.configure("Hint.TLabel", foreground="#8A6D00")
-            style.configure("Title.TLabel", font=(BASE_FONT[0], BASE_FONT[1] + 2, "bold"))
-        except Exception:
-            pass
+        root.geometry(_default_geometry(root))
+        root.minsize(980, 460)
 
+        saved = self._load_settings()
+        self.theme_key = normalize_theme_key(theme if theme is not None else saved.get("theme"))
+
+        self._build_menubar()
         self._build_widgets()
+        self.apply_theme(self.theme_key, persist=False)
         if autostart:
             self.refresh_async()
+
+    # ---------- 偏好 ----------
+    def _load_settings(self) -> dict[str, Any]:
+        try:
+            return self.settings.load()
+        except Exception:  # 偏好坏了不能影响启动
+            return dict(DEFAULT_SETTINGS)
+
+    # ---------- 菜单栏 ----------
+    def _build_menubar(self) -> None:
+        tk = self.tk
+        menubar = tk.Menu(self.root, tearoff=False)
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="刷新记录(&R)", accelerator="Ctrl+R",
+                              command=self.refresh_async)
+        file_menu.add_command(label="打开历史文件(&O)", command=self.open_history_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出(&X)", accelerator="Alt+F4", command=self.close)
+
+        view_menu = tk.Menu(menubar, tearoff=False)
+        self._theme_var = tk.StringVar(master=self.root, value=self.theme_key)
+        for key in THEME_ORDER:
+            view_menu.add_radiobutton(label=THEME_LABELS[key], value=key,
+                                      variable=self._theme_var,
+                                      command=lambda k=key: self.apply_theme(k))
+
+        tools_menu = tk.Menu(menubar, tearoff=False)
+        tools_menu.add_command(label="复制表格到剪贴板(&C)", command=self.copy_table)
+        tools_menu.add_command(label="打开数据目录(&D)", command=self.open_data_dir)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="重置排序(&S)", command=self.reset_sort)
+
+        disk_menu = tk.Menu(menubar, tearoff=False)
+        disk_menu.add_command(label="重新扫描并记录(&R)", command=self.refresh_async)
+        disk_menu.add_command(label="数据源状态(&S)", command=self.show_source_status)
+        disk_menu.add_command(label="复制诊断信息(&I)", command=self.copy_diagnostics)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="如何安装数据源(&S)", command=self.show_source_help)
+        help_menu.add_command(label="容量与换算说明(&C)", command=self.show_capacity_help)
+        help_menu.add_separator()
+        help_menu.add_command(label="关于(&A)", command=self.show_about)
+
+        lang_menu = tk.Menu(menubar, tearoff=False)
+        self._lang_var = tk.StringVar(master=self.root, value="zh-CN")
+        lang_menu.add_radiobutton(label="简体中文", value="zh-CN", variable=self._lang_var)
+        lang_menu.add_radiobutton(label="English（即将支持）", value="en",
+                                  variable=self._lang_var, state="disabled")
+
+        menubar.add_cascade(label="文件(&F)", menu=file_menu)
+        menubar.add_cascade(label="主题(&T)", menu=view_menu)
+        menubar.add_cascade(label="工具(&U)", menu=tools_menu)
+        menubar.add_cascade(label="硬盘(&D)", menu=disk_menu)
+        menubar.add_cascade(label="帮助(&H)", menu=help_menu)
+        menubar.add_cascade(label="语言(&L)", menu=lang_menu)
+
+        self.menubar = menubar
+        self.file_menu = file_menu
+        self.theme_menu = view_menu
+        self.tools_menu = tools_menu
+        self.disk_menu = disk_menu
+        self.help_menu = help_menu
+        self.lang_menu = lang_menu
+
+        self.root.configure(menu=menubar)
+        self.root.bind("<Control-r>", lambda _event: self.refresh_async())
+        self.root.bind("<Control-q>", lambda _event: self.close())
 
     # ---------- 控件 ----------
     def _build_widgets(self) -> None:
         ttk = self.ttk
-        outer = ttk.Frame(self.root, padding=(10, 8, 10, 8))
+        outer = ttk.Frame(self.root, style="App.TFrame", padding=(10, 8, 10, 8))
         outer.pack(fill="both", expand=True)
+        self.outer = outer
 
         # 左上角程序名 + 版本号：文字来自 window_title()，与窗口标题同源
         self.title_label = ttk.Label(outer, text=window_title(), style="Title.TLabel", anchor="w")
         self.title_label.pack(fill="x")
 
+        self.hint_parts: list[str] = []
         self.hint_label = ttk.Label(outer, text="", style="Hint.TLabel", anchor="w")
         self.hint_label.pack(fill="x")
 
-        top = ttk.Frame(outer)
+        top = ttk.Frame(outer, style="App.TFrame")
         top.pack(fill="x", pady=(2, 6))
-        self.prev_label = ttk.Label(top, text="上次记录：—", anchor="w")
+        self.prev_label = ttk.Label(top, text="上次记录：—", style="App.TLabel", anchor="w")
         self.prev_label.pack(side="left", padx=(0, 16))
-        self.cur_label = ttk.Label(top, text="本次记录：—", anchor="w")
+        self.cur_label = ttk.Label(top, text="本次记录：—", style="App.TLabel", anchor="w")
         self.cur_label.pack(side="left", padx=(0, 16))
-        self.smartctl_label = ttk.Label(top, text="smartctl：未检测", anchor="w")
+        self.smartctl_label = ttk.Label(top, text="数据源：未检测", style="App.TLabel", anchor="w")
         self.smartctl_label.pack(side="left", padx=(0, 16))
-        self.admin_label = ttk.Label(top, text="权限：检测中", anchor="w")
+        self.admin_label = ttk.Label(top, text="权限：检测中", style="App.TLabel", anchor="w")
         self.admin_label.pack(side="left")
 
-        table_frame = ttk.Frame(outer)
+        # 指标卡（B/C/D 主题显示，A/E 主题隐藏；控件只建一次，切换主题时 pack/pack_forget）
+        self.kpi_frame = ttk.Frame(outer, style="App.TFrame")
+        self.kpi_values: dict[str, Any] = {}
+        for index, (key, caption) in enumerate(KPI_SPECS):
+            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(12, 8))
+            card.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 10, 0))
+            self.kpi_frame.columnconfigure(index, weight=1)
+            value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
+            value.pack(fill="x")
+            label = ttk.Label(card, text=caption, style="CardLabel.TLabel", anchor="w")
+            label.pack(fill="x")
+            self.kpi_values[key] = value
+        self.kpi_visible = False
+
+        table_frame = ttk.Frame(outer, style="App.TFrame")
         table_frame.pack(fill="both", expand=True)
+        self.table_frame = table_frame
 
         columns = [spec[0] for spec in COLUMN_SPECS]
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
@@ -1310,12 +1669,9 @@ class DiskTrackerApp:
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure(ROW_ALERT_TAG, foreground=ALERT_COLOR)
-        self.tree.tag_configure(ROW_MUTED_TAG, foreground=MUTED_COLOR)
-
-        bottom = ttk.Frame(outer)
+        bottom = ttk.Frame(outer, style="App.TFrame")
         bottom.pack(fill="x", pady=(8, 0))
-        self.summary_label = ttk.Label(bottom, text="尚无记录", anchor="w")
+        self.summary_label = ttk.Label(bottom, text="尚无记录", style="Summary.TLabel", anchor="w")
         self.summary_label.pack(side="left")
         self.alert_label = ttk.Label(bottom, text="", style="Alert.TLabel", anchor="w")
         self.alert_label.pack(side="left", padx=(12, 0))
@@ -1329,18 +1685,140 @@ class DiskTrackerApp:
         self.about_button.pack(side="right", padx=(0, 8))
 
         self.note_label = ttk.Label(outer, text=f"容量换算：{BYTES_PER_GIB_TEXT}；"
-                                               f"历史文件：{self.store.path}",
-                                    anchor="w", foreground="#606060")
+                                                f"历史文件：{self.store.path}",
+                                    style="Note.TLabel", anchor="w")
         self.note_label.pack(fill="x", pady=(4, 0))
 
-        admin_text = "权限：管理员" if is_admin() else "权限：未以管理员运行"
-        self.admin_label.configure(text=admin_text)
-        if not is_admin():
+        self._refresh_admin_label()
+
+    def _refresh_admin_label(self) -> None:
+        admin = is_admin()
+        self.admin_label.configure(text="权限：管理员" if admin else "权限：未以管理员运行")
+        if not admin:
             self._append_hint("未以管理员运行，部分磁盘可能读取失败。")
 
     def _append_hint(self, text: str) -> None:
-        existing = self.hint_label.cget("text")
-        self.hint_label.configure(text=(existing + "  " if existing else "") + text)
+        """追加一条顶部提示。同样的提示只保留一条，重复触发不会越堆越长。"""
+        text = (text or "").strip()
+        if not text:
+            return
+        if text not in self.hint_parts:
+            self.hint_parts.append(text)
+        self.hint_label.configure(text="  ".join(self.hint_parts))
+
+    # ---------- 主题 ----------
+    def apply_theme(self, key: Any, persist: bool = True,
+                    dark_mode: bool | None = None) -> dict[str, Any]:
+        """应用一套主题。控件不重建，只重配样式与指标卡可见性。"""
+        theme = resolve_theme(key, dark_mode=dark_mode)
+        self.theme_key = normalize_theme_key(key)
+        self.theme = theme
+        style = self.ttk.Style(self.root)
+        names = set(style.theme_names())
+        base = theme["base"] if theme["base"] in names else ("clam" if "clam" in names else "default")
+        try:
+            style.theme_use(base)
+        except Exception:
+            pass
+
+        family, size = self.base_font
+        num_family = theme["num_family"]
+        padx, pady = theme["padx"], theme["pady"]
+
+        style.configure(".", font=self.base_font)
+        style.configure("App.TFrame", background=theme["win_bg"])
+        style.configure("App.TLabel", background=theme["win_bg"], foreground=theme["tree_fg"])
+        style.configure("Title.TLabel", background=theme["win_bg"], foreground=theme["title_fg"],
+                        font=(family, theme["title_pt"], "bold"))
+        style.configure("Hint.TLabel", background=theme["win_bg"], foreground=theme["hint_fg"])
+        style.configure("Note.TLabel", background=theme["win_bg"], foreground=theme["note_fg"])
+        style.configure("Summary.TLabel", background=theme["win_bg"],
+                        foreground=theme["summary_fg"])
+        style.configure("Alert.TLabel", background=theme["win_bg"],
+                        foreground=theme["alert_fg"], font=(family, size, "bold"))
+
+        border = 1 if theme["card_border"] else 0
+        style.configure("Card.TFrame", background=theme["card_bg"], borderwidth=border,
+                        relief="solid" if border else "flat",
+                        bordercolor=theme["card_border"] or theme["card_bg"])
+        style.configure("CardValue.TLabel", background=theme["card_bg"],
+                        foreground=theme["card_val"],
+                        font=(num_family, theme["card_pt"], "bold"))
+        style.configure("CardLabel.TLabel", background=theme["card_bg"],
+                        foreground=theme["card_lbl"], font=(family, size - 1))
+
+        head_font = (family, size, "bold") if theme["head_bold"] else (family, size)
+        if theme["head_bg"]:
+            style.configure("Treeview.Heading", background=theme["head_bg"],
+                            foreground=theme["head_fg"], font=head_font,
+                            relief="flat", padding=(6, 4))
+        else:
+            style.configure("Treeview.Heading", font=head_font)
+        style.configure("Treeview", background=theme["tree_bg"],
+                        fieldbackground=theme["tree_bg"], foreground=theme["tree_fg"],
+                        rowheight=theme["rowheight"], borderwidth=0)
+        style.map("Treeview",
+                  background=[("selected", theme["select_bg"])],
+                  foreground=[("selected", theme["select_fg"])])
+
+        self.outer.configure(padding=(padx, pady, padx, pady))
+        try:
+            self.root.configure(bg=theme["win_bg"])
+        except Exception:
+            pass
+
+        zebra_bg = theme["zebra"] or theme["tree_bg"]
+        self.tree.tag_configure(ROW_ALERT_TAG,
+                                foreground=theme["alert_fg"],
+                                background=theme["alert_bg"] or theme["tree_bg"])
+        self.tree.tag_configure(ROW_MUTED_TAG,
+                                foreground=theme["muted_fg"],
+                                background=theme["tree_bg"])
+        self.tree.tag_configure(ROW_ZEBRA_TAG, background=zebra_bg)
+
+        self._set_kpi_visible(theme["kpi"] is not None)
+        self._apply_titlebar(theme)
+        if hasattr(self, "_theme_var"):
+            self._theme_var.set(self.theme_key)
+        if persist:
+            self._save_theme(self.theme_key)
+        return theme
+
+    def _set_kpi_visible(self, visible: bool) -> None:
+        if visible and not self.kpi_visible:
+            self.kpi_frame.pack(fill="x", pady=(0, 8), before=self.table_frame)
+            self.kpi_visible = True
+        elif not visible and self.kpi_visible:
+            self.kpi_frame.pack_forget()
+            self.kpi_visible = False
+
+    def _save_theme(self, key: str) -> None:
+        try:
+            self.settings.save({"theme": key})
+        except OSError as exc:  # 只读目录等，不影响使用
+            self._append_hint(f"主题偏好保存失败：{exc}")
+
+    def _apply_titlebar(self, theme: dict[str, Any]) -> None:
+        """深色主题时把 Windows 标题栏也切深（Win10 1809+，失败静默忽略）。"""
+        if platform.system() != "Windows":
+            return
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())  # type: ignore[attr-defined]
+            if not hwnd:
+                return
+            flag = ctypes.c_int(1 if theme["dark_bar"] else 0)
+            for attr in (20, 19):   # 20=新接口，19=旧版本回退
+                try:
+                    rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
+                        hwnd, attr, ctypes.byref(flag), ctypes.sizeof(flag))
+                except Exception:
+                    rc = -1
+                if rc == 0:
+                    break
+            # 触发非客户区重绘，否则要等下次改变窗口大小才变色
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     # ---------- 表格 ----------
     def clear_rows(self) -> None:
@@ -1351,12 +1829,15 @@ class DiskTrackerApp:
         self.rows = list(rows)
         self.clear_rows()
         ordered = self._sorted_rows(self.rows)
-        for row in ordered:
+        striped = bool(self.theme.get("zebra"))
+        for index, row in enumerate(ordered):
             tags: tuple[str, ...] = ()
             if row.failed or row.vanished:
                 tags = (ROW_MUTED_TAG,)
             elif row.alert:
                 tags = (ROW_ALERT_TAG,)
+            elif striped and index % 2:
+                tags = (ROW_ZEBRA_TAG,)
             iid = row.key or row.device_path or row.model
             base = iid
             suffix = 1
@@ -1379,6 +1860,11 @@ class DiskTrackerApp:
             self._sort_reverse = False
         self.render_rows(self.rows)
 
+    def reset_sort(self) -> None:
+        self._sort_column = None
+        self._sort_reverse = False
+        self.render_rows(self.rows)
+
     def row_tags(self) -> list[tuple[str, ...]]:
         return [tuple(self.tree.item(iid, "tags")) for iid in self.tree.get_children()]
 
@@ -1388,7 +1874,7 @@ class DiskTrackerApp:
             return
         self._busy = True
         self.refresh_button.configure(state="disabled")
-        self.smartctl_label.configure(text="读取中…")
+        self.smartctl_label.configure(text="数据源：读取中…")
         self.status_queue: list[RunOutcome | Exception] = []
 
         def worker() -> None:
@@ -1415,34 +1901,37 @@ class DiskTrackerApp:
         self._busy = False
         self.refresh_button.configure(state="normal")
         if isinstance(item, Exception):
-            self.smartctl_label.configure(text="smartctl：读取异常")
+            self.smartctl_label.configure(text="数据源：读取异常")
             self._append_hint(f"读取失败：{item}")
             return
         self.apply_outcome(item)
 
     def apply_outcome(self, outcome: RunOutcome) -> RunOutcome:
         self.clear_rows()
-        before_sort = self._sort_column
-        self._sort_column = before_sort
         self.rows = list(outcome.rows)
         self.render_rows(self.rows)
 
         self.prev_label.configure(text=f"上次记录：{outcome.previous_stamp or '—'}")
         self.cur_label.configure(text=f"本次记录：{outcome.current_stamp}")
         self.smartctl_label.configure(
-            text=f"smartctl：{outcome.smartctl_path}" if outcome.smartctl_path
-            else f"smartctl：{outcome.provider_status}"
+            text=f"数据源：{outcome.smartctl_path}" if outcome.smartctl_path
+            else f"数据源：{outcome.provider_status}"
         )
         if outcome.smartctl_path is None and outcome.provider_status:
-            self._append_hint("未找到 smartctl.exe，请执行：winget install smartmontools.smartmontools")
+            self._append_hint(SMARTCTL_INSTALL_HINT)
 
         totals = outcome.totals
-        self.summary_label.configure(
-            text=(f"本次总读增 {fmt_delta(totals.get('read_delta'))} GB ｜ "
-                  f"本次总写增 {fmt_delta(totals.get('write_delta'))} GB ｜ "
-                  f"历史总读增 {fmt_delta(totals.get('hist_read_delta'))} GB ｜ "
-                  f"历史总写增 {fmt_delta(totals.get('hist_write_delta'))} GB")
-        )
+        if outcome.baseline:
+            self.summary_label.configure(text="已记录基线，下次打开将显示增量")
+        else:
+            self.summary_label.configure(
+                text=(f"本次总读增 {fmt_delta(totals.get('read_delta'))} GB ｜ "
+                      f"本次总写增 {fmt_delta(totals.get('write_delta'))} GB ｜ "
+                      f"历史总读增 {fmt_delta(totals.get('hist_read_delta'))} GB ｜ "
+                      f"历史总写增 {fmt_delta(totals.get('hist_write_delta'))} GB")
+            )
+        for key, label in self.kpi_values.items():
+            label.configure(text="—" if outcome.baseline else fmt_delta_compact(totals.get(key)))
         self.alert_label.configure(
             text="介质错误在累积，建议关注备份" if outcome.media_alert else ""
         )
@@ -1462,6 +1951,103 @@ class DiskTrackerApp:
         """同步跑一遍流水线（GUI 冒烟测试用，不启动线程）。"""
         outcome = perform_run(self.provider, self.store, now=self.now_func())
         return self.apply_outcome(outcome)
+
+    # ---------- 菜单动作 ----------
+    def close(self) -> None:
+        """关闭窗口即退出：不留后台线程、不写服务、不设自启。"""
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def copy_table(self) -> None:
+        """把当前表格导成 TSV 放进剪贴板。"""
+        headers = [spec[1] for spec in COLUMN_SPECS]
+        lines = ["\t".join(headers)]
+        for iid in self.tree.get_children():
+            lines.append("\t".join(str(v) for v in self.tree.item(iid, "values")))
+        text = "\n".join(lines)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self._append_hint(f"已复制 {len(lines) - 1} 行表格到剪贴板。")
+        except Exception as exc:
+            self._append_hint(f"复制到剪贴板失败：{exc}")
+
+    def open_data_dir(self) -> None:
+        """打开 history.json / settings.json 所在目录。"""
+        try:
+            directory = self.store.resolve_dir()
+            directory.mkdir(parents=True, exist_ok=True)
+            if platform.system() == "Windows":
+                os.startfile(str(directory))  # type: ignore[attr-defined]
+            else:
+                import webbrowser
+                webbrowser.open(directory.as_uri())
+        except Exception as exc:
+            self._append_hint(f"打开数据目录失败：{exc}")
+
+    def diagnostics_text(self) -> str:
+        """诊断信息：出问题时让用户能一键复制出来。"""
+        return "\n".join((
+            f"{APP_DISPLAY_NAME} v{APP_VERSION}（{APP_EXE_NAME}.exe）",
+            f"Python：{platform.python_version()} / {platform.platform()}",
+            f"主题：{THEME_LABELS.get(self.theme_key, self.theme_key)}"
+            f" → {self.theme['label']}",
+            f"权限：{'管理员' if is_admin() else '未以管理员运行'}",
+            f"数据源：{self.smartctl_label.cget('text')}",
+            f"上次记录：{self.prev_label.cget('text')}",
+            f"本次记录：{self.cur_label.cget('text')}",
+            f"历史文件：{self.store.path}",
+            f"偏好文件：{self.settings.path}",
+            f"磁盘行数：{len(self.rows)}",
+        ))
+
+    def copy_diagnostics(self) -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.diagnostics_text())
+            self._append_hint("已复制诊断信息到剪贴板。")
+        except Exception as exc:
+            self._append_hint(f"复制诊断信息失败：{exc}")
+
+    def show_source_status(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showinfo("数据源状态", self.diagnostics_text(), parent=self.root)
+
+    def show_source_help(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showinfo(
+            "如何安装数据源",
+            "本程序通过 smartmontools 的 smartctl 读取磁盘累计读写量与 0E。\n"
+            "\n"
+            "通常 exe 已自带一份，无需安装；若顶部提示未找到，可任选一种：\n"
+            "1) winget install smartmontools.smartmontools\n"
+            "2) 到 smartmontools 官网下载安装包，默认装到\n"
+            "   C:\\Program Files\\smartmontools\\bin\\\n"
+            "\n"
+            "安装后点「文件 → 刷新记录」即可。读取磁盘信息通常需要管理员权限。",
+            parent=self.root,
+        )
+
+    def show_capacity_help(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showinfo(
+            "容量与换算说明",
+            f"统一口径：{BYTES_PER_GIB_TEXT}\n"
+            "\n"
+            "累计读取 / 累计写入来自硬盘自己维护的计数器：\n"
+            "· NVMe：Data Units Read / Written，1 Data Unit = 512000 字节\n"
+            "· SATA：Device Statistics 的 Logical Sectors，1 LBA = 512 字节\n"
+            "  （该字段缺失时才退回 SMART 属性 241/242，部分主控按块计数，数值可能偏小）\n"
+            "\n"
+            "0E 是 NVMe 的「介质与数据完整性错误」计数，只增不减；\n"
+            "SATA 盘没有这个字段，显示「不适用」，可参考重映射扇区与待定扇区。",
+            parent=self.root,
+        )
 
     # ---------- 关于 ----------
     def show_about(self) -> None:
@@ -1490,12 +2076,14 @@ class DiskTrackerApp:
 
 
 def create_app(provider: Any = None, store: HistoryStore | None = None,
-               root: Any = None) -> DiskTrackerApp:
+               root: Any = None, settings: SettingsStore | None = None,
+               theme: str | None = None) -> DiskTrackerApp:
     import tkinter as tk
 
     owns_root = root is None
     window = root if root is not None else tk.Tk()
-    app = DiskTrackerApp(window, provider=provider, store=store, autostart=False)
+    app = DiskTrackerApp(window, provider=provider, store=store, autostart=False,
+                         settings=settings, theme=theme)
     if owns_root:
         app.owns_root = True
     return app
@@ -1505,7 +2093,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     import tkinter as tk
 
     root = tk.Tk()
-    DiskTrackerApp(root, provider=SmartctlProvider(), store=HistoryStore(), autostart=True)
+    store = HistoryStore()
+    DiskTrackerApp(root, provider=SmartctlProvider(), store=store, autostart=True,
+                   settings=SettingsStore(store.resolve_dir()))
     root.mainloop()
     return 0
 

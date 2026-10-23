@@ -23,6 +23,7 @@ smartctl.exe
 .ptrun_*
 .temps_*/
 .zzrun/
+.zzp*/
 .pytestlib/
 .yamllib/
 zz_*
