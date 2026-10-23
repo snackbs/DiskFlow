@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.5.1"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.5.2"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -1472,6 +1473,16 @@ _SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
 _LABEL_BASE: Any = _tk_for_scrollbar.Label if _tk_for_scrollbar else object
 
 
+# 数据区右侧细滚动条占用的宽度。KPI 指标行必须留出同样的右边距，
+# 否则它比下面的表格/卡片宽出这一条，两行的左右边缘对不齐。
+SCROLL_GUTTER = 10
+# 拖动窗口时 canvas 的 <Configure> 会连着触发几十次。卡片区里每张卡二三十个控件，
+# 每次都跟着重算几何会让缩放明显卡顿，所以宽度重排延迟到停手后再做一次。
+CARD_RESIZE_DELAY_MS = 250
+# 卡片之间的水平间距（只在列与列之间留，最右一列贴边，才能和 KPI 行右缘对齐）
+CARD_GAP = 10
+
+
 class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
     """极细的圆角滚动条。内容全部可见时自动隐藏，不占视觉。"""
 
@@ -1480,7 +1491,7 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
 
     def __init__(self, master: Any, orient: str = "vertical", command: Any = None, *,
                  track: str = "#FFFFFF", thumb: str = "#C6CDD6",
-                 thumb_hover: str = "#9AA6B2", thickness: int = 10,
+                 thumb_hover: str = "#9AA6B2", thickness: int = SCROLL_GUTTER,
                  radius: int = 3, **kwargs: Any) -> None:
         super().__init__(master, highlightthickness=0, bd=0, bg=track,
                          width=thickness if orient == "vertical" else 1,
@@ -1570,22 +1581,20 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         end = min(start + span, length - self.INSET)
         start = max(self.INSET, end - span)
         color = self.thumb_hover_color if self._hover else self.thumb_color
-        low, high = self.INSET, max(self.thickness - self.INSET, self.INSET + 2)
-        radius = max(1, min(self.radius, (high - low) // 2))
+        # 用一条带圆头端帽（capstyle=round）的粗线画滑块：端帽半径正好是线宽一半，
+        # 上下半圆与中间直条天然同心同宽。之前用 oval+rectangle 三个图元拼，
+        # 接缝和半圆处会漏出 1 像素，看起来像圆角「溢出去」了。
+        line_width = max(2, min(self.radius * 2, self.thickness - 2 * self.INSET))
+        center = self.thickness / 2.0
+        cap = line_width / 2.0
+        near = start + cap
+        far = max(near, end - cap)
         if self.orient == "vertical":
-            self.create_oval(low, start, high, start + 2 * radius, fill=color, outline="",
-                             tags="thumb")
-            self.create_oval(low, end - 2 * radius, high, end, fill=color, outline="",
-                             tags="thumb")
-            self.create_rectangle(low, start + radius, high, end - radius, fill=color,
-                                  outline="", tags="thumb")
+            self.create_line(center, near, center, far, width=line_width,
+                             capstyle="round", fill=color, tags="thumb")
         else:
-            self.create_oval(start, low, start + 2 * radius, high, fill=color, outline="",
-                             tags="thumb")
-            self.create_oval(end - 2 * radius, low, end, high, fill=color, outline="",
-                             tags="thumb")
-            self.create_rectangle(start + radius, low, end - radius, high, fill=color,
-                                  outline="", tags="thumb")
+            self.create_line(near, center, far, center, width=line_width,
+                             capstyle="round", fill=color, tags="thumb")
 
     # ---- 交互 ----
     def _on_press(self, event: Any) -> None:
@@ -1892,6 +1901,11 @@ class DiskTrackerApp:
         self.view_key = normalize_view_key(saved.get("view"))
         self._card_rows: list[Any] = []
         self._card_columns = 0
+        self._cards_width = -1          # 上一次同步给内部 Frame 的宽度
+        self._pending_cards_width = -1  # 最近一次 canvas 报告的宽度（延迟下发）
+        self._cards_resize_id: str | None = None  # 待执行的宽度下发（去抖用）
+        self._cards_bbox: tuple[int, ...] | None = None
+        self._scroll_sync_id: str | None = None   # 待执行的滚动区域同步（去抖用）
 
         self._build_menubar()
         self._build_widgets()
@@ -2016,11 +2030,14 @@ class DiskTrackerApp:
         self.admin_label.pack(side="left")
 
         # 指标卡（B/C/D 主题显示，A/E 主题隐藏；控件只建一次，切换主题时 pack/pack_forget）
-        self.kpi_frame = ttk.Frame(outer, style="App.TFrame")
+        # 右边距必须等于数据区右侧细滚动条的宽度：KPI 行与下面的表格/卡片共用
+        # 同一条右边界，否则最右一张卡会伸出去，和卡片右缘对不齐（v0.5.1 的观感问题）。
+        self.kpi_frame = ttk.Frame(outer, style="App.TFrame", padding=(0, 0, SCROLL_GUTTER, 0))
         self.kpi_values: dict[str, Any] = {}
         for index, (key, caption) in enumerate(KPI_SPECS):
             card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(12, 8))
-            card.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 10, 0))
+            card.grid(row=0, column=index, sticky="ew",
+                      padx=(0 if index == 0 else CARD_GAP, 0))
             self.kpi_frame.columnconfigure(index, weight=1)
             value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
             value.pack(fill="x")
@@ -2071,9 +2088,12 @@ class DiskTrackerApp:
                                                              anchor="nw")
         self.cards_inner.bind("<Configure>", self._sync_cards_scrollregion)
         self.cards_canvas.bind("<Configure>", self._resize_cards)
-        # 鼠标滚轮在卡片区也能滚（Windows 下 delta 是 120 的倍数）
-        for widget in (self.cards_canvas, self.cards_inner):
-            widget.bind("<MouseWheel>", self._on_cards_wheel)
+        # 鼠标滚轮在卡片区也能滚（Windows 下 delta 是 120 的倍数）。
+        # 只绑 canvas / inner 不够：指针落在卡片里的 Label、Entry 这些子控件上时
+        # Windows 的滚轮事件不会冒泡到父控件，看起来就是"只有背景能滚"。
+        # 每张卡建好后由 _bind_card_wheel() 递归绑到卡内所有控件。
+        self._bind_card_wheel(self.cards_canvas)
+        self._bind_card_wheel(self.cards_inner)
 
         # 底部条与注释行先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
         # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉
@@ -2317,6 +2337,8 @@ class DiskTrackerApp:
             self.table_frame.pack_forget()
             self.cards_frame.pack(fill="both", expand=True)
             self.render_cards()
+            # 切视图是一次性动作，不必等去抖，立刻把布局算准
+            self.flush_card_layout()
         if persist:
             self._save_setting("view", key)
         return key
@@ -2327,16 +2349,105 @@ class DiskTrackerApp:
         except OSError as exc:      # 只读目录等，不影响使用
             self._append_hint(f"偏好保存失败：{exc}")
 
+    def _bind_card_wheel(self, widget: Any) -> None:
+        """把滚轮事件绑到卡片里的每个控件上（含后续动态创建的子控件）。"""
+        try:
+            widget.bind("<MouseWheel>", self._on_cards_wheel)
+            children = widget.winfo_children()
+        except Exception:
+            return
+        for child in children:
+            self._bind_card_wheel(child)
+
     def _sync_cards_scrollregion(self, _event: Any = None) -> None:
-        self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all"))
+        """内容尺寸变化后重算滚动区域。
+
+        拖动窗口时 inner 的 <Configure> 会连着触发几十次，每次都 configure
+        scrollregion 会让 canvas 反复重排，形成「重排→再次 Configure」的反馈环，
+        缩放明显卡顿。这里合并成一次 after_idle 处理，并且只有 bbox 真变了才下发。
+        """
+        if self._scroll_sync_id is not None:
+            return
+        try:
+            self._scroll_sync_id = self.root.after_idle(self._apply_cards_scrollregion)
+        except Exception:
+            self._scroll_sync_id = None
+
+    def _apply_cards_scrollregion(self) -> None:
+        self._scroll_sync_id = None
+        try:
+            bbox = self.cards_canvas.bbox("all")
+        except Exception:
+            return
+        if bbox is None or bbox == self._cards_bbox:
+            return
+        self._cards_bbox = bbox
+        try:
+            self.cards_canvas.configure(scrollregion=bbox)
+        except Exception:
+            pass
 
     def _resize_cards(self, event: Any) -> None:
-        self.cards_canvas.itemconfigure(self._cards_window, width=event.width)
+        """canvas 宽度变化时同步内部 Frame 宽度（延迟合并，拖动时不再卡顿）。
+
+        两个坑叠在一起：
+        1) 宽度没变就重设一次会连锁触发 inner 的 <Configure>，形成反馈环；
+        2) 卡片里控件多，每次设宽度都要整块重算几何（实测 10 张卡约 250ms/步）。
+        所以先记下最新宽度、把「真正下发」延后 CARD_RESIZE_DELAY_MS：
+        连续拖动时定时器一直被重置，拖动过程只做 canvas 自适应（很轻），
+        松手后一次性重排，手感和流畅度都正常。
+        """
+        width = int(getattr(event, "width", 0) or 0)
+        if width <= 0 or width == self._pending_cards_width:
+            return
+        self._pending_cards_width = width
+        if self._cards_resize_id is not None:
+            try:
+                self.root.after_cancel(self._cards_resize_id)
+            except Exception:
+                pass
+        try:
+            self._cards_resize_id = self.root.after(
+                CARD_RESIZE_DELAY_MS, self._apply_cards_width)
+        except Exception:
+            self._cards_resize_id = None
+
+    def flush_card_layout(self) -> None:
+        """立刻执行挂起的宽度重排与滚动区域同步（切视图、测试断言前调用）。"""
+        if self._cards_resize_id is not None:
+            try:
+                self.root.after_cancel(self._cards_resize_id)
+            except Exception:
+                pass
+            self._cards_resize_id = None
+        self._apply_cards_width()
+        if self._scroll_sync_id is not None:
+            try:
+                self.root.after_cancel(self._scroll_sync_id)
+            except Exception:
+                pass
+            self._scroll_sync_id = None
+        self._apply_cards_scrollregion()
+
+    def _apply_cards_width(self) -> None:
+        """把延迟期间攒下的最新宽度真正下发给 canvas 内部 Frame。"""
+        self._cards_resize_id = None
+        width = self._pending_cards_width
+        if width <= 0 or width == getattr(self, "_cards_width", -1):
+            return
+        self._cards_width = width
+        try:
+            self.cards_canvas.itemconfigure(self._cards_window, width=width)
+        except Exception:
+            pass
 
     def _on_cards_wheel(self, event: Any) -> str:
         step = -1 * int(getattr(event, "delta", 0) // 120 or 0)
         if step:
-            self.cards_canvas.yview_scroll(step, "units")
+            try:
+                self.cards_canvas.yview_scroll(step, "units")
+            except Exception:
+                return "break"
         return "break"
 
     def render_cards(self) -> None:
@@ -2354,8 +2465,12 @@ class DiskTrackerApp:
         self._card_rows = self._sorted_rows(self.rows)
         for index, row in enumerate(self._card_rows):
             card = self._build_card(row, theme)
+            # 最右一列不留右边距，卡片右缘正好贴到滚动条前面，
+            # 和上面 KPI 行的右边界对齐
+            last_in_row = (index % columns) == columns - 1
             card.grid(row=index // columns, column=index % columns, sticky="nsew",
-                      padx=(0, 10), pady=(0, 8))
+                      padx=(0, 0 if last_in_row else CARD_GAP), pady=(0, 8))
+            self._bind_card_wheel(card)
         for column in range(columns):
             self.cards_inner.columnconfigure(column, weight=1, uniform="card", minsize=0)
         self.cards_canvas.configure(bg=theme["win_bg"])
@@ -2363,6 +2478,36 @@ class DiskTrackerApp:
         self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
                                   theme["scroll_thumb_hover"])
         self.root.after_idle(self._sync_cards_scrollregion)
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        """按显示列数估算 tk.Entry 的 width（中文/全角按 2 列算）。
+
+        Entry 的 width 单位是「平均字符宽度」，一个汉字实际占两列，
+        所以 len("已更新记录") + 1 只有 6 列，中文会被截成「已更新记」。
+        """
+        return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                   for ch in str(text))
+
+    def _card_text(self, master: Any, text: str, *, bg: str, fg: str, font: tuple,
+                   anchor: str = "w", **kwargs: Any) -> Any:
+        """卡片里的文字控件：只读 Entry，鼠标可以选中并 Ctrl+C 复制。
+
+        用 tk.Label 时文字完全选不中（用户反馈过），换只读 Entry 后
+        选择、拖选、Ctrl+C 全都是原生行为；readonlybackground 让底色与卡片一致，
+        relief/flat + 无高亮边框让外观和 Label 看不出差别。
+        """
+        tk = self.tk
+        kwargs.setdefault("width", 1)   # 默认 width=20 会把卡片撑宽，靠 fill 拉伸即可
+        entry = tk.Entry(master, state="readonly", readonlybackground=bg, fg=fg,
+                         relief="flat", bd=0, highlightthickness=0, takefocus=0,
+                         font=font, **kwargs)
+        entry.configure(state="normal")
+        entry.delete(0, "end")
+        entry.insert(0, text)
+        entry.configure(state="readonly")
+        entry.configure(justify=anchor if anchor in ("left", "right", "center") else "left")
+        return entry
 
     def _build_card(self, row: DiskRow, theme: dict[str, Any]) -> Any:
         """一块盘一张卡片：标题行（型号 + 协议 + 状态）+ 序列号行 + 指标格。"""
@@ -2380,19 +2525,26 @@ class DiskTrackerApp:
 
         title_row = tk.Frame(inner, bg=background)
         title_row.pack(fill="x")
-        tk.Label(title_row, text=row.model, bg=background, fg=foreground,
-                 font=(self.base_font[0], self.base_font[1] + 1, "bold"),
-                 anchor="w").pack(side="left")
-        tk.Label(title_row, text=row.protocol, bg=theme["head_bg"] or background,
+        status_text = _truncate(row.status_text, 30)
+        self._card_text(title_row, status_text, bg=background,
+                        fg=theme["alert_fg"] if alert else theme["note_fg"],
+                        font=(self.base_font[0], self.base_font[1] - 1),
+                        width=self._display_width(status_text) + 1
+                        ).pack(side="right")
+        name_row = tk.Frame(title_row, bg=background)
+        name_row.pack(side="left", fill="x", expand=True)
+        self._card_text(name_row, row.model, bg=background, fg=foreground,
+                        font=(self.base_font[0], self.base_font[1] + 1, "bold")
+                        ).pack(side="left", fill="x", expand=True)
+        # 协议 badge 保持 Label：它是色块标签，不是需要复制的文字
+        tk.Label(name_row, text=row.protocol, bg=theme["head_bg"] or background,
                  fg=theme["head_fg"], font=(self.base_font[0], self.base_font[1] - 1),
                  padx=6).pack(side="left", padx=(8, 0))
-        tk.Label(title_row, text=_truncate(row.status_text, 30), bg=background,
-                 fg=theme["alert_fg"] if alert else theme["note_fg"],
-                 font=(self.base_font[0], self.base_font[1] - 1)).pack(side="right")
 
-        tk.Label(inner, text=f"{row.serial}  ·  {row.device_path}", bg=background,
-                 fg=theme["note_fg"], font=(self.base_font[0], self.base_font[1] - 1),
-                 anchor="w").pack(fill="x", pady=(2, 7))
+        self._card_text(inner, f"{row.serial}  ·  {row.device_path}", bg=background,
+                        fg=theme["note_fg"],
+                        font=(self.base_font[0], self.base_font[1] - 1), width=1
+                        ).pack(fill="x", pady=(2, 7))
 
         metric_row = tk.Frame(inner, bg=background)
         metric_row.pack(fill="x")
@@ -2425,10 +2577,10 @@ class DiskTrackerApp:
             cell = tk.Frame(metric_row, bg=background)
             cell.grid(row=index // columns, column=index % columns,
                       sticky="ew", padx=(0, 14), pady=(0, 2))
-            tk.Label(cell, text=caption, bg=background, fg=theme["card_lbl"],
-                     font=(self.base_font[0], self.base_font[1] - 1), anchor="w").pack(fill="x")
-            tk.Label(cell, text=text, bg=background, fg=color,
-                     font=value_font, anchor="w").pack(fill="x")
+            self._card_text(cell, caption, bg=background, fg=theme["card_lbl"],
+                            font=(self.base_font[0], self.base_font[1] - 1)).pack(fill="x")
+            self._card_text(cell, text, bg=background, fg=color,
+                            font=value_font).pack(fill="x")
         return outer
 
     def rows_to_tsv(self, rows: Sequence[DiskRow] | None = None) -> str:
