@@ -1556,7 +1556,7 @@ def test_gui_view_choice_is_persisted_and_restored(tk_root, tmp_path):
     window.run_pipeline_sync()
     # 记录「本次运行写入完成后」的历史快照，之后只切视图不该再动它
     history_after_run = store.path.read_text(encoding="utf-8")
-    records_after_run = len(json.loads(history_after_run)["records"])
+    records_after_run = app.count_history_readings(json.loads(history_after_run))
 
     window.seg_buttons[app.VIEW_GRID].invoke()      # 等同用户点顶栏的分段按钮
     tk_root.update_idletasks()
@@ -1565,7 +1565,7 @@ def test_gui_view_choice_is_persisted_and_restored(tk_root, tmp_path):
     assert settings.path.exists()
     # 视图偏好写进 settings.json，不写 history.json
     assert store.path.read_text(encoding="utf-8") == history_after_run
-    assert len(json.loads(store.path.read_text(encoding="utf-8"))["records"]) == records_after_run
+    assert app.count_history_readings(json.loads(store.path.read_text(encoding="utf-8"))) == records_after_run
     first_root.destroy()
 
     second_root = tkinter.Toplevel(tk_root)
@@ -2102,3 +2102,162 @@ def test_gui_cards_still_scroll_when_content_overflows(tk_root, tmp_path):
     assert canvas.yview()[0] > start, "内容放不下时滚轮必须能滚"
     assert canvas.canvasy(0) > 0
     window_root.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 12. history.json v2：盘档案 + 读数数组（体积只随「天数 × 盘数」增长）
+# ---------------------------------------------------------------------------
+
+
+def _reading(stamp, read_gb, write_gb, key="M|S", media=0, model="M", serial="S"):
+    return {
+        "timestamp": stamp, "key": key, "model": model, "serial": serial,
+        "protocol": "NVMe", "device": "/dev/nvme0",
+        "read_gb": read_gb, "write_gb": write_gb, "media_errors": media,
+    }
+
+
+def test_history_v2_file_stores_disk_profile_once(tmp_path):
+    """v2 文件结构：型号/序列号/协议/设备每块盘只存一次，每条读数只存 4 个短字段。"""
+    store = _store(tmp_path)
+    base = datetime(2026, 5, 1, 8, 0, tzinfo=TZ8)
+    store.save([_reading((base + timedelta(hours=hour)).isoformat(timespec="seconds"),
+                         10.0 + hour, 20.0 + hour)
+                for hour in range(3)])
+
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == app.SCHEMA_VERSION == 2
+    assert "records" not in payload, "v2 不再有随运行次数线性膨胀的扁平 records 数组"
+    assert len(payload["disks"]) == 1
+    disk = payload["disks"][0]
+    assert (disk["model"], disk["serial"]) == ("M", "S")
+    assert disk["protocol"] == "NVMe" and disk["device"] == "/dev/nvme0"
+    assert len(disk["readings"]) == 3
+    assert set(disk["readings"][0]) == {"t", "r", "w", "e"}, "读数键名必须压到最短"
+    assert disk["readings"][0]["r"] == pytest.approx(10.0)
+    assert disk["readings"][0]["e"] == 0
+
+    # 上层拿到的仍然是扁平记录列表，增量计算层完全不用改
+    loaded = store.load()
+    assert [record["read_gb"] for record in loaded.records] == [10.0, 11.0, 12.0]
+    assert loaded.records[0]["model"] == "M"
+    assert loaded.records[0]["device"] == "/dev/nvme0"
+    assert loaded.migrated is False
+
+
+def test_history_v2_trim_keeps_first_last_and_one_reading_per_old_day(tmp_path):
+    """最近 24 小时原样保留；更早的每天只留最后一条；首条与末条永久保留。"""
+    store = _store(tmp_path)
+    base = datetime(2026, 1, 1, 0, 0, tzinfo=TZ8)
+    written = []
+    for day in range(30):
+        for hour in (0, 6, 12, 18):
+            stamp = (base + timedelta(days=day, hours=hour)).isoformat(timespec="seconds")
+            written.append((stamp, 1000.0 + day * 10 + hour))
+    store.save([_reading(stamp, read_gb, read_gb / 2) for stamp, read_gb in written])
+
+    readings = json.loads(store.path.read_text(encoding="utf-8"))["disks"][0]["readings"]
+    # 最后一天 4 条全在 24h 窗口内；前一天 18 点刚好等于边界（按"仍在窗口内"处理）；
+    # 更早的 29 天各折叠成 1 条，但第 1 天因"首条永久保留"多留一条（0 点 + 18 点）。
+    assert len(readings) == 35, f"折叠后应剩 35 条，实际 {len(readings)}"
+    assert len(readings) < len(written)
+    assert readings[0]["t"] == written[0][0], "第一条读数必须永久保留，否则历史累计增量会算错"
+    assert readings[-1]["t"] == written[-1][0], "最后一条读数必须永久保留，否则本次区间增量会算错"
+    # 更早的日子里同一天最多留两条（首条 + 当天最后一条）
+    per_day = {}
+    for reading in readings:
+        per_day.setdefault(reading["t"][:10], []).append(reading)
+    for day_text, items in per_day.items():
+        if day_text < "2026-01-29":
+            assert len(items) <= 2, f"{day_text} 折叠后仍保留 {len(items)} 条"
+
+    assert len(store.load().records) == 35, "读回来应展开成同样多的扁平记录"
+
+
+def test_history_v2_growth_is_bounded_and_totals_survive(tmp_path):
+    """连跑 90 次（30 天）后，文件体积有上限，且首次记录仍能算出历史累计增量。"""
+    store = _store(tmp_path)
+    base = datetime(2026, 1, 1, 0, 0, tzinfo=TZ8)
+    records: list[dict] = []
+    for day in range(30):
+        for hour in (2, 10, 18):
+            moment = base + timedelta(days=day, hours=hour)
+            records.append(_reading(moment.isoformat(timespec="seconds"),
+                                    1000.0 + day * 10 + hour, 500.0 + day * 5))
+            store.save(list(records))
+
+    first_read = records[0]["read_gb"]
+    last_read = records[-1]["read_gb"]
+    loaded = store.load()
+    assert len(loaded.records) < 90, "v2 必须折叠，否则体积仍随使用时长线性增长"
+    assert loaded.records[0]["read_gb"] == pytest.approx(first_read), "首次记录必须还在"
+    assert loaded.records[-1]["read_gb"] == pytest.approx(last_read), "最后一条必须还在"
+    assert store.path.stat().st_size < 20000, "90 次运行后文件仍应是几十 KB 量级"
+
+    # 增量仍然正确：历史累计相对首次记录，本次区间相对上一条
+    snapshot = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model="M", serial="S",
+                                read_bytes=2000 * 1024 ** 3, write_bytes=900 * 1024 ** 3,
+                                media_errors=0)
+    rows = {row.key: row for row in app.build_rows(loaded.records, [snapshot])}
+    row = rows[app.disk_key("M", "S")]
+    assert row.hist_read_delta_gb == pytest.approx(2000.0 - first_read)
+    assert row.read_delta_gb == pytest.approx(2000.0 - last_read)
+
+
+def test_history_v1_file_migrates_to_v2_silently_with_backup(tmp_path):
+    """读到 v1 不当作损坏：直接可用；下次写盘前先备份成 history.before-trim-<日期>.json。"""
+    store = _store(tmp_path)
+    path = store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(FIXTURES / "history_with_history.json", path)
+    before = path.read_text(encoding="utf-8")
+    assert json.loads(before)["schema_version"] == 1
+
+    loaded = store.load()
+    assert loaded.recovered is False, "v1 是旧格式而不是损坏，不能备份重建"
+    assert loaded.migrated is True
+    assert len(loaded.records) == 3
+    assert path.read_text(encoding="utf-8") == before, "只读不该改写文件"
+
+    store.save(loaded.records)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert isinstance(payload.get("disks"), list) and len(payload["disks"]) == 2
+    backups = list(path.parent.glob(app.HISTORY_BACKUP_PREFIX + "*.json"))
+    assert len(backups) == 1, "升级前必须留一份旧文件备份"
+    assert json.loads(backups[0].read_text(encoding="utf-8"))["schema_version"] == 1
+    assert store.load().migrated is False
+
+
+def test_history_v2_broken_disk_entry_is_backed_up_and_rebuilt(tmp_path):
+    """v2 结构本身坏掉（readings 不是数组）也要备份 + 重建基线，而不是崩溃。"""
+    store = _store(tmp_path)
+    path = store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": 2, "app": app.APP_STORAGE_ID,
+        "disks": [{"model": "M", "serial": "S", "readings": "oops"}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = store.load()
+    assert result.recovered is True
+    assert result.records == []
+    assert "字段异常" in result.message
+    assert len(list(path.parent.glob("history.corrupt-*.json"))) == 1
+    assert not path.exists()
+
+
+def test_v2_reading_without_timestamp_is_rejected(tmp_path):
+    """读数缺 t（无法解析）必须按"字段异常"处理。"""
+    store = _store(tmp_path)
+    path = store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": 2, "app": app.APP_STORAGE_ID,
+        "disks": [{"model": "M", "serial": "S",
+                   "readings": [{"t": "not-a-time", "r": 1.0, "w": 2.0, "e": 0}]}],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = store.load()
+    assert result.recovered is True
+    assert "timestamp 无法解析" in result.message
