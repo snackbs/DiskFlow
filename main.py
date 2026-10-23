@@ -33,7 +33,9 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用�
 APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.5.2"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.5.3"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_AUTHOR = "snackbs"                             # 「关于」里显示的作者
+APP_AI_NOTE = "由 AI 辅助编写"                      # 「关于」里的开发方式说明
 
 # 容量换算常量
 LBA_BYTES = 512                  # SATA: 1 LBA = 512 字节
@@ -90,6 +92,8 @@ def about_text(history_path: Any = None) -> str:
         f"{APP_DISPLAY_NAME}\n"
         f"版本：v{APP_VERSION}\n"
         f"可执行文件：{APP_EXE_NAME}.exe\n"
+        f"作者：{APP_AUTHOR}\n"
+        f"开发方式：{APP_AI_NOTE}\n"
         "\n"
         "记录本机各物理磁盘的累计读取量与累计写入量，并在每次打开时与上一次记录对比，\n"
         "给出本次区间增量与历史累计增量；同时监测 NVMe 的 0E（介质与数据完整性错误）。\n"
@@ -177,6 +181,17 @@ def fmt_delta(value: float | None, digits: int = 2) -> str:
         return "—"
     sign = "+" if value >= 0 else ""
     return f"{sign}{value:,.{digits}f}"
+
+
+def fmt_delta_gb(value: float | None, digits: int = 2) -> str:
+    """增量带单位的写法（卡片用）：+348.80 GB。
+
+    表格列头已经写了「(GB)」，所以表格里的增量不带单位；卡片每格是独立小字，
+    不带单位看的人要先回头看列头，容易误解成次数或百分比。
+    """
+    if value is None:
+        return "—"
+    return f"{fmt_delta(value, digits)} GB"
 
 
 def fmt_size_gb(value: float | None, digits: int = 2) -> str:
@@ -1257,6 +1272,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#606060", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
+        "scroll_idle": "#E4E8ED",
         "seg_sel_bg": "#0078D7", "seg_sel_fg": "#FFFFFF",
         "seg_hover_bg": "#E5F1FB", "seg_hover_fg": "#1A1A1A",
         "seg_border": "#B8B8B8",
@@ -1274,6 +1290,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#F4F7FA", "card_border": None, "card_val": "#1F2933",
         "card_lbl": "#7B8794", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#C6CDD6", "scroll_thumb_hover": "#9AA6B2",
+        "scroll_idle": "#E4E8ED",
         "seg_sel_bg": "#2B3440", "seg_sel_fg": "#FFFFFF",
         "seg_hover_bg": "#E3E9F0", "seg_hover_fg": "#1F2933",
         "seg_border": "#D5DDE6",
@@ -1291,6 +1308,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#262C33", "card_border": None, "card_val": "#7FC8A9",
         "card_lbl": "#8B97A3", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#7C8A99", "scroll_thumb_hover": "#9AA9B8",
+        "scroll_idle": "#2E353D",
         "seg_sel_bg": "#3E6E8E", "seg_sel_fg": "#F2F7FB",
         "seg_hover_bg": "#2F3942", "seg_hover_fg": "#D6DEE7",
         "seg_border": "#3A444D",
@@ -1308,6 +1326,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": "#DCE4EC", "card_val": "#1B6FB8",
         "card_lbl": "#7C8B99", "num_family": "Consolas", "card_pt": 15,
         "scroll_thumb": "#C8D3DE", "scroll_thumb_hover": "#9DB0C4",
+        "scroll_idle": "#E9EFF5",
         "seg_sel_bg": "#1B6FB8", "seg_sel_fg": "#FFFFFF",
         "seg_hover_bg": "#E6EEF6", "seg_hover_fg": "#1B2A38",
         "seg_border": "#DCE4EC",
@@ -1324,6 +1343,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
         "card_lbl": "#A0A0A0", "num_family": "Consolas", "card_pt": 12,
         "scroll_thumb": "#D8D8D8", "scroll_thumb_hover": "#B8B8B8",
+        "scroll_idle": "#EFEFEF",
         "seg_sel_bg": "#2A2A2A", "seg_sel_fg": "#FFFFFF",
         "seg_hover_bg": "#F0F0F0", "seg_hover_fg": "#1A1A1A",
         "seg_border": "#E2E2E2",
@@ -1491,7 +1511,8 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
 
     def __init__(self, master: Any, orient: str = "vertical", command: Any = None, *,
                  track: str = "#FFFFFF", thumb: str = "#C6CDD6",
-                 thumb_hover: str = "#9AA6B2", thickness: int = SCROLL_GUTTER,
+                 thumb_hover: str = "#9AA6B2", idle: str = "#E4E8ED",
+                 thickness: int = SCROLL_GUTTER,
                  radius: int = 3, **kwargs: Any) -> None:
         super().__init__(master, highlightthickness=0, bd=0, bg=track,
                          width=thickness if orient == "vertical" else 1,
@@ -1501,6 +1522,7 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         self.track_color = track
         self.thumb_color = thumb
         self.thumb_hover_color = thumb_hover
+        self.idle_color = idle
         self.thickness = thickness
         self.radius = radius
         self.first = 0.0
@@ -1530,11 +1552,14 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
     def get(self) -> tuple[float, float]:
         return (self.first, self.last)
 
-    def recolor(self, track: str, thumb: str, thumb_hover: str) -> None:
+    def recolor(self, track: str, thumb: str, thumb_hover: str,
+                idle: str | None = None) -> None:
         """主题切换时重配颜色（不重建控件）。"""
         self.track_color = track
         self.thumb_color = thumb
         self.thumb_hover_color = thumb_hover
+        if idle is not None:
+            self.idle_color = idle
         try:
             self.configure(bg=track)
         except Exception:
@@ -1571,16 +1596,22 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
             self.delete("thumb")
         except Exception:
             return
-        if not self.visible:
-            return
         length = self._length()
         if length <= self.thickness + 2 * self.INSET:
             return
-        span = self._thumb_span(length)
-        start = self._thumb_start(length)
-        end = min(start + span, length - self.INSET)
-        start = max(self.INSET, end - span)
-        color = self.thumb_hover_color if self._hover else self.thumb_color
+        if self.visible:
+            span = self._thumb_span(length)
+            start = self._thumb_start(length)
+            end = min(start + span, length - self.INSET)
+            start = max(self.INSET, end - span)
+            color = self.thumb_hover_color if self._hover else self.thumb_color
+        else:
+            # 内容全部可见：依然占住这一条（画成很淡的整条），不再整条消失。
+            # 之前这里是「直接不画」，右侧就空出一道和滚动条等宽的留白，
+            # 看起来像滚动条丢了，也会让人怀疑卡片是不是没对齐。
+            start = self.INSET
+            end = length - self.INSET
+            color = self.thumb_hover_color if self._hover else self.idle_color
         # 用一条带圆头端帽（capstyle=round）的粗线画滑块：端帽半径正好是线宽一半，
         # 上下半圆与中间直条天然同心同宽。之前用 oval+rectangle 三个图元拼，
         # 接缝和半圆处会漏出 1 像素，看起来像圆角「溢出去」了。
@@ -2209,7 +2240,8 @@ class DiskTrackerApp:
         for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
                     getattr(self, "cards_scroll", None)):
             if bar is not None:
-                bar.recolor(theme["win_bg"], theme["scroll_thumb"], theme["scroll_thumb_hover"])
+                bar.recolor(theme["win_bg"], theme["scroll_thumb"],
+                            theme["scroll_thumb_hover"], theme["scroll_idle"])
         if hasattr(self, "cards_canvas"):
             self.cards_canvas.configure(bg=theme["win_bg"])
             self.cards_inner.configure(bg=theme["win_bg"])
@@ -2463,20 +2495,29 @@ class DiskTrackerApp:
             self.cards_inner.columnconfigure(column, weight=0, uniform="")
         self._card_columns = columns
         self._card_rows = self._sorted_rows(self.rows)
+        # 列间距要两边各让一半：如果只在左列卡片右侧留 CARD_GAP，
+        # 左列卡片就比右列窄 CARD_GAP 像素（实测 567 vs 577），双列看着就是歪的。
+        half_gap = CARD_GAP // 2
         for index, row in enumerate(self._card_rows):
             card = self._build_card(row, theme)
-            # 最右一列不留右边距，卡片右缘正好贴到滚动条前面，
-            # 和上面 KPI 行的右边界对齐
-            last_in_row = (index % columns) == columns - 1
-            card.grid(row=index // columns, column=index % columns, sticky="nsew",
-                      padx=(0, 0 if last_in_row else CARD_GAP), pady=(0, 8))
+            column = index % columns
+            if columns == 1:
+                padx = (0, 0)                       # 单列：卡片贴满整行，右缘与 KPI 行对齐
+            elif column == 0:
+                padx = (0, half_gap)                # 最左列
+            elif column == columns - 1:
+                padx = (half_gap, 0)                # 最右列：右侧不留白，贴住滚动条
+            else:
+                padx = (half_gap, half_gap)
+            card.grid(row=index // columns, column=column, sticky="nsew",
+                      padx=padx, pady=(0, 8))
             self._bind_card_wheel(card)
         for column in range(columns):
             self.cards_inner.columnconfigure(column, weight=1, uniform="card", minsize=0)
         self.cards_canvas.configure(bg=theme["win_bg"])
         self.cards_inner.configure(bg=theme["win_bg"])
         self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
-                                  theme["scroll_thumb_hover"])
+                                  theme["scroll_thumb_hover"], theme["scroll_idle"])
         self.root.after_idle(self._sync_cards_scrollregion)
 
     @staticmethod
@@ -2533,10 +2574,12 @@ class DiskTrackerApp:
                         ).pack(side="right")
         name_row = tk.Frame(title_row, bg=background)
         name_row.pack(side="left", fill="x", expand=True)
+        # 型号用「按显示宽度定宽、不填充」的只读 Entry：它会紧挨着后面的协议徽章，
+        # 而不是被 fill="x" 拉到整行最右、把徽章挤到状态文字跟前（v0.5.2 的观感问题）。
         self._card_text(name_row, row.model, bg=background, fg=foreground,
-                        font=(self.base_font[0], self.base_font[1] + 1, "bold")
-                        ).pack(side="left", fill="x", expand=True)
-        # 协议 badge 保持 Label：它是色块标签，不是需要复制的文字
+                        font=(self.base_font[0], self.base_font[1] + 1, "bold"),
+                        width=self._display_width(row.model) + 1).pack(side="left")
+        # 协议徽章紧跟型号（保持 Label：它是色块标签，不是需要复制的文字）
         tk.Label(name_row, text=row.protocol, bg=theme["head_bg"] or background,
                  fg=theme["head_fg"], font=(self.base_font[0], self.base_font[1] - 1),
                  padx=6).pack(side="left", padx=(8, 0))
@@ -2561,7 +2604,8 @@ class DiskTrackerApp:
                 text = fmt_size_short(row.write_gb)
             elif field in ("read_delta_gb", "write_delta_gb",
                            "hist_read_delta_gb", "hist_write_delta_gb"):
-                text = fmt_delta(value)
+                # 卡片每格是独立小字，没有列头写「(GB)」，所以这里必须带单位
+                text = fmt_delta_gb(value)
             elif field == "interval_text":
                 text = row.interval_text
             else:
