@@ -40,6 +40,11 @@ release_notes.md
 *.tmp
 history.json
 history.corrupt-*.json
+history.reset-*.json
+history.before-trim-*.json
+
+# ---- 本地工具链配置（cc-safety-net 项目级声明，仅本机生效）----
+.cc-safety-net/
 
 # ---- 本地推送辅助目录（可能含凭证，绝不提交）----
 .zztmp/

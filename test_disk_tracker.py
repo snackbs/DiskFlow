@@ -318,6 +318,24 @@ def test_fmt_size_gb_keeps_both_units_for_huge_values():
     assert app.fmt_size_gb(0.0) == "0.00 GB"
 
 
+def test_fmt_bytes_size_steps_through_b_kb_mb_gb():
+    """字节→人读体积：按 1024 阶梯换单位，边界与异常值都不抛异常。"""
+    assert app.fmt_bytes_size(0) == "0 B"
+    assert app.fmt_bytes_size(1023) == "1023 B"
+    assert app.fmt_bytes_size(1024) == "1.0 KB"
+    assert app.fmt_bytes_size(1536) == "1.5 KB"
+    assert app.fmt_bytes_size(1024 * 1024 - 1) == "1,024.0 KB"
+    assert app.fmt_bytes_size(1024 * 1024) == "1.0 MB"
+    assert app.fmt_bytes_size(12 * 1024 * 1024 + 512 * 1024) == "12.5 MB"
+    assert app.fmt_bytes_size(1024 ** 3) == "1.00 GB"
+    assert app.fmt_bytes_size(12254196) == "11.7 MB"      # 真实 exe 体积的量级
+    assert app.fmt_bytes_size(2 * 1024 ** 3) == "2.00 GB"
+    # 不好读的输入一律给「—」，绝不把界面文案变成异常
+    assert app.fmt_bytes_size(None) == "—"
+    assert app.fmt_bytes_size("not-a-number") == "—"
+    assert app.fmt_bytes_size(-5) == "—"
+
+
 def test_health_text_nvme_uses_100_minus_percentage_used():
     snapshot = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
                                 model="M", serial="S", read_bytes=0, write_bytes=0,
@@ -723,6 +741,46 @@ def test_history_missing_fields_are_backed_up(tmp_path):
     assert list(path.parent.glob("history.corrupt-*.json"))
 
 
+def test_history_reset_backs_up_old_file_and_rebuilds_empty_baseline(tmp_path):
+    """重置历史：旧文件改名备份（不删），新文件是空基线，仍能正常追加。"""
+    store = _store(tmp_path)
+    when = datetime(2026, 4, 30, 8, 0, tzinfo=TZ8)
+    snap = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model="M", serial="S",
+                            read_bytes=10 * 1024 ** 3, write_bytes=20 * 1024 ** 3,
+                            media_errors=0)
+    store.save(app.records_from_snapshots([snap], when))
+    path = store.path
+    assert store.load().records
+
+    backup = store.reset()
+
+    assert backup is not None
+    assert backup.exists(), "重置必须把旧文件改名留档，而不是直接删除"
+    assert backup.name.startswith(app.HISTORY_RESET_PREFIX)
+    assert backup.name.endswith(".json")
+    assert backup.parent == path.parent
+    assert backup.stat().st_size > 0
+    # 旧内容确实进了备份
+    assert "M" in backup.read_text(encoding="utf-8")
+    # 新文件是干净的空基线，且还能继续追加
+    assert path.exists()
+    assert store.load().records == []
+    store.save(app.records_from_snapshots([snap], when))
+    assert len(store.load().records) == 1
+
+
+def test_history_reset_without_existing_file_returns_none(tmp_path):
+    """本来就没有历史文件时，重置不报错、不产生备份，只建空基线。"""
+    store = _store(tmp_path)
+    assert not store.path.exists()
+
+    assert store.reset() is None
+
+    assert store.path.exists()
+    assert store.load().records == []
+    assert not list(store.path.parent.glob(app.HISTORY_RESET_PREFIX + "*.json"))
+
+
 def test_history_falls_back_to_localappdata_when_primary_unwritable(tmp_path):
     """主目录不可写时回退到 %LOCALAPPDATA%\\<APP_STORAGE_ID>。
 
@@ -1040,7 +1098,33 @@ def test_gui_baseline_message_on_first_run(tk_root, tmp_path):
     tk_root.update_idletasks()
     assert outcome.baseline is True
     assert len(window.tree.get_children()) == 3
-    assert "已记录基线，下次打开将显示增量" in window.note_label.cget("text")
+    note_text = window.note_label.cget("text")
+    assert "已记录基线，下次打开将显示增量" in note_text
+    # 底部注释行还要给出历史文件的实际体积，方便判断文件有没有在长
+    assert str(store.path) in note_text
+    assert app.fmt_bytes_size(store.path.stat().st_size) in note_text
+    window.root.destroy()
+
+
+def test_gui_note_label_shows_history_file_size(tk_root, tmp_path, monkeypatch):
+    """底部注释行：历史文件路径后面必须带文件大小；文件读不到时给「—」而不是抛异常。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+
+    size_text = app.fmt_bytes_size(store.path.stat().st_size)
+    note_text = window.note_label.cget("text")
+    assert str(store.path) in note_text
+    assert size_text in note_text
+    assert "历史文件：" in note_text
+
+    # 取不到大小（文件被删/被占用）时退回「—」，不能让界面文案抛异常
+    monkeypatch.setattr(app.gui.Path, "stat",
+                        lambda self, *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    assert window._history_size_text(store.path) == "—"
     window.root.destroy()
 
 
@@ -1206,13 +1290,19 @@ def test_changelog_has_section_for_current_version():
 
 
 def test_changelog_newest_entry_matches_app_version():
-    """第一个版本小节必须是当前版本：避免发了新版却忘了写日志。"""
-    first_header = next(
-        line for line in CHANGELOG.read_text(encoding="utf-8").splitlines()
-        if line.startswith("## ")
-    )
+    """第一个**版本**小节必须是当前版本：避免发了新版却忘了写日志。
+
+    `## [未发布]` 是发版前的暂存区（发版时把它改名成具体版本号），
+    它不算版本小节，所以这里跳过它再看第一个 x.y.z 小节。
+    """
+    headers = [line for line in CHANGELOG.read_text(encoding="utf-8").splitlines()
+               if line.startswith("## ")]
+    versioned = [line for line in headers
+                 if re.match(r"^##\s+\[?\d+\.\d+\.\d+", line)]
+    assert versioned, "CHANGELOG.md 里没有任何 '## [x.y.z]' 形式的版本小节"
+    first_header = versioned[0]
     assert app.APP_VERSION in first_header, (
-        f"CHANGELOG.md 最新的小节是 {first_header!r}，与 APP_VERSION {app.APP_VERSION} 不一致"
+        f"CHANGELOG.md 最新的版本小节是 {first_header!r}，与 APP_VERSION {app.APP_VERSION} 不一致"
     )
 
 
@@ -1351,6 +1441,44 @@ def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
     assert "跟随系统" in theme_entries
 
     assert window.lang_menu.entrycget(1, "state") == "disabled"
+    window.root.destroy()
+
+
+def test_gui_reset_history_file_menu_entry_and_confirm_flow(tk_root, tmp_path, monkeypatch):
+    """「重置历史文件」挂在文件菜单下：取消则不动文件，确认则备份改名并重新记录。"""
+    import tkinter.messagebox as mb
+
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+
+    file_entries = [window.file_menu.entrycget(i, "label")
+                    for i in range(window.file_menu.index("end") + 1)
+                    if window.file_menu.type(i) == "command"]
+    assert "重置历史文件(&E)" in file_entries
+    assert "打开历史文件(&O)" in file_entries
+
+    # 先取消：文件必须原样保留，也不触发重新记录
+    refreshed = []
+    monkeypatch.setattr(window, "refresh_async", lambda: refreshed.append(True))
+    monkeypatch.setattr(mb, "askyesno", lambda *a, **k: False)
+    before_text = store.path.read_text(encoding="utf-8")
+    window.reset_history_file()
+    assert store.path.read_text(encoding="utf-8") == before_text
+    assert refreshed == []
+    assert not list(store.path.parent.glob(app.HISTORY_RESET_PREFIX + "*.json"))
+
+    # 再确认：旧内容进备份，新文件重建基线，并自动刷新记录
+    monkeypatch.setattr(mb, "askyesno", lambda *a, **k: True)
+    window.reset_history_file()
+    backups = list(store.path.parent.glob(app.HISTORY_RESET_PREFIX + "*.json"))
+    assert len(backups) == 1
+    assert "TEST NVME" in backups[0].read_text(encoding="utf-8")
+    assert store.load().records == []
+    assert refreshed == [True]
+    assert any("已重置" in part for part in window.hint_parts)
     window.root.destroy()
 
 
@@ -1904,10 +2032,19 @@ def test_gui_card_deltas_show_unit_and_badge_follows_model(tk_root, tmp_path):
     badges = [w for w in _descendants(card)
               if w.winfo_class() == "Label" and w.cget("text") in ("NVMe", "SATA")]
     assert badges, "卡片里应该有协议徽章"
-    assert all(badge.master is model_entry.master for badge in badges), \
+    holder = model_entry.master
+    assert holder.winfo_class() == "Frame", "型号 Entry 应该装在一个定宽 Frame 里"
+    assert all(badge.master is holder.master for badge in badges), \
         "协议徽章必须与型号同处标题行"
-    # 型号 Entry 不能 fill 拉伸：否则徽章会被挤到状态文字旁边
-    assert model_entry.pack_info().get("fill") in ("none", "", None)
+    # 定宽 Frame 必须按实测字宽锁宽（+2px 余量）：Entry 的 width 单位是 "0" 字形宽，
+    # 按中英列数估算会给短型号凭空多出二十来像素空白，把协议徽章推远。
+    tkfont = pytest.importorskip("tkinter.font")
+    measured = tkfont.Font(root=tk_root, font=model_entry.cget("font")).measure(
+        model_entry.get())
+    assert abs(int(holder.winfo_reqwidth()) - (measured + 2)) <= 2, \
+        f"型号外层宽度应与实测字宽一致：holder={holder.winfo_reqwidth()} text={measured}"
+    # 定宽 Frame 自己不能被 fill 拉伸：否则徽章又会被挤到状态文字旁边
+    assert holder.pack_info().get("fill") in ("none", "", None)
 
 
 def test_gui_grid_columns_have_equal_width(tk_root, tmp_path):
