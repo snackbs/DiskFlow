@@ -9,6 +9,8 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 - 单窗口 tkinter/ttk，运行时零第三方依赖，关闭即退出——没有后台进程、没有系统服务、不开机自启。
 - 产物是 PyInstaller onefile 单文件 exe，`--noconsole` + `--uac-admin`。
+- 目标机**不需要装 Python，也不需要装 smartmontools**：解释器、Tk/Tcl、`smartctl.exe` 全部打在包里
+  （详见[系统要求](#系统要求)）。唯一门槛是 x64 Windows 10/11。
 - 测试与打包都在 GitHub Actions 的 `windows-latest` 上真实执行，使用者不需要在本地装 Python。
 
 ## 功能
@@ -23,6 +25,32 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 | 主题跟随系统 | Windows 浅色/深色模式自动套用对应配色，也可在「主题」菜单里固定选一套 |
 | 三种视图 | 表格（8 列，成对指标上下两行）/ 卡片 / 双列，右上角一键切换，选择会被记住 |
 | 菜单栏 | 刷新、打开历史、复制表格、诊断信息、数据源状态、关于等入口都在菜单里 |
+
+## 系统要求
+
+| 项 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 / Windows 11，**64 位（x64）** |
+| Python | **不需要**。解释器、标准库、Tk/Tcl 全部打在 exe 里 |
+| smartmontools | **不需要**。`smartctl.exe` 已随 exe 打包，运行时从 `sys._MEIPASS` 解析 |
+| 其它运行库 | 无。VC++ 运行库、UCRT 都自带，不用另装 |
+| 权限 | 每次启动都会弹 UAC（读 SMART 需要管理员） |
+
+**关于 CPU 架构。** 发布的 exe 是 x64 单架构（PE `machine = 0x8664`）：
+
+- **32 位 Windows 不支持**：exe 在 32 位系统上会直接报「不是有效的 Win32 应用程序」。
+  Windows 11 本身只有 x64，32 位 Windows 10 也已于 2025-10 结束支持，所以没有单独出 32 位版本。
+- **Windows 11 ARM 设备（骁龙 X、Surface Pro X 等）可以直接运行**：系统自带 x64 模拟层
+  （Win10 ARM 不模拟 x64），无需另装版本。内嵌的 `smartctl.exe` 也是 x64，同样走模拟，
+  但读盘是一次几十毫秒的 `DeviceIoControl` 调用，模拟开销可以忽略。
+- 不单独出 ARM64 原生版：smartmontools 官方 Windows 包只提供 x64/x86，**没有 ARM64 构建**，
+  所以即便打了 ARM64 的 exe，最重的读盘环节仍要靠那个 x64 的 `smartctl.exe` 去模拟，
+  收益只有解释器和 Tk 这部分，不值得多一套 CI 与产物。
+
+**首次运行的两个提示。** exe 没有代码签名：SmartScreen 会拦一次「已保护你的电脑」，
+点「更多信息 → 仍要运行」即可；部分杀软会把 PyInstaller 单文件包误报为可疑，
+需要加白名单。另外 onefile 首次启动要把约 12 MB 解压到 `%TEMP%\_MEIxxxxxx`，
+冷启动会慢 1~3 秒，退出时自动清理，不留后台进程。
 
 ## 使用
 
@@ -167,7 +195,9 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 ## 从源码构建
 
-需要 Windows（PyInstaller 不能交叉编译）+ Python 3.11/3.12。
+需要 **x64 Windows**（PyInstaller 不能交叉编译）+ Python 3.11/3.12。产物架构跟着构建机走：
+在 x64 机器上打出的是 x64 exe，在 ARM64 机器上打出的才是 ARM64 exe，两者不能互相生成。
+仓库的 CI 固定用 `windows-latest`（x64），所以发布出来的永远是 x64。
 
 ```bat
 REM 1) 取 smartctl.exe 放到项目根目录（见下节）
