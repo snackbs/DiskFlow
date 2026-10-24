@@ -113,3 +113,21 @@ def fmt_size_short(value: float | None, digits: int = 2) -> str:
     if abs(value) >= 1024.0:
         return f"{value / 1024.0:,.{digits}f} TB"
     return f"{value:,.{digits}f} GB"
+
+
+def fmt_bytes_size(value: Any) -> str:
+    """字节数 -> 人读的文件体积（B / KB / MB / GB），用于「历史文件：…（12.3 KB）」。
+
+    与容量换算的 GB 口径无关：这里就是磁盘上的文件体积，所以阶梯用 1024。
+    None、负数、非法值一律返回「—」，绝不因为取不到大小让界面报错。
+    """
+    number = _as_int(value)
+    if number is None or number < 0:
+        return "—"
+    if number < 1024:
+        return f"{number} B"
+    if number < 1024 ** 2:
+        return f"{number / 1024:,.1f} KB"
+    if number < 1024 ** 3:
+        return f"{number / 1024 ** 2:,.1f} MB"
+    return f"{number / 1024 ** 3:,.2f} GB"

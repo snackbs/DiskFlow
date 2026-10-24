@@ -14,6 +14,7 @@ import traceback
 import unicodedata
 from dataclasses import field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .config import (
@@ -24,7 +25,7 @@ from .config import (
     about_text,
     window_title,
 )
-from .convert import fmt_delta, fmt_delta_gb, fmt_size_short
+from .convert import fmt_bytes_size, fmt_delta, fmt_delta_gb, fmt_size_short
 from .history import SCHEMA_VERSION, HistoryStore
 from .models import DiskRow
 from .orchestrate import RunOutcome, perform_run
@@ -540,6 +541,7 @@ class DiskTrackerApp:
         file_menu.add_command(label="刷新记录(&R)", accelerator="Ctrl+R",
                               command=self.refresh_async)
         file_menu.add_command(label="打开历史文件(&O)", command=self.open_history_file)
+        file_menu.add_command(label="重置历史文件(&E)", command=self.reset_history_file)
         file_menu.add_separator()
         file_menu.add_command(label="退出(&X)", accelerator="Alt+F4", command=self.close)
 
@@ -717,8 +719,8 @@ class DiskTrackerApp:
 
         # 底部条与注释行先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
         # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉
-        note = ttk.Label(outer, text=f"容量换算：{BYTES_PER_GIB_TEXT}；"
-                                     f"历史文件：{self.store.path}",
+        note = ttk.Label(outer,
+                         text=self._history_note_text(self.store.path, baseline=False),
                          style="Note.TLabel", anchor="w")
         note.pack(side="bottom", fill="x", pady=(4, 0))
         self.note_label = note
@@ -742,6 +744,21 @@ class DiskTrackerApp:
         self.body.pack(fill="both", expand=True)
 
         self._refresh_admin_label()
+
+    @staticmethod
+    def _history_size_text(path: Any) -> str:
+        """历史文件的体积（人读）；文件还不存在或取不到大小就给「—」。"""
+        try:
+            return fmt_bytes_size(Path(str(path)).stat().st_size)
+        except OSError:
+            return "—"
+
+    def _history_note_text(self, path: Any, *, baseline: bool) -> str:
+        """底部注释行文案：换算说明 / 基线提示 + 历史文件路径 + 文件体积。"""
+        size_text = self._history_size_text(path)
+        if baseline:
+            return f"已记录基线，下次打开将显示增量。历史文件：{path}（{size_text}）"
+        return f"容量换算：{BYTES_PER_GIB_TEXT}；历史文件：{path}（{size_text}）"
 
     def _refresh_admin_label(self) -> None:
         admin = is_admin()
@@ -1146,6 +1163,42 @@ class DiskTrackerApp:
                                   theme["scroll_thumb_hover"], theme["scroll_idle"])
         self.root.after_idle(self._sync_cards_scrollregion)
 
+    def _font_measure(self, font: tuple, text: str | None = None) -> int:
+        """用 Tk 字体度量取真实像素宽（text=None 时取行高）。
+
+        Tk 的 Entry「width」单位是该字体里 "0" 字形的宽度，与中英混排的真实宽度
+        没有对应关系：短型号按 _display_width()+1 定宽会凭空多出二十多像素空白，
+        协议徽章就被推得离型号很远。所以宽度必须用 font.measure() 实测。
+        取不到字体时退回粗估，绝不因为度量失败让界面崩掉。
+        """
+        try:
+            import tkinter.font as tkfont
+
+            metrics = tkfont.Font(root=self.root, font=font)
+            if text is None:
+                return int(metrics.metrics("linespace"))
+            return int(metrics.measure(text))
+        except Exception:
+            if text is None:
+                return (self.base_font[1] + 4) * 2
+            return self._display_width(text) * 8
+
+    def _card_fixed_text(self, master: Any, text: str, *, bg: str, fg: str, font: tuple,
+                         side: str = "left", extra: int = 2) -> Any:
+        """按文字真实像素宽锁宽的只读 Entry（外层 Frame 定宽、不随内容伸缩）。
+
+        返回外层 Frame：它紧跟着下一个控件，中间只剩设计好的间距，
+        不会出现「型号后面一大段空白、徽章被推到远处」的观感问题。
+        """
+        tk = self.tk
+        width = self._font_measure(font, text) + extra
+        holder = tk.Frame(master, bg=bg, width=width, height=self._font_measure(font))
+        holder.pack(side=side)
+        holder.pack_propagate(False)
+        self._card_text(holder, text, bg=bg, fg=fg, font=font, width=1
+                        ).pack(fill="both", expand=True)
+        return holder
+
     @staticmethod
     def _display_width(text: str) -> int:
         """按显示列数估算 tk.Entry 的 width（中文/全角按 2 列算）。
@@ -1193,18 +1246,18 @@ class DiskTrackerApp:
         title_row = tk.Frame(inner, bg=background)
         title_row.pack(fill="x")
         status_text = _truncate(row.status_text, 30)
-        self._card_text(title_row, status_text, bg=background,
-                        fg=theme["alert_fg"] if alert else theme["note_fg"],
-                        font=(self.base_font[0], self.base_font[1] - 1),
-                        width=self._display_width(status_text) + 1
-                        ).pack(side="right")
+        self._card_fixed_text(title_row, status_text, bg=background,
+                              fg=theme["alert_fg"] if alert else theme["note_fg"],
+                              font=(self.base_font[0], self.base_font[1] - 1),
+                              side="right")
         name_row = tk.Frame(title_row, bg=background)
         name_row.pack(side="left", fill="x", expand=True)
-        # 型号用「按显示宽度定宽、不填充」的只读 Entry：它会紧挨着后面的协议徽章，
+        # 型号用「按真实字宽锁宽、不填充」的只读 Entry：它会紧挨着后面的协议徽章，
         # 而不是被 fill="x" 拉到整行最右、把徽章挤到状态文字跟前（v0.5.2 的观感问题）。
-        self._card_text(name_row, row.model, bg=background, fg=foreground,
-                        font=(self.base_font[0], self.base_font[1] + 1, "bold"),
-                        width=self._display_width(row.model) + 1).pack(side="left")
+        # 宽度必须用 font.measure 实测：Entry 的 width 单位是 "0" 字形宽，
+        # 按中文占两列的估算定宽会给短型号凭空多出二十来像素空白，徽章被推远。
+        self._card_fixed_text(name_row, row.model, bg=background, fg=foreground,
+                              font=(self.base_font[0], self.base_font[1] + 1, "bold"))
         # 协议徽章紧跟型号（保持 Label：它是色块标签，不是需要复制的文字）
         tk.Label(name_row, text=row.protocol, bg=theme["head_bg"] or background,
                  fg=theme["head_fg"], font=(self.base_font[0], self.base_font[1] - 1),
@@ -1340,14 +1393,9 @@ class DiskTrackerApp:
         )
         if outcome.history_message:
             self._append_hint(outcome.history_message)
-        if outcome.baseline:
-            self.note_label.configure(
-                text=f"已记录基线，下次打开将显示增量。历史文件：{outcome.history_path}"
-            )
-        else:
-            self.note_label.configure(
-                text=f"容量换算：{BYTES_PER_GIB_TEXT}；历史文件：{outcome.history_path}"
-            )
+        self.note_label.configure(
+            text=self._history_note_text(outcome.history_path, baseline=outcome.baseline)
+        )
         return outcome
 
     def run_pipeline_sync(self) -> RunOutcome:
@@ -1459,6 +1507,34 @@ class DiskTrackerApp:
         from tkinter import messagebox
 
         messagebox.showinfo(f"关于 {window_title()}", about_text(self.store.path), parent=self.root)
+
+    def reset_history_file(self) -> None:
+        """重置历史文件：二次确认 → 旧文件改名备份 → 清空重建基线 → 重新记录一次。
+
+        备份用改名实现（history.reset-<时间戳>.json），不直接删：点错了还能找回。
+        """
+        from tkinter import messagebox
+
+        path = self.store.path
+        confirmed = messagebox.askyesno(
+            "重置历史文件",
+            f"将清空全部历史记录并重建基线：\n{path}\n\n"
+            "旧文件会改名备份为 history.reset-<时间戳>.json，不会直接删除。\n"
+            "重置后立即重新记录一次。确定继续吗？",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        try:
+            backup = self.store.reset()
+        except OSError as exc:
+            self._append_hint(f"重置历史文件失败：{exc}")
+            return
+        if backup is None:
+            self._append_hint("历史文件已重置（旧文件未能备份，可能已被占用）。")
+        else:
+            self._append_hint(f"历史文件已重置，旧文件备份为 {backup.name}。")
+        self.refresh_async()
 
     def open_history_file(self) -> None:
         path = self.store.path

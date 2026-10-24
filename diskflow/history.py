@@ -29,6 +29,7 @@ SCHEMA_VERSION_LEGACY = 1           # v1 = 扁平 records 数组，读到时静�
 REQUIRED_RECORD_FIELDS = ("timestamp", "read_gb", "write_gb")
 HISTORY_TRIM_HOURS = 24             # 最近 24 小时的读数原样保留，更早的按天折叠
 HISTORY_BACKUP_PREFIX = "history.before-trim-"
+HISTORY_RESET_PREFIX = "history.reset-"      # 「重置历史文件」前的自动备份前缀
 
 
 def _history_schema_version(data: Any) -> int:
@@ -282,6 +283,28 @@ class HistoryStore:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
         return path
+
+    def reset(self) -> Path | None:
+        """重置历史文件：先把现有文件改名备份，再写一份空历史。
+
+        返回备份文件路径；原本就没有历史文件时返回 None（那就只是写入空历史）。
+        用改名而不是删除：用户点错了还能在原目录里找回 history.reset-<时间戳>.json。
+        """
+        path = self.path
+        backup: Path | None = None
+        if path.exists():
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = path.with_name(f"{HISTORY_RESET_PREFIX}{stamp}{path.suffix}")
+            try:
+                os.replace(path, backup)
+            except OSError:
+                # 改名失败（被别的程序占用等）就退回「复制一份再清空」，至少留得住数据
+                try:
+                    shutil.copyfile(path, backup)
+                except OSError:
+                    backup = None
+        self.save([])
+        return backup
 
 
 def _flatten_v1_records(records: list, prefix: str = "") -> tuple[list[dict], str]:

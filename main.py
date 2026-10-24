@@ -66,7 +66,7 @@ from diskflow.config import (  # noqa: F401
 
 from diskflow.convert import (  # noqa: F401
     bytes_to_gb, lbas_to_gb, data_units_to_gb, _as_int, fmt_gb, fmt_delta, fmt_delta_gb,
-    fmt_size_gb, fmt_size_short,
+    fmt_size_gb, fmt_size_short, fmt_bytes_size,
 )
 
 from diskflow.timefmt import (  # noqa: F401
@@ -109,7 +109,8 @@ from diskflow.delta import (  # noqa: F401
 
 from diskflow.history import (  # noqa: F401
     HISTORY_FILENAME, SCHEMA_VERSION, SCHEMA_VERSION_LEGACY, REQUIRED_RECORD_FIELDS,
-    HISTORY_TRIM_HOURS, HISTORY_BACKUP_PREFIX, _history_schema_version, _reading_day,
+    HISTORY_TRIM_HOURS, HISTORY_BACKUP_PREFIX, HISTORY_RESET_PREFIX,
+    _history_schema_version, _reading_day,
     trim_readings, history_payload, count_history_readings, HistoryLoadResult,
     _default_app_dir, _default_fallback_dir, _try_json, HistoryStore,
     _flatten_v1_records, _flatten_v2_disks, validate_history, records_from_snapshots,
@@ -164,6 +165,7 @@ __all__ = [
     "HEALTH_NOT_AVAILABLE", "APP_ICON_FILENAME", "APP_ICON_DIRNAME", "SMARTCTL_EXE",
     "window_title", "about_text", "bytes_to_gb", "lbas_to_gb", "data_units_to_gb",
     "fmt_gb", "fmt_delta", "fmt_delta_gb", "fmt_size_gb", "fmt_size_short",
+    "fmt_bytes_size",
     "format_duration", "format_interval", "parse_timestamp", "timestamp_seconds",
     "DiskSnapshot", "disk_key", "ProviderResult", "MediaErrorStatus", "DiskRow",
     "parse_smartctl_payload", "locate_smartctl", "locate_app_icon", "SmartctlProvider",
@@ -181,7 +183,7 @@ __all__ = [
     "attach_drive_letters", "evaluate_media_errors", "build_rows", "DELTA_EPSILON_GB",
     "summarize", "any_media_alert", "HISTORY_FILENAME", "SCHEMA_VERSION",
     "SCHEMA_VERSION_LEGACY", "REQUIRED_RECORD_FIELDS", "HISTORY_TRIM_HOURS",
-    "HISTORY_BACKUP_PREFIX", "trim_readings", "history_payload",
+    "HISTORY_BACKUP_PREFIX", "HISTORY_RESET_PREFIX", "trim_readings", "history_payload",
     "count_history_readings", "HistoryLoadResult", "HistoryStore", "validate_history",
     "records_from_snapshots", "latest_timestamp", "RunOutcome", "perform_run",
     "is_admin", "THEME_SYSTEM", "THEME_LEDGER", "THEME_DARK", "THEME_GAUGE",
