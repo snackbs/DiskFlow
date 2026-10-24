@@ -1333,7 +1333,7 @@ def test_smartctl_calls_are_confined_to_provider_class():
 REQUIRED_THEME_KEYS = (
     "key", "label", "base", "win_bg", "tree_bg", "tree_fg", "head_bg", "head_fg",
     "head_bold", "zebra", "alert_bg", "alert_fg", "muted_fg", "select_bg", "select_fg",
-    "rowheight", "padx", "pady", "kpi", "dark_bar", "title_fg", "title_pt",
+    "rowheight", "padx", "pady", "kpi", "title_fg", "title_pt",
     "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
     "card_lbl", "num_family", "card_pt", "scroll_thumb", "scroll_thumb_hover",
     "scroll_idle",
@@ -1512,7 +1512,9 @@ def test_gui_theme_switch_updates_colors_and_kpi_visibility(tk_root, tmp_path):
     dark = app.THEMES[app.THEME_DARK]
     assert window.kpi_visible is True
     assert window.tree.tag_configure(app.ROW_MUTED_TAG)["foreground"] == dark["muted_fg"]
-    assert window.theme["dark_bar"] is True
+    # 标题栏不再跟着主题切深：一律交给系统画，避免深色主题下出现「深色标题栏 + 浅色菜单栏」的割裂
+    assert "dark_bar" not in window.theme
+    assert not hasattr(window, "_apply_titlebar")
     window.root.destroy()
 
 
@@ -2706,6 +2708,19 @@ def test_build_workflow_passes_icon_to_pyinstaller():
     # 图标路径同样从 main.py 读，不在 workflow 里写死文件名
     assert "locate_app_icon" in workflow
     assert "--name \"$env:APP_EXE_NAME\"" in workflow, "名称仍必须是单一配置点"
+
+
+def test_release_title_is_ascii_exe_name_and_version_only():
+    """Release 标题只能是「英文 EXE 名 + 版本号」，不得带中文显示名。"""
+    workflow = (Path(__file__).resolve().parent / ".github" / "workflows" / "build.yml").read_text(
+        encoding="utf-8")
+    title_lines = [line.strip() for line in workflow.splitlines()
+                   if line.strip().startswith("name: ") and "app_version" in line]
+    assert title_lines, "找不到 Release 标题行"
+    for line in title_lines:
+        assert "display_name" not in line, "Release 标题不能再用中文显示名"
+        assert "steps.names.outputs.exe_name" in line, "Release 标题必须用英文 EXE 名"
+        assert line.endswith("app_version " + "}}"), line
 
 
 def test_build_bat_uses_the_same_single_source_of_names():

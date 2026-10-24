@@ -17,11 +17,11 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 # 【单一配置点】软件名称。用户选定正式名称后，只改这三行 + APP_STORAGE_ID 说明即可。
 # ---------------------------------------------------------------------------
-APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用（已定名）
-APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 名
+APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用（已定名；仅 GUI 使用）
+APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 前缀 / Release 标题
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.7.0"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.7.1"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 APP_AUTHOR = "snackbs"                             # 「关于」里显示的作者
 APP_AI_NOTE = "由 AI 辅助编写"                      # 「关于」里的开发方式说明
 

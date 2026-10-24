@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import platform
 import threading
@@ -862,7 +861,6 @@ class DiskTrackerApp:
         self.tree.tag_configure(ROW_ZEBRA_TAG, background=zebra_bg)
 
         self._set_kpi_visible(theme["kpi"] is not None)
-        self._apply_titlebar(theme)
         if hasattr(self, "_theme_var"):
             self._theme_var.set(self.theme_key)
         # 卡片视图的颜色是直接画在 tk 控件上的，主题切换后必须重画
@@ -882,28 +880,6 @@ class DiskTrackerApp:
 
     def _save_theme(self, key: str) -> None:
         self._save_setting("theme", key)
-
-    def _apply_titlebar(self, theme: dict[str, Any]) -> None:
-        """深色主题时把 Windows 标题栏也切深（Win10 1809+，失败静默忽略）。"""
-        if platform.system() != "Windows":
-            return
-        try:
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())  # type: ignore[attr-defined]
-            if not hwnd:
-                return
-            flag = ctypes.c_int(1 if theme["dark_bar"] else 0)
-            for attr in (20, 19):   # 20=新接口，19=旧版本回退
-                try:
-                    rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
-                        hwnd, attr, ctypes.byref(flag), ctypes.sizeof(flag))
-                except Exception:
-                    rc = -1
-                if rc == 0:
-                    break
-            # 触发非客户区重绘，否则要等下次改变窗口大小才变色
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)  # type: ignore[attr-defined]
-        except Exception:
-            pass
 
     # ---------- 表格 ----------
     def clear_rows(self) -> None:
