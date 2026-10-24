@@ -33,6 +33,9 @@ smartctl.exe
 zz_*
 zz*
 _zz*
+pytest-cache-files-*
+.ztemp/
+.zzpt*
 release_notes.md
 *.tmp
 history.json

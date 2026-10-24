@@ -763,8 +763,8 @@ def test_display_name_change_does_not_move_history_dir(tmp_path, monkeypatch):
     """改显示名/EXE 名后，历史目录仍固定为 APP_STORAGE_ID。"""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
     before = app.HistoryStore().fallback_dir
-    monkeypatch.setattr(app, "APP_DISPLAY_NAME", "Renamed Display Name")
-    monkeypatch.setattr(app, "APP_EXE_NAME", "RenamedExe")
+    monkeypatch.setattr(app.config, "APP_DISPLAY_NAME", "Renamed Display Name")
+    monkeypatch.setattr(app.config, "APP_EXE_NAME", "RenamedExe")
     after = app.HistoryStore().fallback_dir
     assert before == after
     assert app.APP_STORAGE_ID == "DiskUsageTracker"
@@ -1109,7 +1109,7 @@ def test_window_title_carries_display_name_and_version():
 def test_window_title_follows_app_version(monkeypatch):
     """改 APP_VERSION 后窗口标题必须跟着变（证明没有第二处写死）。"""
     original = app.APP_VERSION
-    monkeypatch.setattr(app, "APP_VERSION", "9.9.9")
+    monkeypatch.setattr(app.config, "APP_VERSION", "9.9.9")
     assert "v9.9.9" in app.window_title()
     assert f"v{original}" not in app.window_title()
 
@@ -1150,7 +1150,7 @@ def test_about_text_references_app_version_and_names():
 def test_about_text_reflects_changed_version(monkeypatch):
     """改 APP_VERSION 后关于框内容必须跟着变（证明没有第二个写死来源）。"""
     original = app.APP_VERSION
-    monkeypatch.setattr(app, "APP_VERSION", "9.9.9")
+    monkeypatch.setattr(app.config, "APP_VERSION", "9.9.9")
     text = app.about_text()
     assert "v9.9.9" in text
     # 原来的版本号必须消失（否则说明某处又写死了一份）
@@ -1231,7 +1231,8 @@ def test_smartctl_calls_are_confined_to_provider_class():
 
     provider_source = inspect.getsource(app.SmartctlProvider)
     assert '"-a"' in provider_source or "'-a'" in provider_source
-    assert "subprocess" in inspect.getsource(app)
+    # 拆包后 subprocess 只应出现在 providers 模块里（shim 只是再导出）
+    assert "subprocess" in inspect.getsource(app.providers)
 
 
 # ---------------------------------------------------------------------------
@@ -2532,13 +2533,14 @@ def test_locate_app_icon_prefers_the_bundled_copy(tmp_path, monkeypatch):
     bundle.mkdir()
     copied = bundle / app.APP_ICON_FILENAME
     copied.write_bytes(Path(app.locate_app_icon()).read_bytes())
-    monkeypatch.setattr(app.sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setattr(app.providers.sys, "_MEIPASS", str(bundle), raising=False)
     assert app.locate_app_icon() == str(copied)
 
 
 def test_locate_app_icon_returns_none_instead_of_raising(monkeypatch):
     """图标缺失只返回 None：界面照常启动，绝不能因为图标让程序起不来。"""
-    monkeypatch.setattr(app, "APP_ICON_FILENAME", "no-such-icon.ico", raising=False)
+    # 拆包后 locate_app_icon 在 providers 模块里，改的是它自己的名字绑定
+    monkeypatch.setattr(app.providers, "APP_ICON_FILENAME", "no-such-icon.ico", raising=False)
     assert app.locate_app_icon() is None
     assert app.locate_app_icon([str(Path("missing") / "x.ico")]) is None
 

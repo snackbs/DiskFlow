@@ -174,7 +174,7 @@ python -m PyInstaller --onefile --noconsole --uac-admin ^
 任务栏、快捷方式上显示的图标；`--add-data` 把同一个 .ico 打进单文件包，程序运行时的窗口图标
 也从包里取（先找 `sys._MEIPASS`，再找 exe 同目录与源码目录）。两个参数都要有：只给 `--icon` 时
 exe 有图标但窗口没有，只给 `--add-data` 时窗口有图标但 exe 没有。图标缺失只会退回系统默认图标，
-不会让程序起不来。`build.bat` 与 CI 都从 `main.py` 的 `locate_app_icon()` 取路径，不写死。
+不会让程序起不来。`build.bat` 与 CI 都从 `locate_app_icon()`（由 `main.py` 再导出）取路径，不写死。
 
 ### smartctl.exe 从哪来
 
@@ -311,32 +311,55 @@ Windows job 会真实跑完整套用例，任何一个失败都不会进入打�
 
 ```
 .
-├─ main.py                     # 全部程序逻辑：数据读取层 / 历史存储层 / 增量计算层 / GUI 层
+├─ main.py                     # 兼容入口（shim）：只再导出 diskflow/ 的名字，不含业务逻辑
+├─ diskflow/                   # 实现包，按层分模块（见下表）
+│  ├─ config.py                #   单一配置点：名称 / 版本 / 换算常量
+│  ├─ convert.py               #   容量换算
+│  ├─ timefmt.py               #   时间格式化
+│  ├─ models.py                #   数据模型（层间通信结构）
+│  ├─ parse.py                 #   smartctl JSON → DiskSnapshot（纯函数）
+│  ├─ providers.py             #   SmartProvider 注入点（唯一出现 smartctl 调用的地方）
+│  ├─ diskmap.py               #   盘符映射（只读，失败即降级）
+│  ├─ delta.py                 #   增量计算 + 0E 判定
+│  ├─ history.py               #   history.json 读写 / 校验 / 损坏备份
+│  ├─ orchestrate.py           #   一次完整运行的编排（GUI 与测试共用）
+│  ├─ platformhelp.py          #   管理员权限检测
+│  ├─ theme.py / viewmodel.py  #   主题与视图数据表
+│  ├─ prefs.py                 #   settings.json
+│  ├─ gui.py                   #   tkinter 界面（不含任何 smartctl 调用）
+│  └─ entry.py                 #   窗口图标 / create_app / main
 ├─ test_disk_tracker.py        # pytest 用例
 ├─ fixtures/                   # 测试样本：smartctl JSON + 各种 history.json 场景
 ├─ requirements.txt            # 只含测试依赖 pytest（运行时零依赖）
 ├─ CHANGELOG.md                # 更新日志；打 tag 时 CI 把它贴成 Release 正文
 ├─ diskflow-icons/             # 应用图标：.ico（exe / 窗口图标）+ 各尺寸 PNG + SVG 源
 │                              # （设计稿的预览 html 只在本地，不进仓库）
-├─ build.bat                   # 本地 Windows 手动打包脚本
+├─ build.bat                   # 本地 Windows 手动打包脚本（PyInstaller 入口仍是 main.py）
 └─ .github/workflows/build.yml # CI：test → build → artifact → Release
 ```
+
+> `main.py` 保留为兼容入口，是为了让构建脚本、`build.bat` 和测试里的
+> `python -c "import main as m; print(m.APP_EXE_NAME)"` 继续有效——名称与版本仍然只有
+> `diskflow/config.py` 一个来源。新增模块时记得在 `main.py` 的再导出清单里加一行。
 
 分层设计保证了「smartctl 调用」只存在于 `SmartctlProvider` 里：
 
 | 层 | 位置 | 职责 |
 | --- | --- | --- |
-| 数据读取层 | `SmartctlProvider` / `FixturesProvider` | 唯一会执行 `smartctl` 的地方，对外只吐 `ProviderResult` |
-| 历史存储层 | `HistoryStore` | history.json 定位、读写、损坏备份重建 |
-| 增量计算层 | `build_rows` / `evaluate_media_errors` | 纯函数：历史 + 本次快照 → 表格行 |
-| GUI 层 | `DiskTrackerApp` | 只消费 `RunOutcome`，后台线程跑 `perform_run` |
+| 数据读取层 | `diskflow/providers.py`：`SmartctlProvider` / `FixturesProvider` | 唯一会执行 `smartctl` 的地方，对外只吐 `ProviderResult` |
+| 历史存储层 | `diskflow/history.py`：`HistoryStore` | history.json 定位、读写、损坏备份重建 |
+| 增量计算层 | `diskflow/delta.py`：`build_rows` / `evaluate_media_errors` | 纯函数：历史 + 本次快照 → 表格行 |
+| GUI 层 | `diskflow/gui.py`：`DiskTrackerApp` | 只消费 `RunOutcome`，后台线程跑 `perform_run` |
+
+依赖方向是单向的（`config → convert/timefmt/models → parse → providers → … → gui → entry`），
+越靠前的模块越底层，不会反向 import 上层。
 
 GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即可完全脱离真实硬盘。
 测试里有一条用例专门检查 GUI 层没有出现 `smartctl` 调用，防止这条边界被悄悄破坏。
 
 ## 发布流程
 
-1. 改 `main.py` 顶部的 `APP_VERSION`；
+1. 改 `diskflow/config.py` 里的 `APP_VERSION`；
 2. 在 `CHANGELOG.md` **顶部**加一节 `## [新版本] - YYYY-MM-DD`（CI 只认第一个匹配项）；
 3. 提交并推送 `main`，等 CI 的 test + build 全绿；
 4. `git tag v<APP_VERSION>` 并推送——CI 会用 `CHANGELOG.md` 里该小节作为 **Release 正文**，
@@ -345,8 +368,8 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即
 顺序反过来会被 CI 拦住：先打 tag 再改 `APP_VERSION`，版本校验直接失败；只改版本不写日志，
 抽取 Release 正文的步骤会因为找不到小节而失败。
 
-软件名、exe 名、artifact 名都集中在 `main.py` 顶部的常量里，workflow 与 `build.bat`
-都是**读 `main.py`** 而不是各自写死，所以改名不需要到处搜字符串。
+软件名、exe 名、artifact 名都集中在 `diskflow/config.py` 的常量里，workflow 与 `build.bat`
+都是**读 `main.py`（再导出同名常量）** 而不是各自写死，所以改名不需要到处搜字符串。
 
 ## 许可
 
