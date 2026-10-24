@@ -44,7 +44,6 @@ REG_LIGHT_VALUE = "AppsUseLightTheme"
 # 主题表：全部参数集中在此，apply_theme() 只照着表 set，不再有第二处颜色字面量。
 #   base        ttk 主题名（vista=系统原生；clam 支持自定义表头底色）
 #   kpi         None=无指标卡，cards=普通卡片，bordered=带描边卡片
-#   dark_bar    是否请求深色标题栏（Win10 1809+）
 THEMES: dict[str, dict[str, Any]] = {
     THEME_NATIVE: {
         "key": THEME_NATIVE, "label": "原生默认", "base": "vista",
@@ -52,7 +51,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "head_bg": None, "head_fg": "#1A1A1A", "head_bold": False,
         "zebra": None, "alert_bg": None, "alert_fg": "#C00000", "muted_fg": "#808080",
         "select_bg": "#0078D7", "select_fg": "#FFFFFF",
-        "rowheight": 38, "padx": 10, "pady": 8, "kpi": None, "dark_bar": False,
+        "rowheight": 38, "padx": 10, "pady": 8, "kpi": None,
         "title_fg": "#000000", "title_pt": 11,
         "hint_fg": "#8A6D00", "note_fg": "#606060", "summary_fg": "#1A1A1A",
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",
@@ -70,7 +69,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#F7F9FB", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
         "muted_fg": "#8A8A8A",
         "select_bg": "#DCE9F7", "select_fg": "#1F2933",
-        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": False,
+        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards",
         "title_fg": "#2B3440", "title_pt": 12,
         "hint_fg": "#8A6D00", "note_fg": "#7B8794", "summary_fg": "#1F2933",
         "card_bg": "#F4F7FA", "card_border": None, "card_val": "#1F2933",
@@ -88,7 +87,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#272D34", "alert_bg": "#3A2427", "alert_fg": "#FF8A7A",
         "muted_fg": "#6B7580",
         "select_bg": "#35526B", "select_fg": "#FFFFFF",
-        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards", "dark_bar": True,
+        "rowheight": 42, "padx": 12, "pady": 10, "kpi": "cards",
         "title_fg": "#E6EDF3", "title_pt": 12,
         "hint_fg": "#E0C070", "note_fg": "#8B97A3", "summary_fg": "#D6DEE7",
         "card_bg": "#262C33", "card_border": None, "card_val": "#7FC8A9",
@@ -106,7 +105,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "zebra": "#FAFCFE", "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
         "muted_fg": "#93A1AE",
         "select_bg": "#DCE9F7", "select_fg": "#1B6FB8",
-        "rowheight": 44, "padx": 16, "pady": 14, "kpi": "bordered", "dark_bar": False,
+        "rowheight": 44, "padx": 16, "pady": 14, "kpi": "bordered",
         "title_fg": "#1B2A38", "title_pt": 13,
         "hint_fg": "#8A6D00", "note_fg": "#7C8B99", "summary_fg": "#22303C",
         "card_bg": "#FFFFFF", "card_border": "#DCE4EC", "card_val": "#1B6FB8",
@@ -123,7 +122,7 @@ THEMES: dict[str, dict[str, Any]] = {
         "head_bg": "#FFFFFF", "head_fg": "#8A8A8A", "head_bold": False,
         "zebra": None, "alert_bg": None, "alert_fg": "#D0342C", "muted_fg": "#A0A0A0",
         "select_bg": "#EFEFEF", "select_fg": "#1A1A1A",
-        "rowheight": 46, "padx": 22, "pady": 18, "kpi": None, "dark_bar": False,
+        "rowheight": 46, "padx": 22, "pady": 18, "kpi": None,
         "title_fg": "#1A1A1A", "title_pt": 12,
         "hint_fg": "#8A6D00", "note_fg": "#A0A0A0", "summary_fg": "#2A2A2A",
         "card_bg": "#FFFFFF", "card_border": None, "card_val": "#1A1A1A",

@@ -112,7 +112,8 @@ jobs:
           }
           "exe_name=$exeName"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "artifact_name=$artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "display_name=$display"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          # 注意：APP_DISPLAY_NAME 只给 GUI（窗口标题/关于框）用，不再进 Release 标题，
+          # 所以这里只在日志里打出来，不导出成 step 输出。
           "app_version=$version"    | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "APP_EXE_NAME=$exeName"   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "APP_VERSION=$version"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -296,8 +297,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          # 标题里的版本号来自 main.py 的 APP_VERSION（上一步已校验与 tag 一致），不写死
-          name: ${{ steps.names.outputs.display_name }} v${{ steps.names.outputs.app_version }}
+          # 标题固定为「英文 EXE 名 + 版本号」，不带中文显示名。
+          # 两部分都来自 diskflow/config.py（上一步已校验 tag 与 APP_VERSION 一致），不写死；
+          # APP_EXE_NAME 已由 Resolve 步骤校验为 1-20 位纯字母数字，所以标题必然是纯 ASCII。
+          name: ${{ steps.names.outputs.exe_name }} v${{ steps.names.outputs.app_version }}
           # 正文来自 CHANGELOG.md 的对应小节，不在 workflow 里写死文案
           body_path: ${{ steps.notes.outputs.release_notes_path }}
           # 已有手写更新日志，不再让 GitHub 追加自动生成的 "What's Changed"
