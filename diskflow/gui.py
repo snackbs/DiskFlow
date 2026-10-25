@@ -423,6 +423,13 @@ def _truncate(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+# 表格右键菜单的标签。tk.Menu 的索引可以直接用标签，所以这里把标签抽成常量，
+# 供 _sync_tree_menu() 按标签改状态（不用记住 add_command 的下标，改顺序也不会错位）。
+TREE_MENU_COPY_ROWS = "复制选中行(&C)"
+TREE_MENU_COPY_CELL = "复制此单元格(&L)"
+TREE_MENU_SELECT_ALL = "全选(&A)"
+TREE_MENU_COPY_TABLE = "复制整表(&T)"
+
 # 合并列在同一格里上下两行显示：上面的值对应表头「/」左边，下面的对应右边。
 PAIR_SEPARATOR = "\n"
 # 导出 TSV 时换行会破坏表格结构，所以剪贴板里用斜杠分隔
@@ -510,6 +517,12 @@ class DiskTrackerApp:
         self._sort_column: str | None = None
         self._sort_reverse = False
         self._busy = False
+        # 表格选区：iid -> DiskRow。复制选中行时按 iid 反查数据，顺序取屏幕顺序
+        # （get_children 的顺序），不能按点选顺序或 iid 字典序，否则粘出来是乱序的。
+        self._iid_to_row: dict[str, DiskRow] = {}
+        # 最后一次右键/双击落在的单元格（「复制此单元格」「查看全文」用它定位）
+        self._cell_iid = ""
+        self._cell_column_key = ""
         self.base_font = BASE_FONT
         self.theme_key = THEME_SYSTEM
         self.theme: dict[str, Any] = dict(THEMES[THEME_LEDGER])
@@ -564,7 +577,9 @@ class DiskTrackerApp:
                                       command=lambda k=key: self.apply_theme(k))
 
         tools_menu = tk.Menu(menubar, tearoff=False)
-        tools_menu.add_command(label="复制表格到剪贴板(&C)", command=self.copy_table)
+        tools_menu.add_command(label="复制选中行(&C)", accelerator="Ctrl+C",
+                               command=self.copy_selection)
+        tools_menu.add_command(label="复制表格到剪贴板(&T)", command=self.copy_table)
         tools_menu.add_command(label="打开数据目录(&D)", command=self.open_data_dir)
         tools_menu.add_separator()
         # 卡片视图没有表头，排序必须也能从菜单触发
@@ -702,7 +717,10 @@ class DiskTrackerApp:
         self.table_frame = table_frame
 
         columns = [spec[0] for spec in COLUMN_SPECS]
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        # selectmode="extended" 是为了让表格能像资源管理器那样 Ctrl/Shift 多选：
+        # Treeview 本身没有「框选一段文字」的能力，但多选 + Ctrl+C / 右键菜单可以把
+        # 选中的行导成 TSV，粘进 Excel 就是表格，粘进记事本也是齐整的文本。
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         for key, title, width, _kind in COLUMN_SPECS:
             self.tree.heading(key, text=title, command=lambda c=key: self.sort_by(c))
             self.tree.column(key, width=width, minwidth=60, anchor="w", stretch=(key == "status"))
@@ -715,6 +733,19 @@ class DiskTrackerApp:
         self.xscroll.grid(row=1, column=0, sticky="ew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
+
+        # 表格的复制入口：Ctrl+C 复制选中行，右键菜单可复制单元格 / 全选 / 复制整表
+        self.tree.bind("<Control-c>", self.copy_selection_event)
+        self.tree.bind("<Button-3>", self._on_tree_context_menu)
+        menu = self.tk.Menu(self.root, tearoff=False)
+        menu.add_command(label=TREE_MENU_COPY_ROWS, command=self.copy_selection)
+        menu.add_command(label=TREE_MENU_COPY_CELL, command=self.copy_cell)
+        menu.add_separator()
+        menu.add_command(label=TREE_MENU_SELECT_ALL, command=self.select_all_rows)
+        menu.add_command(label=TREE_MENU_COPY_TABLE, command=self.copy_table)
+        self.tree_menu = menu
+        # 还没落点过任何单元格，「复制此单元格」先置灰
+        self._sync_tree_menu()
 
         # 卡片视图（单列 / 双列共用同一个 Canvas 容器）
         cards_frame = ttk.Frame(body, style="App.TFrame")
@@ -937,6 +968,9 @@ class DiskTrackerApp:
 
     # ---------- 表格 ----------
     def clear_rows(self) -> None:
+        self._iid_to_row.clear()
+        self._cell_iid = ""
+        self._cell_column_key = ""
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -960,6 +994,7 @@ class DiskTrackerApp:
                 suffix += 1
                 iid = f"{base}#{suffix}"
             self.tree.insert("", "end", iid=iid, values=_row_values(row), tags=tags)
+            self._iid_to_row[iid] = row
         if self.view_key != VIEW_TABLE:
             self.render_cards()
 
@@ -1451,12 +1486,101 @@ class DiskTrackerApp:
         直接由 rows 生成（不读 Treeview 的 values），因此卡片/双列视图下同样可用。
         """
         text = self.rows_to_tsv()
+        self._copy_text(text, f"已复制 {len(self.rows)} 行数据到剪贴板。")
+
+    # ---------- 表格选区的复制 ----------
+    def selected_rows(self) -> list[DiskRow]:
+        """当前选中的行，按屏幕顺序返回。
+
+        用 get_children() 的顺序而不是 selection() 的顺序：按住 Shift 从上往下选和
+        从下往上选，selection() 给的顺序都是点击顺序，粘出来会是倒的。
+        """
+        chosen = set(self.tree.selection())
+        return [self._iid_to_row[iid] for iid in self.tree.get_children()
+                if iid in chosen and iid in self._iid_to_row]
+
+    def _copy_text(self, text: str, hint: str) -> bool:
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-            self._append_hint(f"已复制 {len(self.rows)} 行数据到剪贴板。")
         except Exception as exc:
             self._append_hint(f"复制到剪贴板失败：{exc}")
+            return False
+        self._append_hint(hint)
+        return True
+
+    def copy_selection(self) -> None:
+        """复制选中行（含表头）；没有选中任何行时退化为复制整表。"""
+        rows = self.selected_rows()
+        if not rows:
+            self.copy_table()
+            return
+        self._copy_text(self.rows_to_tsv(rows), f"已复制 {len(rows)} 行数据到剪贴板。")
+
+    def copy_selection_event(self, _event: Any = None) -> str:
+        """Ctrl+C。返回 "break"，避免 Treeview 的默认处理把事件再吃掉一次。"""
+        self.copy_selection()
+        return "break"
+
+    def select_all_rows(self) -> None:
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children)
+            self._append_hint(f"已选中 {len(children)} 行，按 Ctrl+C 复制。")
+
+    def copy_cell(self) -> None:
+        """复制最近一次右键/双击落在的单元格。"""
+        row = self._iid_to_row.get(self._cell_iid)
+        keys = [spec[0] for spec in COLUMN_SPECS]
+        if row is None or self._cell_column_key not in keys:
+            self._append_hint("请先用右键点一下要复制的单元格。")
+            return
+        value = _row_values(row)[keys.index(self._cell_column_key)]
+        titles = {spec[0]: spec[1] for spec in COLUMN_SPECS}
+        text = str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
+        self._copy_text(text, f"已复制「{titles[self._cell_column_key]}」单元格：{text}")
+
+    def _remember_cell(self, x: int, y: int) -> bool:
+        """记住右键落点：命中的行加入选区，命中的列记下来给「复制此单元格」用。
+
+        抽成独立方法是为了能在没有真实布局（窗口未映射、bbox 拿不到）时单独测试——
+        直接调 _on_tree_context_menu 会真的弹菜单并 grab，测试里不好收场。
+        """
+        iid = self.tree.identify_row(y)
+        if not iid:
+            return False
+        if iid not in self.tree.selection():
+            self.tree.selection_set(iid)
+        self._cell_iid = iid
+        keys = [spec[0] for spec in COLUMN_SPECS]
+        column = self.tree.identify_column(x)
+        index = int(column[1:]) - 1 if column.startswith("#") and column[1:].isdigit() else -1
+        self._cell_column_key = keys[index] if 0 <= index < len(keys) else ""
+        return True
+
+    def _sync_tree_menu(self) -> None:
+        """按当前选区刷新右键菜单：没命中单元格时禁用「复制此单元格」。"""
+        menu = getattr(self, "tree_menu", None)
+        if menu is None:
+            return
+        menu.entryconfigure(TREE_MENU_COPY_CELL,
+                            state="normal" if self._cell_column_key else "disabled")
+        menu.entryconfigure(TREE_MENU_COPY_ROWS, label=self._copy_rows_label())
+
+    def _copy_rows_label(self) -> str:
+        count = len(self.tree.selection())
+        return TREE_MENU_COPY_ROWS if count == 0 else f"{TREE_MENU_COPY_ROWS}\t{count} 行"
+
+    def _on_tree_context_menu(self, event: Any) -> str:
+        """右键：先把光标下的行加入选中（点在选区外时），再弹菜单。"""
+        if not self._remember_cell(event.x, event.y):
+            return "break"
+        try:
+            self._sync_tree_menu()
+            self.tree_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.tree_menu.grab_release()
+        return "break"
 
     def open_data_dir(self) -> None:
         """打开 history.json / settings.json 所在目录。"""
