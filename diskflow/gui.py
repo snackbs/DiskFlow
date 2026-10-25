@@ -738,11 +738,27 @@ class DiskTrackerApp:
         self.tree.bind("<Control-c>", self.copy_selection_event)
         self.tree.bind("<Button-3>", self._on_tree_context_menu)
         menu = self.tk.Menu(self.root, tearoff=False)
-        menu.add_command(label=TREE_MENU_COPY_ROWS, command=self.copy_selection)
-        menu.add_command(label=TREE_MENU_COPY_CELL, command=self.copy_cell)
+        # 菜单项一律按数字下标定位，不能按标签——「复制选中行」的标签会带上「N 行」，
+        # 一旦改名就再也查不到原标签（TclError: bad menu entry index），第二次右键
+        # 就弹不出菜单了。下标在建菜单时就记下来，以后增删项也只改这里。
+        self._tree_menu_index: dict[str, int] = {}
+        next_index = 0
+        for entry_label, entry_command in (
+            (TREE_MENU_COPY_ROWS, self.copy_selection),
+            (TREE_MENU_COPY_CELL, self.copy_cell),
+        ):
+            menu.add_command(label=entry_label, command=entry_command)
+            self._tree_menu_index[entry_label] = next_index
+            next_index += 1
         menu.add_separator()
-        menu.add_command(label=TREE_MENU_SELECT_ALL, command=self.select_all_rows)
-        menu.add_command(label=TREE_MENU_COPY_TABLE, command=self.copy_table)
+        next_index += 1  # 分隔线也占一个下标，跳过它
+        for entry_label, entry_command in (
+            (TREE_MENU_SELECT_ALL, self.select_all_rows),
+            (TREE_MENU_COPY_TABLE, self.copy_table),
+        ):
+            menu.add_command(label=entry_label, command=entry_command)
+            self._tree_menu_index[entry_label] = next_index
+            next_index += 1
         self.tree_menu = menu
         # 还没落点过任何单元格，「复制此单元格」先置灰
         self._sync_tree_menu()
@@ -1559,27 +1575,42 @@ class DiskTrackerApp:
         return True
 
     def _sync_tree_menu(self) -> None:
-        """按当前选区刷新右键菜单：没命中单元格时禁用「复制此单元格」。"""
+        """按当前选区刷新右键菜单：没命中单元格时禁用「复制此单元格」。
+
+        定位菜单项一律用下标（self._tree_menu_index），不能用标签：下面第一个
+        entryconfigure 会把「复制选中行」的标签改成带「N 行」的形式，若再用原
+        标签去查就会抛 TclError，菜单从此弹不出来（第二次右键失效的根因）。
+        """
         menu = getattr(self, "tree_menu", None)
-        if menu is None:
+        indices = getattr(self, "_tree_menu_index", None)
+        if menu is None or not indices:
             return
-        menu.entryconfigure(TREE_MENU_COPY_CELL,
+        menu.entryconfigure(indices[TREE_MENU_COPY_CELL],
                             state="normal" if self._cell_column_key else "disabled")
-        menu.entryconfigure(TREE_MENU_COPY_ROWS, label=self._copy_rows_label())
+        menu.entryconfigure(indices[TREE_MENU_COPY_ROWS], label=self._copy_rows_label())
 
     def _copy_rows_label(self) -> str:
         count = len(self.tree.selection())
         return TREE_MENU_COPY_ROWS if count == 0 else f"{TREE_MENU_COPY_ROWS}\t{count} 行"
 
     def _on_tree_context_menu(self, event: Any) -> str:
-        """右键：先把光标下的行加入选中（点在选区外时），再弹菜单。"""
+        """右键：先把光标下的行加入选中（点在选区外时），再弹菜单。
+
+        这里必须自己兜住异常：绑定在 Tk 上的回调抛异常只会打到 stderr，而打包成
+        --noconsole 后 stderr 看不见，表现就是「右键没反应」，很难查。
+        """
         if not self._remember_cell(event.x, event.y):
             return "break"
         try:
             self._sync_tree_menu()
             self.tree_menu.tk_popup(event.x_root, event.y_root)
+        except Exception as exc:                      # noqa: BLE001 - 不让菜单故障炸窗口
+            self._append_hint(f"打开右键菜单失败：{exc}")
         finally:
-            self.tree_menu.grab_release()
+            try:
+                self.tree_menu.grab_release()
+            except Exception:                          # noqa: BLE001 - 没 grab 过时释放会报错
+                pass
         return "break"
 
     def open_data_dir(self) -> None:

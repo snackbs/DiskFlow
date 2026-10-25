@@ -3021,7 +3021,65 @@ def test_context_menu_binds_cell_and_enables_copy(tk_root, tmp_path):
     window._on_tree_context_menu(event)
     assert window._cell_iid == children[1]
     assert window._cell_column_key in [spec[0] for spec in app.COLUMN_SPECS]
-    assert window.tree_menu.entrycget(app.TREE_MENU_COPY_CELL, "state") == "normal"
+    assert window.tree_menu.entrycget(window._tree_menu_index[app.TREE_MENU_COPY_CELL],
+                                     "state") == "normal"
+    window.root.destroy()
+
+
+def test_context_menu_opens_repeatedly(tk_root, tmp_path):
+    """连续右键多次都要能弹菜单。
+
+    回归用：第一次右键会把「复制选中行」的标签改成带「N 行」的样子，若随后仍按
+    原标签去 entryconfigure，就会抛 TclError: bad menu entry index，而 Tk 把回调
+    异常打到 stderr 后菜单再也不弹——表现正是「首次右键有用，之后无响应」。
+    """
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    window.root.deiconify()
+    window.root.update()
+    window.tree.selection_set(children[0])
+    window.tree.see(children[0])
+    tk_root.update()
+    bbox = window.tree.bbox(children[0])
+    if not bbox:
+        pytest.skip("无真实布局（窗口未映射），拿不到单元格坐标，跳过连续右键测试")
+
+    _x, y, _w, _h = bbox
+    popped: list[tuple[int, int]] = []
+    window.tree_menu.tk_popup = lambda x_root, y_root: popped.append((x_root, y_root))
+    event = type("Event", (), {"x": _x + 40, "y": y + 5, "x_root": 100, "y_root": 100})()
+    for round_no in range(3):
+        window._on_tree_context_menu(event)
+        assert len(popped) == round_no + 1, f"第 {round_no + 1} 次右键没弹出菜单"
+    # 标签已带上行数，且「复制此单元格」仍是可用状态
+    rows_index = window._tree_menu_index[app.TREE_MENU_COPY_ROWS]
+    assert "行" in window.tree_menu.entrycget(rows_index, "label")
+    assert window.tree_menu.entrycget(window._tree_menu_index[app.TREE_MENU_COPY_CELL],
+                                     "state") == "normal"
+    # 弹菜单失败不能静默：异常要变成可见提示
+    assert not any("打开右键菜单失败" in part for part in window.hint_parts)
+    window.root.destroy()
+
+
+def test_tree_menu_index_mapping_survives_label_change(tk_root, tmp_path):
+    """_tree_menu_index 里的下标必须和菜单实际项一一对上（分隔线占位也算）。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    menu = window.tree_menu
+    for label, index in window._tree_menu_index.items():
+        assert menu.type(index) == "command", f"{label} 的下标 {index} 不是菜单项"
+        assert menu.entrycget(index, "label").split("\t")[0] == label
+    # 反复同步若干次都不该抛异常（原来从第二次起必抛）
+    for count in (1, 2, 3):
+        window.tree.selection_set(window.tree.get_children()[:count])
+        window._sync_tree_menu()
+        label = window.tree_menu.entrycget(window._tree_menu_index[app.TREE_MENU_COPY_ROWS],
+                                           "label")
+        assert label == f"{app.TREE_MENU_COPY_ROWS}\t{count} 行", f"标签应带行数，实际 {label!r}"
+    # 清空选区后退回不带行数的原始标签
+    window.tree.selection_remove(*window.tree.get_children())
+    window._sync_tree_menu()
+    assert window.tree_menu.entrycget(window._tree_menu_index[app.TREE_MENU_COPY_ROWS],
+                                     "label") == app.TREE_MENU_COPY_ROWS
     window.root.destroy()
 
 
