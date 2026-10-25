@@ -2877,3 +2877,173 @@ def test_build_bat_uses_the_same_single_source_of_names():
     assert "--icon \"%APP_ICON_PATH%\"" in script
     assert "--add-data \"%APP_ICON_PATH%;.\"" in script
     assert "--name \"%APP_EXE_NAME%\"" in script
+
+
+# ---------------------------------------------------------------------------
+# 10. 表格选区与复制（v0.7.2）
+# ---------------------------------------------------------------------------
+def _three_disk_window(tk_root, tmp_path):
+    """三块盘（其中一块读取失败），用于验证选中行的顺序与范围。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Alpha NVMe", serial="SN-A",
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=0),
+        app.DiskSnapshot(device_path="/dev/sdb", protocol="SATA",
+                         model="Beta SATA", serial="SN-B",
+                         read_bytes=50 * 1024 ** 3, write_bytes=60 * 1024 ** 3,
+                         media_errors=None),
+        app.DiskSnapshot(device_path="/dev/sdc", protocol="SATA",
+                         model="Gamma HDD", serial="SN-C",
+                         error="读取失败：Permission denied"),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    return window
+
+
+def test_tree_view_allows_multi_row_selection(tk_root, tmp_path):
+    """表格必须支持多选：browse 单选模式下没法按住 Ctrl/Shift 挑几行一起复制。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    assert str(window.tree.cget("selectmode")) == "extended"
+    children = window.tree.get_children()
+    # 3 块本次读到的盘 + 1 条历史里存在、本次消失的盘
+    assert len(children) == 4
+    window.tree.selection_set(children[0], children[2])
+    tk_root.update_idletasks()
+    assert len(window.tree.selection()) == 2
+    window.root.destroy()
+
+
+def test_copy_selection_keeps_screen_order_not_click_order(tk_root, tmp_path):
+    """选中的行按屏幕顺序导出：从下往上选时粘出来不能是倒序。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    # 故意倒着选（模拟从下往上拖选）
+    window.tree.selection_set(children[2], children[0])
+    tk_root.update_idletasks()
+    window.copy_selection()
+
+    lines = tk_root.clipboard_get().splitlines()
+    assert lines[0] == "\t".join(spec[1] for spec in app.COLUMN_SPECS), "首行必须是表头"
+    assert len(lines) == 3, f"选中 2 行 + 表头应 3 行，实际 {len(lines)}"
+    assert "Alpha NVMe" in lines[1] and "SN-A" in lines[1]
+    assert "Gamma HDD" in lines[2] and "SN-C" in lines[2]
+    assert "Beta SATA" not in "".join(lines), "没选中的行不能被复制"
+    window.root.destroy()
+
+
+def test_copy_selection_falls_back_to_whole_table_when_empty(tk_root, tmp_path):
+    """没选中任何行时 Ctrl+C 退化为复制整表，不必先框选。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    window.tree.selection_remove(*window.tree.get_children())
+    tk_root.update_idletasks()
+    assert window.selected_rows() == []
+    assert window.copy_selection_event(None) == "break"
+    text = tk_root.clipboard_get()
+    # 表头 + 3 块本次读到的盘 + 1 条「本次未检测到」的历史盘（退化为整表时一起带上）
+    assert len(text.splitlines()) == 5
+    assert "Gamma HDD" in text
+    assert any("已复制 4 行" in part for part in window.hint_parts)
+    window.root.destroy()
+
+
+def test_select_all_rows_selects_every_row(tk_root, tmp_path):
+    """右键菜单「全选」选中表格里所有行。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    window.select_all_rows()
+    tk_root.update_idletasks()
+    # 3 块本次读到的盘 + 1 条历史里存在、本次消失的盘
+    assert len(window.tree.selection()) == 4
+    assert len(window.selected_rows()) == 4
+    assert any("已选中 4 行" in part for part in window.hint_parts)
+    window.root.destroy()
+
+
+def test_copy_cell_copies_only_the_clicked_cell(tk_root, tmp_path):
+    """右键落在某个单元格上时只复制那一格，成对列按「 / 」拼成一行。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    window._cell_iid = children[0]
+    window._cell_column_key = "rw"
+    window.copy_cell()
+    text = tk_root.clipboard_get()
+    assert "\t" not in text, "单元格复制不能带列分隔符"
+    assert app.TSV_PAIR_SEPARATOR in text, f"成对列应拼成「读 / 写」，实际 {text!r}"
+
+    # 落点无效时不崩，只给可操作提示
+    window._cell_column_key = ""
+    window._cell_iid = ""
+    window.copy_cell()
+    assert any("请先用右键" in part for part in window.hint_parts)
+    window.root.destroy()
+
+
+def test_iid_to_row_map_tracks_rendered_rows(tk_root, tmp_path):
+    """_iid_to_row 必须与 Treeview 的 iid 一一对应，复制选中行才取得到数据。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    assert list(window._iid_to_row) == list(children)
+    for iid in children:
+        assert window._iid_to_row[iid].model in window.tree.item(iid, "values")[0]
+    # 重新渲染（换排序）后映射必须跟着换，不能留下旧 iid
+    window.sort_by("model")
+    tk_root.update_idletasks()
+    assert list(window._iid_to_row) == list(window.tree.get_children())
+    window.root.destroy()
+
+
+def test_context_menu_binds_cell_and_enables_copy(tk_root, tmp_path):
+    """右键处理要记住落点单元格，并据是否命中单元格来开关「复制此单元格」。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    # 让它真的映射到屏幕上：Treeview 的 identify_*/bbox 在未映射窗口上恒返回空，
+    # 那样就测不到真正的单击命中。真起不来时下面的 skip 会说明原因。
+    window.root.deiconify()
+    window.root.update()
+    window.tree.selection_set(children[1])
+    window.tree.see(children[1])
+    tk_root.update()
+
+    bbox = window.tree.bbox(children[1])
+    if not bbox:
+        # 窗口没被映射时 bbox 恒为空，命中测试无从做起 —— 明确 skip，不静默通过
+        pytest.skip("无真实布局（窗口未映射），拿不到单元格坐标，跳过右键命中测试")
+    x, y, _width, _height = bbox
+    event = type("Event", (), {"x": x + 40, "y": y + 5,
+                               "x_root": 100, "y_root": 100})()
+    # 弹菜单会 grab，测试里不让它真的弹出来
+    window.tree_menu.tk_popup = lambda *a, **k: None
+    window._on_tree_context_menu(event)
+    assert window._cell_iid == children[1]
+    assert window._cell_column_key in [spec[0] for spec in app.COLUMN_SPECS]
+    assert window.tree_menu.entrycget(app.TREE_MENU_COPY_CELL, "state") == "normal"
+    window.root.destroy()
+
+
+def test_remember_cell_hit_test_without_real_layout(tk_root, tmp_path):
+    """命中测试本身要能在无布局时跑：identify_row/identify_column 的输入直接给坐标。
+
+    Treeview 在窗口未映射时 identify_* 都返回空串，所以这里用 monkeypatch 换掉
+    这两个方法，专测「命中后记下 iid 与列键」这一层逻辑。
+    """
+    window = _three_disk_window(tk_root, tmp_path)
+    children = window.tree.get_children()
+    window.tree.selection_remove(*children)
+    window.tree.identify_row = lambda _y: children[1]
+    window.tree.identify_column = lambda _x: "#3"      # 第 3 列 = 累计读 / 写（rw）
+    assert window._remember_cell(10, 10) is True
+    assert window._cell_iid == children[1]
+    assert window._cell_column_key == "rw"
+    assert window.tree.selection() == (children[1],), "右键应把该行纳入选区"
+
+    # 没点在任何行上：不改变落点、不弹菜单
+    window.tree.identify_row = lambda _y: ""
+    assert window._remember_cell(10, 9999) is False
+    assert window._cell_iid == children[1]
+    window.root.destroy()
+
