@@ -421,7 +421,9 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即
 ## 发布流程
 
 1. 改 `diskflow/config.py` 里的 `APP_VERSION`；
-2. 在 `CHANGELOG.md` **顶部**加一节 `## [新版本] - YYYY-MM-DD`（CI 只认第一个匹配项）；
+2. 在 `CHANGELOG.md` **顶部**加一节 `## [新版本] - YYYY-MM-DD`（CI 只认第一个匹配项），
+   小节按 **新增 → 修复 → 改进**（文档 / 测试放最后）顺序写——这是 Release 正文，
+   读者先想知道「多了什么」，再想知道「修了什么」，最后才是内部怎么变好的；
 3. 提交并推送 `main`，等 CI 的 test + build 全绿；
 4. `git tag v<APP_VERSION>` 并推送——CI 会用 `CHANGELOG.md` 里该小节作为 **Release 正文**，
    并把 `dist/<APP_EXE_NAME>.exe` 挂成 Release 附件。

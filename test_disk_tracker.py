@@ -1403,6 +1403,52 @@ def test_changelog_newest_entry_matches_app_version():
     )
 
 
+# 版本内小节顺序：新增 → 修复 → 改进 → 其它（文档 / 测试）。用户读 Release 正文时
+# 最关心「多了什么」，其次「修了什么」，最后才是内部变化，所以顺序写死并在这里锁住。
+SECTION_ORDER = ["新增", "修复", "改进"]
+SECTION_ORDER_TAIL = ["文档", "测试"]
+
+
+def _section_rank(heading_line):
+    """从 "### 新增：xxx" 这样的标题里取出分类名。"""
+    match = re.match(r"^###\s+([^：:\s]+)", heading_line)
+    return match.group(1) if match else None
+
+
+def test_changelog_sections_follow_fixed_order():
+    """每个版本小节内部必须按 新增 → 修复 → 改进 → 文档/测试 排列。
+
+    历史版本（0.5.x 及更早）用「一件事一个小标题」的旧格式，标题带分类前缀，
+    同样适用这套顺序，所以这里对所有版本一视同仁。
+    """
+    blocks = {}
+    current = None
+    for line in CHANGELOG.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            match = re.match(r"^##\s+\[?([0-9A-Za-z.\-]+)\]?", line)
+            current = match.group(1) if match else None
+            if current:
+                blocks[current] = []
+        elif current is not None and line.startswith("### "):
+            blocks[current].append(line)
+
+    assert blocks, "CHANGELOG.md 里没有任何版本小节"
+    canonical = SECTION_ORDER + SECTION_ORDER_TAIL
+    for version, headings in blocks.items():
+        ranks = []
+        for heading in headings:
+            name = _section_rank(heading)
+            assert name in canonical, (
+                f"CHANGELOG 版本 {version} 的标题 {heading!r} 不在约定分类 "
+                f"{canonical} 里"
+            )
+            ranks.append(canonical.index(name))
+        assert ranks == sorted(ranks), (
+            f"CHANGELOG 版本 {version} 的小节顺序不对，应先是 {SECTION_ORDER}，"
+            f"文档/测试放最后；实际顺序：{[_section_rank(h) for h in headings]}"
+        )
+
+
 def test_gui_layer_does_not_call_smartctl():
     """GUI 层不得出现 smartctl 调用：类里不应引用 subprocess。"""
     import inspect
