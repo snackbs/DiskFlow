@@ -30,6 +30,8 @@ class RunOutcome:
     history_path: str
     smartctl_path: str | None
     baseline: bool
+    recorded: int = 0          # 本次成功写进 history.json 的盘数
+    failed: int = 0            # 本次读取失败的盘数（不进历史，也不参与增量）
 
 
 def perform_run(provider: Any, store: HistoryStore,
@@ -75,4 +77,6 @@ def perform_run(provider: Any, store: HistoryStore,
         history_path=str(store.path),
         smartctl_path=result.smartctl_path,
         baseline=not load.records,
+        recorded=len(new_records),
+        failed=sum(1 for snapshot in result.snapshots if not snapshot.ok),
     )

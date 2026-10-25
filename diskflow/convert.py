@@ -73,6 +73,12 @@ def fmt_gb(value: float | None, digits: int = 2) -> str:
 
 
 def fmt_delta(value: float | None, digits: int = 2) -> str:
+    """只有数字的增量：+348.80。
+
+    调用方**必须**在同一句里补上单位（底部汇总就是这么用的：
+    `f"本次总读增 {fmt_delta(v)} GB"`）。凡是独立成格、不跟列头文字的地方，
+    一律改用 fmt_delta_gb / fmt_delta_short，否则看的人不知道是 GB 还是次数。
+    """
     if value is None:
         return "—"
     sign = "+" if value >= 0 else ""
@@ -82,12 +88,26 @@ def fmt_delta(value: float | None, digits: int = 2) -> str:
 def fmt_delta_gb(value: float | None, digits: int = 2) -> str:
     """增量带单位的写法（卡片用）：+348.80 GB。
 
-    表格列头已经写了「(GB)」，所以表格里的增量不带单位；卡片每格是独立小字，
-    不带单位看的人要先回头看列头，容易误解成次数或百分比。
+    卡片与表格的增量格是独立小字，没有列头替它写「(GB)」，所以这里必须自带单位。
     """
     if value is None:
         return "—"
     return f"{fmt_delta(value, digits)} GB"
+
+
+def fmt_delta_short(value: float | None, digits: int = 2) -> str:
+    """表格合并列用的增量：带单位，大数换 TB，保证一格放得下。
+
+    表格一列只有 108px 宽、还要上下叠两个值，所以不能像卡片那样一律写 GB：
+    增量超过 1 TB 时改用 TB（+31.96 TB），否则用 GB（+348.80 GB）。
+    两种写法都带单位，不会出现「只有数字」的情况。
+    """
+    if value is None:
+        return "—"
+    sign = "+" if value >= 0 else ""
+    if abs(value) >= 1024.0:
+        return f"{sign}{value / 1024.0:,.{digits}f} TB"
+    return f"{sign}{value:,.{digits}f} GB"
 
 
 def fmt_size_gb(value: float | None, digits: int = 2) -> str:

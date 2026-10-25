@@ -51,3 +51,39 @@ def timestamp_seconds(value: datetime | str | None) -> float | None:
     if dt.tzinfo is None:
         return dt.timestamp()
     return dt.timestamp()
+
+
+def format_utc_offset(dt: datetime) -> str:
+    """把时区偏移写成 UTC+8 / UTC+5:30 / UTC-3 / UTC+0 这种紧凑形式。
+
+    整点时省略「:00」，非整点时区（如印度 UTC+5:30）保留分钟；UTC 本身写 UTC+0
+    而不是 UTC，这样与其它偏移放在一起看是对齐的一列。
+    """
+    offset = dt.utcoffset()
+    if offset is None:
+        return "UTC+0"
+    total_minutes = int(offset.total_seconds()) // 60
+    sign = "-" if total_minutes < 0 else "+"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    if minutes:
+        return f"UTC{sign}{hours}:{minutes:02d}"
+    return f"UTC{sign}{hours}"
+
+
+def format_stamp(value: Any) -> str:
+    """ISO 时间戳 -> 界面用的可读写法：2026-04-30 08:00:00 (UTC+8)。
+
+    ISO 原文（2026-04-30T08:00:00+08:00）里的 T 和偏移对普通用户不友好，
+    顶部状态栏直接显示可就地读出日期与时间。取不到时区信息（naive）时标注
+    「本地时间」，无法解析的文本原样返回，绝不抛异常也不吞掉原文。
+    """
+    if value is None:
+        return "—"
+    dt = parse_timestamp(value)
+    if dt is None:
+        text = str(value).strip()
+        return text or "—"
+    body = dt.strftime("%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return f"{body} (本地时间)"
+    return f"{body} ({format_utc_offset(dt)})"

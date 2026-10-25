@@ -66,11 +66,12 @@ from diskflow.config import (  # noqa: F401
 
 from diskflow.convert import (  # noqa: F401
     bytes_to_gb, lbas_to_gb, data_units_to_gb, _as_int, fmt_gb, fmt_delta, fmt_delta_gb,
-    fmt_size_gb, fmt_size_short, fmt_bytes_size,
+    fmt_delta_short, fmt_size_gb, fmt_size_short, fmt_bytes_size,
 )
 
 from diskflow.timefmt import (  # noqa: F401
-    format_duration, format_interval, parse_timestamp, timestamp_seconds,
+    format_duration, format_interval, format_stamp, format_utc_offset, parse_timestamp,
+    timestamp_seconds,
 )
 
 from diskflow.models import (  # noqa: F401
@@ -164,9 +165,10 @@ __all__ = [
     "COUNTER_SOURCE_TEXT", "SATA_LIFE_ATTRIBUTES", "SATA_LIFE_RAW_PERCENT",
     "HEALTH_NOT_AVAILABLE", "APP_ICON_FILENAME", "APP_ICON_DIRNAME", "SMARTCTL_EXE",
     "window_title", "about_text", "bytes_to_gb", "lbas_to_gb", "data_units_to_gb",
-    "fmt_gb", "fmt_delta", "fmt_delta_gb", "fmt_size_gb", "fmt_size_short",
-    "fmt_bytes_size",
-    "format_duration", "format_interval", "parse_timestamp", "timestamp_seconds",
+    "fmt_gb", "fmt_delta", "fmt_delta_gb", "fmt_delta_short", "fmt_size_gb",
+    "fmt_size_short", "fmt_bytes_size",
+    "format_duration", "format_interval", "format_stamp", "format_utc_offset",
+    "parse_timestamp", "timestamp_seconds",
     "DiskSnapshot", "disk_key", "ProviderResult", "MediaErrorStatus", "DiskRow",
     "parse_smartctl_payload", "locate_smartctl", "locate_app_icon", "SmartctlProvider",
     "FixturesProvider", "IOCTL_STORAGE_QUERY_PROPERTY",
