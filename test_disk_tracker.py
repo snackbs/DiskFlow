@@ -1083,6 +1083,38 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     assert app.PAIR_SEPARATOR in first_values[5]      # 历史读增 / 写增
     assert app.PAIR_SEPARATOR in first_values[6]      # 0E / 健康
 
+    # 增量格必须自带单位：表头没有「(GB)」，光一个「+500.00」看不出是容量还是次数
+    for index, caption in ((4, "本次读增 / 写增"), (5, "历史读增 / 写增")):
+        cells = first_values[index].split(app.PAIR_SEPARATOR)
+        assert len(cells) == 2, f"{caption} 应上下两行，实际 {cells}"
+        for cell in cells:
+            assert cell.endswith((" GB", " TB")) or cell == "—", (
+                f"{caption} 的增量缺单位：{cell!r}"
+            )
+    # 本例：历史有一条 100/200 GB 的记录，本次读到 300/400 GB
+    assert first_values[4].split(app.PAIR_SEPARATOR) == ["+200.00 GB", "+200.00 GB"]
+    # 历史里只有那一条记录，所以历史累计增量与本次区间增量相同
+    assert first_values[5].split(app.PAIR_SEPARATOR) == ["+200.00 GB", "+200.00 GB"]
+
+    # 顶部时间按「2026-05-02 10:30:00 (UTC+8)」显示，不是 ISO 原文
+    assert window.cur_label.cget("text") == "本次记录：2026-05-02 10:30:00 (UTC+8)"
+    assert window.prev_label.cget("text") == "上次记录：2026-04-30 08:00:00 (UTC+8)"
+    assert "T08:00:00" not in window.diagnostics_text()
+
+    # 顶部绿色确认行：读成功 + 写进 history.json 之后才出现
+    ok_text = window.ok_label.cget("text")
+    assert "数据已更新并保存" in ok_text
+    assert "2 块盘" not in ok_text          # 只有 1 块读成功，失败的那块不算
+    assert "1 块盘" in ok_text
+    # 失败数不能写进绿色那句里，必须单独挂在灰色 Label 上（颜色语义）
+    assert "读取失败" not in ok_text
+    assert window.fail_label.cget("text") == "1 块读取失败"
+    assert window.fail_label.cget("style") == "Muted.TLabel"
+    assert window.ok_label.cget("style") == "Ok.TLabel"
+    ok_tag = window.ttk.Style(window.root).configure("Ok.TLabel")
+    assert ok_tag["foreground"] == window.theme["ok_fg"]
+    assert ok_tag["foreground"] != window.theme["hint_fg"]
+
     window.root.destroy()
 
 
@@ -1098,12 +1130,77 @@ def test_gui_baseline_message_on_first_run(tk_root, tmp_path):
     tk_root.update_idletasks()
     assert outcome.baseline is True
     assert len(window.tree.get_children()) == 3
+    # 首次运行建基线：绿色确认行说的是「已记录基线」，不是「数据已更新」
+    assert "已记录基线" in window.ok_label.cget("text")
+    assert "数据已更新" not in window.ok_label.cget("text")
+    # fixtures 里有一块读失败的盘，基线这一轮也要如实报出来（绿行仍是「已记录基线」）
+    assert window.fail_label.cget("text") == "1 块读取失败"
     note_text = window.note_label.cget("text")
     assert "已记录基线，下次打开将显示增量" in note_text
     # 底部注释行还要给出历史文件的实际体积，方便判断文件有没有在长
     assert str(store.path) in note_text
     assert app.fmt_bytes_size(store.path.stat().st_size) in note_text
     window.root.destroy()
+
+
+def test_gui_ok_label_stays_empty_when_nothing_read(tk_root, tmp_path):
+    """一块盘都没读成功时不能出现绿色「已更新」——那会和红色读取失败自相矛盾。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/sdz", protocol="SATA",
+                         model="Ghost", serial="SN9", error="读取失败：not found"),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store,
+                                autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    outcome = window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert outcome.recorded == 0
+    assert outcome.failed == 1
+    assert window.ok_label.cget("text") == ""
+    assert window.fail_label.cget("text") == ""
+    assert window.ok_parts == []
+    window.root.destroy()
+
+
+def test_gui_ok_text_counts_recorded_and_failed(tk_root, tmp_path):
+    """绿色确认行的文案由 recorded / failed 决定，切换刷新不会残留上一轮的数字。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    # fixtures 里是 3 块盘：2 块读成功（NVMe + SATA SSD）、1 块读取失败
+    outcome = window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert window._ok_text(outcome) == "✓ 数据已更新并保存（2 块盘）"
+    # 失败数走另一个函数、另一个 Label：绿行只讲成功，灰行只讲失败
+    assert window._fail_text(outcome) == "1 块读取失败"
+    assert window.ok_label.cget("text") == "✓ 数据已更新并保存（2 块盘）"
+    assert window.fail_label.cget("text") == "1 块读取失败"
+
+    # 把 provider 换成两块全失败：绿行必须清空，不能留着上一轮的「已更新」
+    window.provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/sdx", model="A", serial="1", error="boom"),
+        app.DiskSnapshot(device_path="/dev/sdy", model="B", serial="2", error="boom"),
+    ])
+    outcome = window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert outcome.recorded == 0
+    assert outcome.failed == 2
+    assert window.ok_label.cget("text") == ""
+    # recorded == 0 时灰行也不显示失败数——顶部一个盘都没读到的失败已经由 hint 讲了
+    assert window.fail_label.cget("text") == ""
+    window.root.destroy()
+
+    # 再直接验一次：失败数为 0 时灰行必须是空（不能常年挂个「0 块读取失败」）
+    ok_outcome = app.RunOutcome(rows=[], totals={}, media_alert=False, previous_stamp=None,
+                                current_stamp="2026-05-02T10:30:00+08:00", provider_status="ok",
+                                history_message="", history_path="h.json", smartctl_path=None,
+                                baseline=False, recorded=2, failed=0)
+    assert window._fail_text(ok_outcome) == ""
+    assert window._ok_text(ok_outcome) == "✓ 数据已更新并保存（2 块盘）"
 
 
 def test_gui_note_label_shows_history_file_size(tk_root, tmp_path, monkeypatch):
@@ -1334,7 +1431,7 @@ REQUIRED_THEME_KEYS = (
     "key", "label", "base", "win_bg", "tree_bg", "tree_fg", "head_bg", "head_fg",
     "head_bold", "zebra", "alert_bg", "alert_fg", "muted_fg", "select_bg", "select_fg",
     "rowheight", "padx", "pady", "kpi", "title_fg", "title_pt",
-    "hint_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
+    "hint_fg", "ok_fg", "note_fg", "summary_fg", "card_bg", "card_border", "card_val",
     "card_lbl", "num_family", "card_pt", "scroll_thumb", "scroll_thumb_hover",
     "scroll_idle",
     "seg_sel_bg", "seg_sel_fg", "seg_hover_bg", "seg_hover_fg", "seg_border",
@@ -1356,6 +1453,8 @@ def test_theme_table_covers_every_theme_with_same_keys():
             assert field in table, f"{name} 缺少字段 {field}"
         assert table["key"] == name
         assert table["alert_fg"] != table["muted_fg"], f"{name} 的红/灰无法区分"
+        # 绿色「已更新」与黄色「注意事项」必须能区分，否则两句提示混成一片
+        assert table["ok_fg"] != table["hint_fg"], f"{name} 的成功色与提示色相同"
         assert isinstance(table["rowheight"], int) and table["rowheight"] >= 20
         # 分段按钮：选中/悬停配色必须与常态可区分，否则用户看不出当前视图
         assert table["seg_sel_bg"] != table["seg_hover_bg"], f"{name} 的选中/悬停底色相同"
@@ -1994,9 +2093,57 @@ def test_fmt_delta_gb_always_carries_unit():
     assert app.fmt_delta_gb(0.0) == "+0.00 GB"
     assert app.fmt_delta_gb(-12.345) == "-12.35 GB"
     assert app.fmt_delta_gb(None) == "—"
-    # 表格列头写了 (GB)，表格里的增量保持不带单位
+    # fmt_delta 是「只有数字」的底层写法，调用方负责补单位（底部汇总就是这么用的）
     assert app.fmt_delta(348.8) == "+348.80"
+    assert "GB" in f"本次总读增 {app.fmt_delta(348.8)} GB"
     assert any(field.endswith("_delta_gb") for _, field in app.CARD_METRICS)
+
+
+def test_fmt_delta_short_carries_unit_and_switches_to_tb():
+    """表格合并列的增量必须自带单位：小于 1 TB 用 GB，超过用 TB，空值给破折号。"""
+    assert app.fmt_delta_short(348.8) == "+348.80 GB"
+    assert app.fmt_delta_short(0.0) == "+0.00 GB"
+    assert app.fmt_delta_short(-12.345) == "-12.35 GB"
+    assert app.fmt_delta_short(None) == "—"
+    # 108px 宽的格子放不下「+32,728.43 GB」，超过 1 TB 换 TB
+    assert app.fmt_delta_short(32728.43) == "+31.96 TB"
+    assert app.fmt_delta_short(-1024.0) == "-1.00 TB"
+    assert app.fmt_delta_short(1023.99) == "+1,023.99 GB"
+    # 每一种非空写法都必须带单位，绝不能只剩数字
+    for value in (0.0, 1.5, 348.8, 1023.99, 1024.0, 32728.43, -5.0):
+        assert app.fmt_delta_short(value).split("+")[-1].split("-")[-1].strip() != ""
+        assert app.fmt_delta_short(value).endswith((" GB", " TB"))
+
+
+def test_format_stamp_is_human_readable_with_utc_offset():
+    """ISO 串在界面上显示成「2026-04-30 08:00:00 (UTC+8)」，偏移不能写成 +08:00。"""
+    assert app.format_stamp("2026-04-30T08:00:00+08:00") == "2026-04-30 08:00:00 (UTC+8)"
+    # 整点时区省略「:00」；UTC 本身写 UTC+0
+    assert app.format_stamp("2026-04-30T08:00:00Z") == "2026-04-30 08:00:00 (UTC+0)"
+    assert app.format_stamp("2026-04-30T08:00:00+00:00") == "2026-04-30 08:00:00 (UTC+0)"
+    # 负偏移与非整点时区（印度 +5:30 / 尼泊尔 +5:45）
+    assert app.format_stamp("2026-04-30T08:00:00-05:00") == "2026-04-30 08:00:00 (UTC-5)"
+    assert app.format_stamp("2026-04-30T08:00:00+05:30") == "2026-04-30 08:00:00 (UTC+5:30)"
+    assert app.format_stamp("2026-04-30T08:00:00+05:45") == "2026-04-30 08:00:00 (UTC+5:45)"
+    # 毫秒 / 无时区 / 空值 / 垃圾输入都不能崩
+    assert app.format_stamp("2026-04-30T08:00:00.123456+08:00") == "2026-04-30 08:00:00 (UTC+8)"
+    assert app.format_stamp("2026-04-30T08:00:00") == "2026-04-30 08:00:00 (本地时间)"
+    assert app.format_stamp(None) == "—"
+    assert app.format_stamp("") == "—"
+    assert app.format_stamp("not-a-time") == "not-a-time"
+
+
+def test_format_utc_offset_variants():
+    """偏移格式化单独可测：整点省略分钟，非整点保留两位分钟，UTC 写 UTC+0。"""
+    def at(offset):
+        return datetime(2026, 4, 30, 8, 0, tzinfo=timezone(offset))
+
+    assert app.format_utc_offset(at(timedelta(hours=8))) == "UTC+8"
+    assert app.format_utc_offset(at(timedelta(hours=0))) == "UTC+0"
+    assert app.format_utc_offset(at(timedelta(hours=-3))) == "UTC-3"
+    assert app.format_utc_offset(at(timedelta(hours=5, minutes=30))) == "UTC+5:30"
+    assert app.format_utc_offset(at(timedelta(hours=-9, minutes=-30))) == "UTC-9:30"
+    assert app.format_utc_offset(datetime(2026, 4, 30, 8, 0)) == "UTC+0"
 
 
 def test_gui_card_deltas_show_unit_and_badge_follows_model(tk_root, tmp_path):

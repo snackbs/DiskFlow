@@ -24,13 +24,20 @@ from .config import (
     about_text,
     window_title,
 )
-from .convert import fmt_bytes_size, fmt_delta, fmt_delta_gb, fmt_size_short
+from .convert import (
+    fmt_bytes_size,
+    fmt_delta,
+    fmt_delta_gb,
+    fmt_delta_short,
+    fmt_size_short,
+)
 from .history import SCHEMA_VERSION, HistoryStore
 from .models import DiskRow
 from .orchestrate import RunOutcome, perform_run
 from .platformhelp import is_admin
 from .prefs import DEFAULT_SETTINGS, SettingsStore
 from .providers import SmartctlProvider
+from .timefmt import format_stamp
 from .theme import (
     THEMES,
     THEME_LABELS,
@@ -350,8 +357,8 @@ COLUMN_SPECS: tuple[tuple[str, str, int, str], ...] = (
     ("protocol", "协议", 62, "text"),
     ("rw", "累计读 / 写", 120, "num"),
     ("interval", "距上次", 152, "text"),
-    ("cur", "本次读增 / 写增", 108, "num"),
-    ("hist", "历史读增 / 写增", 108, "num"),
+    ("cur", "本次读增 / 写增", 128, "num"),
+    ("hist", "历史读增 / 写增", 128, "num"),
     ("media", "0E / 健康", 104, "text"),
     ("status", "状态", 200, "text"),
 )
@@ -433,14 +440,19 @@ def _short_serial(serial: str) -> str:
 
 
 def _row_values(row: DiskRow) -> tuple[str, ...]:
-    """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。"""
+    """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。
+
+    增量格必须自带单位（fmt_delta_short）：表头写的是「本次读增 / 写增」，
+    没有「(GB)」三个字，光一个「+348.80」看不出是容量还是次数。
+    """
     return (
         f"{row.model}\n{_short_serial(row.serial)}",
         row.protocol,
         _pair(fmt_size_short(row.read_gb), fmt_size_short(row.write_gb)),
         row.interval_text,
-        _pair(fmt_delta(row.read_delta_gb), fmt_delta(row.write_delta_gb)),
-        _pair(fmt_delta(row.hist_read_delta_gb), fmt_delta(row.hist_write_delta_gb)),
+        _pair(fmt_delta_short(row.read_delta_gb), fmt_delta_short(row.write_delta_gb)),
+        _pair(fmt_delta_short(row.hist_read_delta_gb),
+              fmt_delta_short(row.hist_write_delta_gb)),
         _pair(row.media_text, row.health_text),
         _truncate(row.status_text),
     )
@@ -625,9 +637,21 @@ class DiskTrackerApp:
             button.pack(side="left", padx=(0 if index == 0 else 2, 0))
             self.seg_buttons[key] = button
 
+        # 提示栏：左边是「读取成功」的绿色确认（数据真读到并写进 history.json 才出现），
+        # 右边是黄底的注意事项（未提权、找不到 smartctl、历史文件损坏……）。
+        # 两者分开两个 Label，因为颜色不同，一个 Label 里塞两种色是做不到的。
+        self.status_bar = ttk.Frame(outer, style="App.TFrame")
+        self.status_bar.pack(fill="x")
+        self.ok_parts: list[str] = []
+        self.ok_label = ttk.Label(self.status_bar, text="", style="Ok.TLabel", anchor="w")
+        self.ok_label.pack(side="left", padx=(0, 8))
+        # 失败数单独一个灰 Label：绿色只表达「成功」，失败用灰（与表格灰色行同色），
+        # 免得一句全绿的话里夹着「1 块读取失败」，颜色语义自相矛盾。
+        self.fail_label = ttk.Label(self.status_bar, text="", style="Muted.TLabel", anchor="w")
+        self.fail_label.pack(side="left", padx=(0, 12))
         self.hint_parts: list[str] = []
-        self.hint_label = ttk.Label(outer, text="", style="Hint.TLabel", anchor="w")
-        self.hint_label.pack(fill="x")
+        self.hint_label = ttk.Label(self.status_bar, text="", style="Hint.TLabel", anchor="w")
+        self.hint_label.pack(side="left", fill="x")
 
         top = ttk.Frame(outer, style="App.TFrame")
         top.pack(fill="x", pady=(2, 6))
@@ -774,6 +798,33 @@ class DiskTrackerApp:
             self.hint_parts.append(text)
         self.hint_label.configure(text="  ".join(self.hint_parts))
 
+    @staticmethod
+    def _ok_text(outcome: RunOutcome) -> str:
+        """绿色确认行的文案；一块盘都没读成功就返回空串（顶部只留黄/红提示）。"""
+        if outcome.recorded <= 0:
+            return ""
+        verb = "已记录基线" if outcome.baseline else "数据已更新并保存"
+        return f"✓ {verb}（{outcome.recorded} 块盘）"
+
+    @staticmethod
+    def _fail_text(outcome: RunOutcome) -> str:
+        """灰色的失败计数；一块都没失败就返回空串。绿行只讲成功，失败单独挂在灰色 Label 上。"""
+        if outcome.recorded <= 0 or outcome.failed <= 0:
+            return ""
+        return f"{outcome.failed} 块读取失败"
+
+    def _set_ok(self, outcome: RunOutcome | None = None) -> None:
+        """设置顶部的成功/失败确认行（传 None = 两行都清掉）。
+
+        绿色只表达「成功」，失败数用灰色（与表格灰色失败行同色）。一句话全绿里
+        夹个「1 块读取失败」会让颜色语义自相矛盾，所以拆成两个 Label。
+        """
+        ok = self._ok_text(outcome) if outcome is not None else ""
+        fail = self._fail_text(outcome) if outcome is not None else ""
+        self.ok_parts = [ok] if ok else []
+        self.ok_label.configure(text="  ".join(self.ok_parts))
+        self.fail_label.configure(text=fail)
+
     # ---------- 主题 ----------
     def apply_theme(self, key: Any, persist: bool = True,
                     dark_mode: bool | None = None) -> dict[str, Any]:
@@ -799,6 +850,9 @@ class DiskTrackerApp:
         style.configure("Title.TLabel", background=theme["win_bg"], foreground=theme["title_fg"],
                         font=(family, theme["title_pt"], "bold"))
         style.configure("Hint.TLabel", background=theme["win_bg"], foreground=theme["hint_fg"])
+        style.configure("Ok.TLabel", background=theme["win_bg"], foreground=theme["ok_fg"],
+                        font=(family, size, "bold"))
+        style.configure("Muted.TLabel", background=theme["win_bg"], foreground=theme["muted_fg"])
         style.configure("Note.TLabel", background=theme["win_bg"], foreground=theme["note_fg"])
         style.configure("Summary.TLabel", background=theme["win_bg"],
                         foreground=theme["summary_fg"])
@@ -1334,6 +1388,7 @@ class DiskTrackerApp:
         self.refresh_button.configure(state="normal")
         if isinstance(item, Exception):
             self.smartctl_label.configure(text="数据源：读取异常")
+            self._set_ok(None)
             self._append_hint(f"读取失败：{item}")
             return
         self.apply_outcome(item)
@@ -1343,8 +1398,9 @@ class DiskTrackerApp:
         self.rows = list(outcome.rows)
         self.render_rows(self.rows)
 
-        self.prev_label.configure(text=f"上次记录：{outcome.previous_stamp or '—'}")
-        self.cur_label.configure(text=f"本次记录：{outcome.current_stamp}")
+        # 时间戳在界面上按「2026-04-30 08:00:00 (UTC+8)」显示；入库的仍是原始 ISO 串
+        self.prev_label.configure(text=f"上次记录：{format_stamp(outcome.previous_stamp)}")
+        self.cur_label.configure(text=f"本次记录：{format_stamp(outcome.current_stamp)}")
         self.smartctl_label.configure(
             text=f"数据源：{outcome.smartctl_path}" if outcome.smartctl_path
             else f"数据源：{outcome.provider_status}"
@@ -1367,6 +1423,7 @@ class DiskTrackerApp:
         self.alert_label.configure(
             text="介质错误在累积，建议关注备份" if outcome.media_alert else ""
         )
+        self._set_ok(outcome)
         if outcome.history_message:
             self._append_hint(outcome.history_message)
         self.note_label.configure(
