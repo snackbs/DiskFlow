@@ -1580,10 +1580,11 @@ def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
     tk_root.update_idletasks()
 
     labels = [window.menubar.entrycget(i, "label") for i in range(6)]
-    # 菜单文字不带 "(&X)" 助记符：中文界面里 Alt 下划线看起来像漏字，已全部去掉
-    assert labels == ["文件", "主题", "工具", "硬盘", "帮助", "语言"]
+    # 括号保留，只去掉括号里的 "&" 助记符；Alt 下划线的那个字母还留着
+    assert labels == ["文件(F)", "主题(T)", "工具(U)", "硬盘(D)", "帮助(H)", "语言(L)"]
     for label in labels:
-        assert "(&" not in label and "&" not in label
+        assert "&" not in label
+        assert label.endswith(")")
 
     theme_entries = [window.theme_menu.entrycget(i, "label")
                      for i in range(window.theme_menu.index("end") + 1)]
@@ -1607,8 +1608,9 @@ def test_gui_reset_history_file_menu_entry_and_confirm_flow(tk_root, tmp_path, m
     file_entries = [window.file_menu.entrycget(i, "label")
                     for i in range(window.file_menu.index("end") + 1)
                     if window.file_menu.type(i) == "command"]
-    assert "重置历史文件" in file_entries
-    assert "打开历史文件" in file_entries
+    assert "重置历史文件(E)" in file_entries
+    assert "打开历史文件(O)" in file_entries
+    assert all("&" not in label for label in file_entries)
 
     # 先取消：文件必须原样保留，也不触发重新记录
     refreshed = []
