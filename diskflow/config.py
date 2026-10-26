@@ -21,7 +21,7 @@ APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 中文显示名（「�
 APP_EXE_NAME = "DiskFlow"                          # 英文名：标题栏 / --name / exe 文件名 / artifact 前缀 / Release 标题
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
-APP_VERSION = "0.7.2"                              # 版本号（关于框显示；发版 tag 必须与之一致）
+APP_VERSION = "0.7.4"                              # 版本号（关于框显示；发版 tag 必须与之一致）
 APP_AUTHOR = "snackbs"                             # 「关于」里显示的作者
 APP_AI_NOTE = "由 AI 辅助编写"                      # 「关于」里的开发方式说明
 
