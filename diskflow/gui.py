@@ -49,6 +49,7 @@ from .theme import (
 )
 from .viewmodel import (
     CARD_METRICS,
+    CARD_METRICS_GRID,
     CARD_METRIC_COLUMNS,
     CARD_METRIC_COLUMNS_GRID,
     VIEW_CARDS,
@@ -1424,11 +1425,15 @@ class DiskTrackerApp:
         metric_row = tk.Frame(inner, bg=background)
         metric_row.pack(fill="x")
         # 等宽网格：标签与数值按列对齐，行与行之间不会错位
-        columns = (CARD_METRIC_COLUMNS_GRID if self.view_key == VIEW_GRID
-                   else CARD_METRIC_COLUMNS)
+        # 双列用单独一份排布：每列只放同一类指标（读 / 写 / 上下文），
+        # 「本次读增」正下方就是「历史读增」，不用横着找。
+        if self.view_key == VIEW_GRID:
+            columns, metrics = CARD_METRIC_COLUMNS_GRID, CARD_METRICS_GRID
+        else:
+            columns, metrics = CARD_METRIC_COLUMNS, CARD_METRICS
         for column in range(columns):
             metric_row.columnconfigure(column, weight=1, uniform="metric")
-        for index, (caption, field) in enumerate(CARD_METRICS):
+        for index, (caption, field) in enumerate(metrics):
             value = getattr(row, field, None)
             if field == "read_gb":
                 text = fmt_size_short(row.read_gb)

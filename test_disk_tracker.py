@@ -2242,6 +2242,36 @@ def test_gui_card_deltas_show_unit_and_badge_follows_model(tk_root, tmp_path):
     assert holder.pack_info().get("fill") in ("none", "", None)
 
 
+def test_grid_metric_layout_aligns_read_and_write_columns():
+    """双列视图的指标必须按「读 / 写 / 上下文」分列，同类增量上下对齐。
+
+    按行排（CARD_METRICS + 3 列）时，「本次读增」在第 2 行第 1 格、「历史读增」在
+    第 3 行第 3 格，读的两个增量被别的指标隔开。双列专用排布要求：第 1 列全是读取、
+    第 2 列全是写入、第 3 列是时长/0E/健康度，且本次与历史紧挨着。
+    """
+    columns = app.CARD_METRIC_COLUMNS_GRID
+    fields = [field for _, field in app.CARD_METRICS_GRID]
+    # 9 项一个不少，只是换了顺序（不能因为改排布丢指标）
+    assert sorted(fields) == sorted(field for _, field in app.CARD_METRICS)
+    position = {field: (index // columns, index % columns)
+                for index, field in enumerate(fields)}
+
+    read_column = {position[f][1] for f in ("read_gb", "read_delta_gb", "hist_read_delta_gb")}
+    write_column = {position[f][1] for f in ("write_gb", "write_delta_gb", "hist_write_delta_gb")}
+    assert read_column == {0}, f"读取类指标应集中在第 1 列：{read_column}"
+    assert write_column == {1}, f"写入类指标应集中在第 2 列：{write_column}"
+    # 第 3 列放上下文，不夹读取/写入
+    for field in ("interval_text", "media_text", "health_text"):
+        assert position[field][1] == 2, f"{field} 应在第 3 列：{position[field]}"
+
+    # 读完 / 写增在同一行，本次与上一次的增量紧挨着（行号只差 1）
+    assert position["read_delta_gb"][0] == position["write_delta_gb"][0]
+    assert position["hist_read_delta_gb"][0] == position["hist_write_delta_gb"][0]
+    assert position["hist_read_delta_gb"][0] == position["read_delta_gb"][0] + 1
+    # 累计量在最上面，先看总量再看增量
+    assert position["read_gb"][0] == 0 and position["write_gb"][0] == 0
+
+
 def test_gui_grid_columns_have_equal_width(tk_root, tmp_path):
     """双列视图两列必须等宽（列间距对称），否则左右两列看着一宽一窄。"""
     import tkinter
