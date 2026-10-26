@@ -444,20 +444,36 @@ def _pair(left: str, right: str) -> str:
     return f"{left}{PAIR_SEPARATOR}{right}"
 
 
-# 序列号默认隐藏（隐私）：界面与所有复制出口都换成这串占位符，
+# 序列号默认隐藏（隐私）：界面与所有复制出口都遮成「前两位 + 8 个星号」，
 # 但 history.json 里依旧写真实序列号——跨次匹配必须靠「型号 + 序列号」，
 # 隐藏只是显示层的事，不能影响数据层。
-SERIAL_HIDDEN_TEXT = "序列号已隐藏"
+SERIAL_MASK_CHARS = 8          # 星号数量固定，不随原序列号长度变化（长度本身也是信息）
+SERIAL_MASK_VISIBLE_PREFIX = 2  # 保留开头两位，方便一眼区分是哪块盘
+SERIAL_EMPTY_TEXT = "—"        # 读不到序列号时不伪造遮盖串，仍用破折号占位
+
+
+def _mask_serial(serial: str) -> str:
+    """把序列号遮成「前两位 + 8 个星号」，如 2013CV440309 -> 20********。
+
+    星号数量固定而非按位 1:1，避免从长度反推原序列号；不足两位时整个遮掉，
+    一位都不露（宁可多遮，也不能靠「只剩一位」猜出型号批次）。
+    """
+    text = (serial or "").strip()
+    if not text:
+        return SERIAL_EMPTY_TEXT
+    prefix = text[:SERIAL_MASK_VISIBLE_PREFIX] if len(text) >= SERIAL_MASK_VISIBLE_PREFIX else ""
+    return f"{prefix}{'*' * SERIAL_MASK_CHARS}"
 
 
 def _short_serial(serial: str, show: bool = True) -> str:
     """序列号只做清洗，不再截断——首列改成上下两行后放得下完整序列号。
 
-    show=False 时返回占位符，真实序列号不出现在界面与剪贴板上。
+    show=False 时返回遮盖串（前两位 + 8 个星号），真实序列号不出现在界面
+    与剪贴板上；读不到序列号时仍显示破折号，不伪造一个像序列号的遮盖值。
     """
     if not show:
-        return SERIAL_HIDDEN_TEXT
-    return (serial or "").strip() or "—"
+        return _mask_serial(serial)
+    return (serial or "").strip() or SERIAL_EMPTY_TEXT
 
 
 def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:

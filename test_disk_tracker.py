@@ -1074,11 +1074,11 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     assert headings[-2:] == ["0E / 健康", "状态"]   # 0E 与健康度合成一格
     # 合并列里读/写两个值都要出现，且共用同一个分隔符
     first_values = window.tree.item(window.tree.get_children()[0], "values")
-    # 首列型号与序列号上下两行；序列号默认隐藏，界面上只剩占位符
+    # 首列型号与序列号上下两行；序列号默认遮成「前两位 + 8 个星号」
     assert app.PAIR_SEPARATOR in first_values[0]
     model_line, serial_line = first_values[0].split(app.PAIR_SEPARATOR)
     assert model_line == "Test NVMe"
-    assert serial_line == app.SERIAL_HIDDEN_TEXT
+    assert serial_line == "SN********"
     assert "SN1" not in first_values[0], "默认必须隐藏序列号，界面不能出现真实值"
     assert app.PAIR_SEPARATOR in first_values[2]      # 累计读 / 写
     assert app.PAIR_SEPARATOR in first_values[4]      # 本次读增 / 写增
@@ -3016,7 +3016,8 @@ def test_copy_selection_keeps_screen_order_not_click_order(tk_root, tmp_path):
     assert "Gamma HDD" in lines[2]
     # 序列号默认隐藏：复制出口和界面一样不能漏出真实值
     assert "SN-A" not in "".join(lines) and "SN-C" not in "".join(lines)
-    assert app.SERIAL_HIDDEN_TEXT in lines[1]
+    assert "SN********" in lines[1]
+    assert "SNA" not in "".join(lines) and "SNC" not in "".join(lines)
     assert "Beta SATA" not in "".join(lines), "没选中的行不能被复制"
     window.root.destroy()
 
@@ -3296,24 +3297,52 @@ def test_remember_cell_hit_test_without_real_layout(tk_root, tmp_path):
     window.root.destroy()
 
 
+def test_serial_masked_as_prefix_plus_fixed_stars():
+    """遮盖规则：保留开头两位 + 固定 8 个星号，星号数量不随原长度变化。"""
+    assert app._mask_serial("SN1") == "SN********"
+    assert app._mask_serial("SN1") == "SN" + "*" * app.SERIAL_MASK_CHARS
+    assert app.SERIAL_MASK_CHARS == 8 and app.SERIAL_MASK_VISIBLE_PREFIX == 2
+
+    # 真实盘两种典型序列号：只露前两位
+    assert app._mask_serial("2013CV440309") == "20********"
+    assert app._mask_serial("S7J1NX4X681364") == "S7********"
+
+    # 长短不同的序列号遮盖串长度一致——长度本身也是信息，不能泄露
+    masks = {app._mask_serial(value) for value in ("SN1", "2013CV440309", "X" * 40)}
+    assert masks == {"SN********", "20********", "X" * 2 + "********"}
+    assert len({len(mask) for mask in masks}) == 1
+
+    # 不足两位：一位都不露，整个遮掉
+    assert app._mask_serial("A") == "*" * app.SERIAL_MASK_CHARS
+    assert app._mask_serial("A") == "********"
+
+    # 读不到序列号时沿用破折号，不伪造一个像序列号的遮盖值
+    assert app._mask_serial("") == "—"
+    assert app._mask_serial("   ") == "—"
+    assert app._mask_serial(None) == "—"
+
+    # 前后空白不影响取哪两位
+    assert app._mask_serial("  2013CV440309  ") == "20********"
+
+
 def test_serial_hidden_by_default_in_row_values_and_short_serial():
-    """序列号默认隐藏：数据出口一律只给占位符，任何地方都不能漏出真实值。"""
+    """序列号默认隐藏：数据出口一律给遮盖串，任何地方都不能漏出真实值。"""
     row = app.DiskRow(
-        key="Test NVMe|SN1", model="Test NVMe", serial="SN1",
+        key="Test NVMe|2013CV440309", model="Test NVMe", serial="2013CV440309",
         protocol="NVMe", device_path="/dev/sda",
         read_gb=100.0, write_gb=50.0,
     )
-    assert app._short_serial("SN1", show=False) == app.SERIAL_HIDDEN_TEXT
-    assert app._short_serial("SN1", show=True) == "SN1"
+    assert app._short_serial("2013CV440309", show=False) == "20********"
+    assert app._short_serial("2013CV440309", show=True) == "2013CV440309"
     assert app._short_serial("", show=True) == "—"
-    assert app._short_serial("  ", show=False) == app.SERIAL_HIDDEN_TEXT
+    assert app._short_serial("  ", show=False) == "—"
 
     hidden = app._row_values(row, show_serial=False)
-    assert hidden[0] == f"Test NVMe\n{app.SERIAL_HIDDEN_TEXT}"
-    assert "SN1" not in "".join(hidden)
+    assert hidden[0] == "Test NVMe\n20********"
+    assert "2013CV440309" not in "".join(hidden)
 
     shown = app._row_values(row, show_serial=True)
-    assert shown[0] == "Test NVMe\nSN1"
+    assert shown[0] == "Test NVMe\n2013CV440309"
     # 除首列外其余列与开关无关
     assert hidden[1:] == shown[1:]
 
@@ -3323,13 +3352,13 @@ def test_toggle_serial_reveals_and_persists_setting(tk_root, tmp_path):
     window = _three_disk_window(tk_root, tmp_path)
     assert window.show_serial is False, "默认必须是隐藏的"
     assert window._serial_var.get() is False
-    assert app.SERIAL_HIDDEN_TEXT in window.tree.item(window.tree.get_children()[0], "values")[0]
+    assert app._mask_serial("SN-A") in window.tree.item(window.tree.get_children()[0], "values")[0]
 
     assert window.toggle_serial(True) is True
     assert window.show_serial is True
     assert window._serial_var.get() is True
     first = window.tree.item(window.tree.get_children()[0], "values")[0]
-    assert app.SERIAL_HIDDEN_TEXT not in first
+    assert "SN********" not in first
     assert "SN-A" in first
     assert window.rows_to_tsv().count("SN-A") >= 1
     saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
@@ -3337,7 +3366,7 @@ def test_toggle_serial_reveals_and_persists_setting(tk_root, tmp_path):
 
     # 点两次回到隐藏，同样落盘
     assert window.toggle_serial(False) is False
-    assert app.SERIAL_HIDDEN_TEXT in window.tree.item(window.tree.get_children()[0], "values")[0]
+    assert app._mask_serial("SN-A") in window.tree.item(window.tree.get_children()[0], "values")[0]
     assert "SN-A" not in window.rows_to_tsv()
     saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
     assert saved["show_serial"] is False
@@ -3371,7 +3400,7 @@ def test_serial_setting_reloaded_from_disk_and_card_subtitle_respects_it(tk_root
     window.toggle_serial(False)
     texts = card_texts()
     assert not any("SN-A" in text for text in texts), "隐藏状态下卡片也不能漏"
-    assert any(app.SERIAL_HIDDEN_TEXT in text for text in texts)
+    assert any(app._mask_serial("SN-A") in text for text in texts)
     assert "序列号：已隐藏" in window.diagnostics_text()
     window.root.destroy()
 
