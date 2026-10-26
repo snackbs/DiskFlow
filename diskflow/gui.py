@@ -861,8 +861,8 @@ class DiskTrackerApp:
 
         self.refresh_button = ttk.Button(bottom, text="刷新记录", command=self.refresh_async)
         self.refresh_button.pack(side="right")
-        self.open_button = ttk.Button(bottom, text="打开历史文件", command=self.open_history_file)
-        self.open_button.pack(side="right", padx=(0, 8))
+        # 「打开历史文件」只在菜单「文件 → 打开历史文件(O)」里留一个入口，
+        # 底部条不再重复放按钮：同一动作两个落点只会让用户想「到底哪个不一样」。
         # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死
         self.about_button = ttk.Button(bottom, text="关于", command=self.show_about)
         self.about_button.pack(side="right", padx=(0, 8))

@@ -1234,6 +1234,13 @@ def test_gui_about_button_shows_version(tk_root, tmp_path, monkeypatch):
                                 store=store, autostart=False)
     tk_root.update_idletasks()
     assert window.about_button.cget("text") == "关于"
+    # 「打开历史文件」只在菜单里留一个入口，底部不再放同名按钮
+    assert not hasattr(window, "open_button")
+    bottom_texts = [str(widget.cget("text"))
+                    for widget in _descendants(window.refresh_button.master)
+                    if widget.winfo_class() == "TButton"]
+    assert "打开历史文件" not in bottom_texts
+    assert "刷新记录" in bottom_texts
 
     captured = {}
 
