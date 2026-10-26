@@ -157,19 +157,21 @@ def fmt_bytes_size(value: Any) -> str:
     return f"{number / 1024 ** 3:,.2f} GB"
 
 
-def fmt_capacity(value: Any) -> str:
-    """硬盘标称容量双单位显示：厂商标称（十进制）+ 系统可见（二进制）。
+def fmt_capacity(value: Any, show_system: bool = True) -> str:
+    """硬盘标称容量：厂商标称（十进制），可选带系统可见量（二进制）。
 
-    同一个字节数有两种常见口径，界面上把两个都给出来，避免用户对不上：
+    同一个字节数有两种常见口径，要不要把两个都给出来由调用方决定：
 
     * 括号外：厂商标称容量，按 1 GB = 1,000,000,000 字节计算，
       所以 960197124096 字节写成 "960 GB"、4000787030016 写成 "4 TB"；
-    * 括号内：操作系统里的可用量，按 1 GiB = 1024^3 字节计算，
-      写成 "894.25 GiB" / "3.64 TiB"。
+    * 括号内：show_system=True 时按 1 GiB = 1024^3 字节算出操作系统里的可见量，
+      写成 "894.25 GiB" / "3.64 TiB"。这个量对普通用户常常是噪音
+      （同一块盘标称 1 TB、系统里却写 931 GB），所以默认可以关掉。
 
-    实测样本：960197124096 -> "960 GB (894.25 GiB)"；
+    实测样本（show_system=True）：960197124096 -> "960 GB (894.25 GiB)"；
     4000787030016 -> "4 TB (3.64 TiB)"；512110190592 -> "512 GB (476.94 GiB)"；
     1000204886016 -> "1 TB (931.51 GiB)"（标称 1TB，但没到 1 TiB，括号仍走 GiB）。
+    同一个输入 show_system=False 只返回 "960 GB" / "4 TB" / "1 TB"。
 
     括号用 ASCII 半角：这个串会进表格、卡片、TSV 与剪贴板，半角括号在
     等宽字体与 Excel 里都不会撑宽对齐。
@@ -186,6 +188,9 @@ def fmt_capacity(value: Any) -> str:
         vendor = f"{gb / 1000:,.2f}".rstrip("0").rstrip(".") + " TB"
     else:
         vendor = f"{round(gb):,} GB"
+
+    if not show_system:
+        return vendor
 
     # 括号内：二进制口径。1024 GiB 以上才升到 TiB。
     gib = number / BYTES_PER_GB
