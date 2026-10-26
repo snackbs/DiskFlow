@@ -1074,10 +1074,12 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     assert headings[-2:] == ["0E / 健康", "状态"]   # 0E 与健康度合成一格
     # 合并列里读/写两个值都要出现，且共用同一个分隔符
     first_values = window.tree.item(window.tree.get_children()[0], "values")
-    # 首列型号与序列号上下两行，序列号不再被截断
+    # 首列型号与序列号上下两行；序列号默认隐藏，界面上只剩占位符
     assert app.PAIR_SEPARATOR in first_values[0]
     model_line, serial_line = first_values[0].split(app.PAIR_SEPARATOR)
-    assert model_line and serial_line and "..." not in serial_line
+    assert model_line == "Test NVMe"
+    assert serial_line == app.SERIAL_HIDDEN_TEXT
+    assert "SN1" not in first_values[0], "默认必须隐藏序列号，界面不能出现真实值"
     assert app.PAIR_SEPARATOR in first_values[2]      # 累计读 / 写
     assert app.PAIR_SEPARATOR in first_values[4]      # 本次读增 / 写增
     assert app.PAIR_SEPARATOR in first_values[5]      # 历史读增 / 写增
@@ -1578,7 +1580,10 @@ def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
     tk_root.update_idletasks()
 
     labels = [window.menubar.entrycget(i, "label") for i in range(6)]
-    assert labels == ["文件(&F)", "主题(&T)", "工具(&U)", "硬盘(&D)", "帮助(&H)", "语言(&L)"]
+    # 菜单文字不带 "(&X)" 助记符：中文界面里 Alt 下划线看起来像漏字，已全部去掉
+    assert labels == ["文件", "主题", "工具", "硬盘", "帮助", "语言"]
+    for label in labels:
+        assert "(&" not in label and "&" not in label
 
     theme_entries = [window.theme_menu.entrycget(i, "label")
                      for i in range(window.theme_menu.index("end") + 1)]
@@ -1602,8 +1607,8 @@ def test_gui_reset_history_file_menu_entry_and_confirm_flow(tk_root, tmp_path, m
     file_entries = [window.file_menu.entrycget(i, "label")
                     for i in range(window.file_menu.index("end") + 1)
                     if window.file_menu.type(i) == "command"]
-    assert "重置历史文件(&E)" in file_entries
-    assert "打开历史文件(&O)" in file_entries
+    assert "重置历史文件" in file_entries
+    assert "打开历史文件" in file_entries
 
     # 先取消：文件必须原样保留，也不触发重新记录
     refreshed = []
@@ -3007,8 +3012,11 @@ def test_copy_selection_keeps_screen_order_not_click_order(tk_root, tmp_path):
     lines = tk_root.clipboard_get().splitlines()
     assert lines[0] == "\t".join(spec[1] for spec in app.COLUMN_SPECS), "首行必须是表头"
     assert len(lines) == 3, f"选中 2 行 + 表头应 3 行，实际 {len(lines)}"
-    assert "Alpha NVMe" in lines[1] and "SN-A" in lines[1]
-    assert "Gamma HDD" in lines[2] and "SN-C" in lines[2]
+    assert "Alpha NVMe" in lines[1]
+    assert "Gamma HDD" in lines[2]
+    # 序列号默认隐藏：复制出口和界面一样不能漏出真实值
+    assert "SN-A" not in "".join(lines) and "SN-C" not in "".join(lines)
+    assert app.SERIAL_HIDDEN_TEXT in lines[1]
     assert "Beta SATA" not in "".join(lines), "没选中的行不能被复制"
     window.root.destroy()
 
@@ -3286,4 +3294,103 @@ def test_remember_cell_hit_test_without_real_layout(tk_root, tmp_path):
     assert window._remember_cell(10, 9999) is False
     assert window._cell_iid == children[1]
     window.root.destroy()
+
+
+def test_serial_hidden_by_default_in_row_values_and_short_serial():
+    """序列号默认隐藏：数据出口一律只给占位符，任何地方都不能漏出真实值。"""
+    row = app.DiskRow(
+        key="Test NVMe|SN1", model="Test NVMe", serial="SN1",
+        protocol="NVMe", device_path="/dev/sda",
+        read_gb=100.0, write_gb=50.0,
+    )
+    assert app._short_serial("SN1", show=False) == app.SERIAL_HIDDEN_TEXT
+    assert app._short_serial("SN1", show=True) == "SN1"
+    assert app._short_serial("", show=True) == "—"
+    assert app._short_serial("  ", show=False) == app.SERIAL_HIDDEN_TEXT
+
+    hidden = app._row_values(row, show_serial=False)
+    assert hidden[0] == f"Test NVMe\n{app.SERIAL_HIDDEN_TEXT}"
+    assert "SN1" not in "".join(hidden)
+
+    shown = app._row_values(row, show_serial=True)
+    assert shown[0] == "Test NVMe\nSN1"
+    # 除首列外其余列与开关无关
+    assert hidden[1:] == shown[1:]
+
+
+def test_toggle_serial_reveals_and_persists_setting(tk_root, tmp_path):
+    """菜单里的「显示序列号」勾起来后界面与复制出口都放行，并且写进 settings.json。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    assert window.show_serial is False, "默认必须是隐藏的"
+    assert window._serial_var.get() is False
+    assert app.SERIAL_HIDDEN_TEXT in window.tree.item(window.tree.get_children()[0], "values")[0]
+
+    assert window.toggle_serial(True) is True
+    assert window.show_serial is True
+    assert window._serial_var.get() is True
+    first = window.tree.item(window.tree.get_children()[0], "values")[0]
+    assert app.SERIAL_HIDDEN_TEXT not in first
+    assert "SN-A" in first
+    assert window.rows_to_tsv().count("SN-A") >= 1
+    saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["show_serial"] is True
+
+    # 点两次回到隐藏，同样落盘
+    assert window.toggle_serial(False) is False
+    assert app.SERIAL_HIDDEN_TEXT in window.tree.item(window.tree.get_children()[0], "values")[0]
+    assert "SN-A" not in window.rows_to_tsv()
+    saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["show_serial"] is False
+    window.root.destroy()
+
+
+def test_serial_setting_reloaded_from_disk_and_card_subtitle_respects_it(tk_root, tmp_path):
+    """settings.json 里存了 true 时下次启动直接显示；卡片副标题与诊断信息同步。"""
+    app.SettingsStore(tmp_path).save({"theme": app.THEME_SYSTEM, "view": app.VIEW_TABLE,
+                                      "show_serial": True})
+    window = _three_disk_window(tk_root, tmp_path)
+    assert window.show_serial is True
+    assert "SN-A" in window.tree.item(window.tree.get_children()[0], "values")[0]
+
+    def card_texts():
+        """卡片里的文字都在只读 Entry 或 Label 上，两种都收。"""
+        window.root.update_idletasks()
+        out = []
+        for widget in _descendants(window.cards_inner):
+            cls = widget.winfo_class()
+            if cls == "Entry":
+                out.append(str(widget.get()))
+            elif cls == "Label":
+                out.append(str(widget.cget("text")))
+        return out
+
+    window.set_view(app.VIEW_GRID)
+    texts = card_texts()
+    assert any("SN-A" in text for text in texts), "显示状态下卡片副标题应带真实序列号"
+
+    window.toggle_serial(False)
+    texts = card_texts()
+    assert not any("SN-A" in text for text in texts), "隐藏状态下卡片也不能漏"
+    assert any(app.SERIAL_HIDDEN_TEXT in text for text in texts)
+    assert "序列号：已隐藏" in window.diagnostics_text()
+    window.root.destroy()
+
+
+def test_settings_store_normalizes_show_serial(tmp_path):
+    """show_serial 只认真正的布尔值，脏数据一律落回默认（隐藏）。"""
+    store = app.SettingsStore(tmp_path)
+    assert store.load()["show_serial"] is False
+
+    store.path.write_text(json.dumps({"show_serial": "false"}), encoding="utf-8")
+    assert store.load()["show_serial"] is False
+    store.path.write_text(json.dumps({"show_serial": 1}), encoding="utf-8")
+    assert store.load()["show_serial"] is False
+    store.path.write_text(json.dumps({"show_serial": True}), encoding="utf-8")
+    assert store.load()["show_serial"] is True
+
+    # 保存其它键时不能把未知脏值当 True 写回去
+    store.save({"theme": app.THEME_DARK, "show_serial": "yes"})
+    assert json.loads(store.path.read_text(encoding="utf-8"))["show_serial"] is False
+    assert store.load()["theme"] == app.THEME_DARK
+
 
