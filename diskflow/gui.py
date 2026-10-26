@@ -491,20 +491,26 @@ def _short_serial(serial: str, show: bool = True) -> str:
     return (serial or "").strip() or SERIAL_EMPTY_TEXT
 
 
-def _serial_line(row: DiskRow, show_serial: bool = True) -> str:
+def _serial_line(row: DiskRow, show_serial: bool = True,
+                 show_gib: bool = True) -> str:
     """首列第二行 / 卡片副标题的第一段：序列号 [+ 容量]。
+
+    show_gib 决定容量后面要不要跟括号里的系统口径（"960 GB (894.25 GiB)"）：
+    关掉时只留厂商标称值（"960 GB"），这是默认状态——两个数并排对普通用户
+    常常只是噪音。
 
     容量读不到（老记录、读取失败的盘）时只留序列号，不追加「 · —」，
     否则每块读不到容量的盘都会多出一个没有信息量的破折号。
     """
     serial_text = _short_serial(row.serial, show_serial)
-    capacity_text = fmt_capacity(row.capacity_bytes)
+    capacity_text = fmt_capacity(row.capacity_bytes, show_system=show_gib)
     if capacity_text == CAPACITY_UNKNOWN_TEXT:
         return serial_text
     return f"{serial_text}  ·  {capacity_text}"
 
 
-def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:
+def _row_values(row: DiskRow, show_serial: bool = True,
+                show_gib: bool = True) -> tuple[str, ...]:
     """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。
 
     增量格必须自带单位（fmt_delta_short）：表头写的是「本次读增 / 写增」，
@@ -512,9 +518,10 @@ def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:
 
     show_serial 由调用方传入当前偏好（默认隐藏），表格渲染、TSV 导出、
     单格复制三条出口共用这一份实现，不会出现「界面藏了、复制又漏出去」。
+    同理 show_gib 也只在调用方传当前偏好，四条出口口径一致。
     """
     return (
-        f"{row.model}\n{_serial_line(row, show_serial)}",
+        f"{row.model}\n{_serial_line(row, show_serial, show_gib)}",
         row.protocol,
         _pair(fmt_size_short(row.read_gb), fmt_size_short(row.write_gb)),
         row.interval_text,
@@ -598,6 +605,8 @@ class DiskTrackerApp:
         self.view_key = normalize_view_key(saved.get("view"))
         # 序列号默认隐藏；菜单「工具 → 显示序列号」可打开，偏好写进 settings.json
         self.show_serial = saved.get("show_serial") is True
+        # 容量括号里的系统口径（894.25 GiB）默认也关掉，只显示厂商标称值
+        self.show_gib = saved.get("show_gib") is True
         # 界面语言必须先落到 i18n 的模块级状态，再建菜单与控件，
         # 否则首屏文案还是上一次（默认中文）的语言，切完语言才变。
         self.lang = set_language(saved.get("lang"))
@@ -671,6 +680,12 @@ class DiskTrackerApp:
         self._serial_var = tk.BooleanVar(master=self.root, value=self.show_serial)
         tools_menu.add_checkbutton(label=tr("显示序列号"), variable=self._serial_var,
                                    command=self.toggle_serial)
+        # 容量后面括号里的系统口径（894.25 GiB）：同一块盘标称 1 TB、系统里
+        # 却写 931 GB，两个数并排对普通用户常常只是噪音，所以默认关掉。
+        # 同样只影响显示，history.json 里存的一直是字节数与 GB 数值。
+        self._gib_var = tk.BooleanVar(master=self.root, value=self.show_gib)
+        tools_menu.add_checkbutton(label=tr("显示系统口径容量"), variable=self._gib_var,
+                                   command=self.toggle_gib)
         self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
@@ -1153,6 +1168,19 @@ class DiskTrackerApp:
         self.render_rows(self.rows)
         return self.show_serial
 
+    # ---------- 容量系统口径显示 ----------
+    def toggle_gib(self, show: Any = None) -> bool:
+        """切换容量括号里的系统口径（894.25 GiB）；不传参时读菜单勾选状态。"""
+        if show is None:
+            show = bool(self._gib_var.get())
+        self.show_gib = bool(show)
+        if hasattr(self, "_gib_var"):
+            self._gib_var.set(self.show_gib)
+        self._save_setting("show_gib", self.show_gib)
+        # 与 toggle_serial 同一条路：表格、卡片、TSV、单格复制都从这里重画
+        self.render_rows(self.rows)
+        return self.show_gib
+
     # ---------- 界面语言 ----------
     def set_language(self, code: Any, persist: bool = True) -> str:
         """切换界面语言并**立即重画**当前窗口（不重启、不重读磁盘）。
@@ -1261,7 +1289,8 @@ class DiskTrackerApp:
             while self.tree.exists(iid):
                 suffix += 1
                 iid = f"{base}#{suffix}"
-            self.tree.insert("", "end", iid=iid, values=_row_values(row, self.show_serial),
+            self.tree.insert("", "end", iid=iid,
+                             values=_row_values(row, self.show_serial, self.show_gib),
                              tags=tags)
             self._iid_to_row[iid] = row
         if self.view_key != VIEW_TABLE:
@@ -1606,7 +1635,7 @@ class DiskTrackerApp:
                      highlightcolor=theme["seg_border"]
                      ).pack(side="left", padx=(6, 0))
 
-        subtitle = (f"{_serial_line(row, self.show_serial)}"
+        subtitle = (f"{_serial_line(row, self.show_serial, self.show_gib)}"
                     f"  ·  {row.device_path}")
         self._card_text(inner, subtitle, bg=background,
                         fg=theme["note_fg"],
@@ -1660,8 +1689,9 @@ class DiskTrackerApp:
         headers = [tr(spec[1]) for spec in COLUMN_SPECS]
         lines = ["	".join(headers)]
         for row in (self.rows if rows is None else rows):
-            lines.append("	".join(str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
-                                 for value in _row_values(row, self.show_serial)))
+            lines.append("	".join(
+                str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
+                for value in _row_values(row, self.show_serial, self.show_gib)))
         return "\n".join(lines)
 
     # ---------- 数据刷新 ----------
@@ -1829,7 +1859,8 @@ class DiskTrackerApp:
         if row is None or self._cell_column_key not in keys:
             self._set_error(tr("请先用右键点一下要复制的单元格。"))
             return
-        value = _row_values(row, self.show_serial)[keys.index(self._cell_column_key)]
+        value = _row_values(row, self.show_serial,
+                            self.show_gib)[keys.index(self._cell_column_key)]
         text = str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
         # 只给数值：列名在表头里已经写着，再重复一遍「「本次读增 / 写增」单元格：」
         # 除了占地方没别的用处（用户截图里圈出来要去掉的就是这一段）。
@@ -1928,6 +1959,7 @@ class DiskTrackerApp:
             tr("偏好文件：{path}", path=self.settings.path),
             tr("视图：{value}", value=tr(VIEW_LABELS.get(self.view_key, self.view_key))),
             tr("序列号：{value}", value=tr("显示") if self.show_serial else tr("已隐藏")),
+            tr("系统口径容量：{value}", value=tr("显示") if self.show_gib else tr("已隐藏")),
             tr("磁盘行数：{count}", count=len(self.rows)),
         ))
 
@@ -1970,6 +2002,8 @@ class DiskTrackerApp:
                "表格首列括号外的容量是厂商标称值（按 1 GB = 1,000,000,000 字节），\n"
                "括号内是系统显示口径（按 1 GiB = 1024^3 字节），所以同一块盘\n"
                "会同时看到「960 GB」和「894.25 GiB」，两者说的是同一个字节数。\n"
+               "括号部分默认不显示，可在「工具 → 显示系统口径容量」打开或关闭；\n"
+               "开关只影响显示，history.json 里存的始终是字节数与 GB 数值。\n"
                "\n"
                "累计读取 / 累计写入来自硬盘自己维护的计数器：\n"
                "· NVMe：Data Units Read / Written，1 Data Unit = 512000 字节\n"

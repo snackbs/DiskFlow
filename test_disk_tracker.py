@@ -388,6 +388,27 @@ def test_fmt_capacity_shows_vendor_and_binary_units():
     assert app.fmt_capacity("not-a-number") == app.CAPACITY_UNKNOWN_TEXT
 
 
+def test_fmt_capacity_can_hide_the_system_unit():
+    """show_system=False 只给厂商标称值；括号里的系统口径是可选信息。"""
+    # 默认仍然是双单位（历史调用点不用改）
+    assert app.fmt_capacity(960197124096) == app.fmt_capacity(960197124096, show_system=True)
+    # 关掉括号：只留厂商标称值，不留下空括号或多余空格
+    assert app.fmt_capacity(960197124096, show_system=False) == "960 GB"
+    assert app.fmt_capacity(512110190592, show_system=False) == "512 GB"
+    assert app.fmt_capacity(256060514304, show_system=False) == "256 GB"
+    assert app.fmt_capacity(4000787030016, show_system=False) == "4 TB"
+    assert app.fmt_capacity(1500399726592, show_system=False) == "1.5 TB"
+    # 标称 1 TB 但没到 1 TiB：关掉括号后是 1 TB，不会变成 931 GB
+    assert app.fmt_capacity(1000204886016, show_system=False) == "1 TB"
+    assert app.fmt_capacity(1073741824, show_system=False) == "1 GB"
+    for text in (app.fmt_capacity(960197124096, show_system=False),
+                 app.fmt_capacity(4000787030016, show_system=False)):
+        assert "(" not in text and "GiB" not in text and "TiB" not in text
+    # 取不到容量时两种开关都是「—」
+    assert app.fmt_capacity(None, show_system=False) == app.CAPACITY_UNKNOWN_TEXT
+    assert app.fmt_capacity(0, show_system=False) == app.CAPACITY_UNKNOWN_TEXT
+
+
 def test_serial_line_appends_capacity_only_when_known():
     """首列第二行：序列号 + 容量；容量未知时只留序列号，不补「 · —」。"""
     with_capacity = app.DiskRow(
@@ -407,6 +428,16 @@ def test_serial_line_appends_capacity_only_when_known():
     assert app._serial_line(without, show_serial=False) == "SN********"
     assert app._serial_line(without, show_serial=True) == "SN1"
     assert "—" not in app._row_values(without, show_serial=True)[0]
+
+    # 关掉系统口径：只剩厂商标称值，序列号与分隔符都不变
+    assert app._serial_line(with_capacity, show_serial=False,
+                            show_gib=False) == "20********  ·  256 GB"
+    assert app._serial_line(with_capacity, show_serial=True,
+                            show_gib=False) == "2013CV440309  ·  256 GB"
+    assert app._row_values(with_capacity, show_serial=False, show_gib=False)[0] == (
+        "Test NVMe\n20********  ·  256 GB")
+    # 容量未知时开关怎么设都只留序列号
+    assert app._serial_line(without, show_serial=True, show_gib=False) == "SN1"
 
 
 def test_health_text_nvme_uses_100_minus_percentage_used():
@@ -3518,6 +3549,81 @@ def test_settings_store_normalizes_show_serial(tmp_path):
     store.save({"theme": app.THEME_DARK, "show_serial": "yes"})
     assert json.loads(store.path.read_text(encoding="utf-8"))["show_serial"] is False
     assert store.load()["theme"] == app.THEME_DARK
+
+
+def test_capacity_system_unit_is_off_by_default_and_toggleable(tk_root, tmp_path):
+    """容量括号里的系统口径默认关；打开后表格、TSV、卡片副标题一起变。"""
+    store = _gui_store(tmp_path)
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Cap NVMe", serial="SN-CAP",
+                         capacity_bytes=256060514304,
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=0),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+
+    def first_cell() -> str:
+        return str(window.tree.item(window.tree.get_children()[0], "values")[0])
+
+    assert window.show_gib is False, "系统口径默认必须是关的"
+    assert window._gib_var.get() is False
+    assert "256 GB" in first_cell()
+    assert "GiB" not in first_cell(), "默认不该出现括号里的系统口径"
+    assert "GiB" not in window.rows_to_tsv()
+
+    assert window.toggle_gib(True) is True
+    assert window.show_gib is True
+    assert window._gib_var.get() is True
+    assert "256 GB (238.47 GiB)" in first_cell()
+    assert "238.47 GiB" in window.rows_to_tsv()
+    saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["show_gib"] is True
+
+    # 卡片副标题同一条路
+    window.set_view(app.VIEW_GRID)
+    texts = []
+    for widget in _descendants(window.cards_inner):
+        cls = widget.winfo_class()
+        if cls == "Entry":
+            texts.append(str(widget.get()))
+        elif cls == "Label":
+            texts.append(str(widget.cget("text")))
+    assert any("238.47 GiB" in text for text in texts), "卡片副标题也要跟着开关走"
+
+    assert "系统口径容量：显示" in window.diagnostics_text()
+
+    # 关回去同样落盘
+    assert window.toggle_gib(False) is False
+    assert "GiB" not in window.rows_to_tsv()
+    assert "系统口径容量：已隐藏" in window.diagnostics_text()
+    saved = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
+    assert saved["show_gib"] is False
+    window.root.destroy()
+
+
+def test_settings_store_normalizes_show_gib(tmp_path):
+    """show_gib 同 show_serial：只认真正的布尔值，脏数据落回关。"""
+    store = app.SettingsStore(tmp_path)
+    assert store.load()["show_gib"] is False
+
+    store.path.write_text(json.dumps({"show_gib": "true"}), encoding="utf-8")
+    assert store.load()["show_gib"] is False
+    store.path.write_text(json.dumps({"show_gib": 1}), encoding="utf-8")
+    assert store.load()["show_gib"] is False
+    store.path.write_text(json.dumps({"show_gib": True}), encoding="utf-8")
+    assert store.load()["show_gib"] is True
+
+    store.save({"show_gib": "yes"})
+    assert json.loads(store.path.read_text(encoding="utf-8"))["show_gib"] is False
+    store.save({"show_gib": True})
+    assert store.load()["show_gib"] is True
+    # 不认识的键不能把 show_serial / lang 带歪
+    assert store.load()["lang"] == app.LANG_ZH
 
 
 # ---------------------------------------------------------------------------

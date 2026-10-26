@@ -323,6 +323,8 @@ _EN: dict[str, str] = {
     "表格首列括号外的容量是厂商标称值（按 1 GB = 1,000,000,000 字节），\n"
     "括号内是系统显示口径（按 1 GiB = 1024^3 字节），所以同一块盘\n"
     "会同时看到「960 GB」和「894.25 GiB」，两者说的是同一个字节数。\n"
+    "括号部分默认不显示，可在「工具 → 显示系统口径容量」打开或关闭；\n"
+    "开关只影响显示，history.json 里存的始终是字节数与 GB 数值。\n"
     "\n"
     "累计读取 / 累计写入来自硬盘自己维护的计数器：\n"
     "· NVMe：Data Units Read / Written，1 Data Unit = 512000 字节\n"
@@ -338,6 +340,10 @@ _EN: dict[str, str] = {
         "The value inside uses the operating system convention "
         "(1 GiB = 1024^3 bytes), so one disk\n"
         "shows both \"960 GB\" and \"894.25 GiB\" — the same byte count.\n"
+        "The parentheses are hidden by default; toggle them under "
+        "Tools → Show System Capacity.\n"
+        "The switch only affects display — history.json always stores bytes "
+        "and GB values.\n"
         "\n"
         "Cumulative read/write totals come from counters the drive maintains:\n"
         "· NVMe: Data Units Read / Written, 1 data unit = 512000 bytes\n"
@@ -398,6 +404,8 @@ _EN: dict[str, str] = {
         "Reading disks usually requires administrator rights; without elevation some "
         "disks may fail to read."
     ),
+    "显示系统口径容量": "Show System Capacity",
+    "系统口径容量：{value}": "System capacity: {value}",
     # ---- 其他 ----
     # 中文显示名在英文界面只留英文部分：产品名不翻译，但没必要拖着一串汉字。
     "磁盘流水 DiskFlow": "DiskFlow",

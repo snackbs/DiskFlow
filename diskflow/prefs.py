@@ -25,6 +25,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "theme": THEME_SYSTEM,
     "view": DEFAULT_VIEW,
     "show_serial": False,
+    # show_gib 默认 False：容量只显示厂商标称值（960 GB）。
+    # 括号里的系统可见量（894.25 GiB）对普通用户常常是噪音，需要时从
+    # 「工具 → 显示系统口径容量」手动打开。
+    "show_gib": False,
     # 界面语言：zh-CN / en。语言只影响界面文案，history.json 的 schema 与内容一个字节都不变。
     "lang": DEFAULT_LANG,
 }
@@ -64,6 +68,10 @@ class SettingsStore:
         show_serial = payload.get("show_serial")
         if isinstance(show_serial, bool):
             data["show_serial"] = show_serial
+        # 同上：容量括号里的系统口径也默认关掉
+        show_gib = payload.get("show_gib")
+        if isinstance(show_gib, bool):
+            data["show_gib"] = show_gib
         # 语言：非法值（含旧版本没写过这个键）一律回落中文
         lang = payload.get("lang")
         if isinstance(lang, str):
@@ -78,6 +86,7 @@ class SettingsStore:
         merged["theme"] = normalize_theme_key(merged.get("theme"))
         merged["view"] = normalize_view_key(merged.get("view"))
         merged["show_serial"] = merged.get("show_serial") is True
+        merged["show_gib"] = merged.get("show_gib") is True
         merged["lang"] = normalize_lang(merged.get("lang"))
         self.directory.mkdir(parents=True, exist_ok=True)
         text = json.dumps(merged, ensure_ascii=False, indent=2)
