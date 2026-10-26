@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .config import APP_STORAGE_ID, PROJECT_DIR
+from .i18n import tr
 from .models import DiskSnapshot, disk_key
 from .timefmt import parse_timestamp, timestamp_seconds
 
@@ -225,24 +226,28 @@ class HistoryStore:
         path = self.path
         if not path.exists():
             return HistoryLoadResult(records=[], recovered=False,
-                                     message="首次运行：将建立基线记录", path=path)
+                                     message=tr("首次运行：将建立基线记录"), path=path)
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return HistoryLoadResult(records=[], recovered=True,
-                                     message=f"历史文件读取失败（{exc}），已重建基线", path=path)
+            return HistoryLoadResult(
+                records=[], recovered=True, path=path,
+                message=tr("历史文件读取失败（{error}），已重建基线", error=exc))
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             backup = self._backup_broken(path)
-            return HistoryLoadResult(records=[], recovered=True, path=path, backup_path=backup,
-                                     message=f"history.json 已损坏，已备份为 {backup.name} 并重建基线")
+            return HistoryLoadResult(
+                records=[], recovered=True, path=path, backup_path=backup,
+                message=tr("history.json 已损坏，已备份为 {name} 并重建基线", name=backup.name))
 
         records, problem = validate_history(data)
         if problem:
             backup = self._backup_broken(path)
-            return HistoryLoadResult(records=[], recovered=True, path=path, backup_path=backup,
-                                     message=f"history.json 字段异常（{problem}），已备份为 {backup.name} 并重建基线")
+            return HistoryLoadResult(
+                records=[], recovered=True, path=path, backup_path=backup,
+                message=tr("history.json 字段异常（{problem}），已备份为 {name} 并重建基线",
+                           problem=problem, name=backup.name))
         migrated = _history_schema_version(data) < SCHEMA_VERSION
         return HistoryLoadResult(records=records, recovered=False, path=path, message="",
                                  migrated=migrated)
@@ -308,21 +313,25 @@ class HistoryStore:
 
 
 def _flatten_v1_records(records: list, prefix: str = "") -> tuple[list[dict], str]:
-    """v1：扁平 records 数组，每条就是一次读数。"""
+    """v1：扁平 records 数组，每条就是一次读数。
+
+    problem 一律走 tr() 的「模板 + 占位符」形式，这样英文界面下报的也是英文；
+    中文界面下译文就是原模板，与历史行为逐字一致。
+    """
     cleaned: list[dict] = []
     for index, record in enumerate(records):
-        label = f"{prefix}第 {index + 1} 条记录"
+        position = index + 1
         if not isinstance(record, dict):
-            return [], f"{label}不是对象"
+            return [], tr("第 {index} 条记录不是对象", index=position)
         for name in REQUIRED_RECORD_FIELDS:
             if name not in record:
-                return [], f"{label}缺少字段 {name}"
+                return [], tr("第 {index} 条记录缺少字段 {field}", index=position, field=name)
         if timestamp_seconds(record.get("timestamp")) is None:
-            return [], f"{label} timestamp 无法解析"
+            return [], tr("第 {index} 条记录 timestamp 无法解析", index=position)
         for name in ("read_gb", "write_gb"):
             value = record.get(name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return [], f"{label} {name} 不是数字"
+                return [], tr("第 {index} 条记录 {field} 不是数字", index=position, field=name)
         item = dict(record)
         if not item.get("key"):
             item["key"] = disk_key(str(item.get("model") or ""), str(item.get("serial") or ""))
@@ -337,28 +346,31 @@ def _flatten_v2_disks(disks: list) -> tuple[list[dict], str]:
     """v2：盘档案 + 读数数组，这里展开回「每条读数一行」的扁平结构。"""
     cleaned: list[dict] = []
     for index, disk in enumerate(disks):
+        position = index + 1
         if not isinstance(disk, dict):
-            return [], f"第 {index + 1} 块盘不是对象"
-        label = f"第 {index + 1} 块盘的"
+            return [], tr("第 {index} 块盘不是对象", index=position)
         readings = disk.get("readings")
         if not isinstance(readings, list):
-            return [], f"{label}读数不是数组"
+            return [], tr("第 {index} 块盘的读数不是数组", index=position)
         model = str(disk.get("model") or "")
         serial = str(disk.get("serial") or "")
         key = str(disk.get("key") or "") or disk_key(model, serial)
         protocol = str(disk.get("protocol") or "未知")
         device = str(disk.get("device") or "")
         for inner, reading in enumerate(readings):
-            where = f"{label}第 {inner + 1} 条读数"
+            reading_no = inner + 1
             if not isinstance(reading, dict):
-                return [], f"{where}不是对象"
+                return [], tr("第 {index} 块盘的第 {inner} 条读数不是对象",
+                              index=position, inner=reading_no)
             if timestamp_seconds(reading.get("t")) is None:
-                return [], f"{where} timestamp 无法解析"
+                return [], tr("第 {index} 块盘的第 {inner} 条读数 timestamp 无法解析",
+                              index=position, inner=reading_no)
             for name, field_name in (("r", "read_gb"), ("w", "write_gb")):
                 value = reading.get(name)
                 if value is not None and (isinstance(value, bool)
                                           or not isinstance(value, (int, float))):
-                    return [], f"{where} {field_name} 不是数字"
+                    return [], tr("第 {index} 块盘的第 {inner} 条读数 {field} 不是数字",
+                                  index=position, inner=reading_no, field=field_name)
             media = reading.get("e")
             if isinstance(media, bool) or not isinstance(media, (int, float)):
                 media = None
@@ -385,15 +397,15 @@ def validate_history(data: Any) -> tuple[list[dict], str]:
     返回 (记录列表, 问题描述)，问题描述非空时调用方会备份并重建基线。
     """
     if not isinstance(data, dict):
-        return [], "根节点不是对象"
+        return [], tr("根节点不是对象")
     disks = data.get("disks")
     if disks is not None:
         if not isinstance(disks, list):
-            return [], "disks 不是数组"
+            return [], tr("disks 不是数组")
         return _flatten_v2_disks(disks)
     records = data.get("records")
     if not isinstance(records, list):
-        return [], "缺少 records 数组"
+        return [], tr("缺少 records 数组")
     return _flatten_v1_records(records)
 
 

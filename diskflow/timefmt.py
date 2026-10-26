@@ -6,6 +6,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from .i18n import is_english, tr
+
 
 # ---------------------------------------------------------------------------
 # 时间格式化层
@@ -13,11 +15,17 @@ from typing import Any
 
 
 def format_duration(total_seconds: float) -> str:
-    """秒 -> 'X 天 Y 小时 Z 分钟'。传入负数时按绝对值格式化。"""
+    """秒 -> 'X 天 Y 小时 Z 分钟'。传入负数时按绝对值格式化。
+
+    英文界面用紧凑写法 '2 d 2 h 30 min'：这一列在表格里只有 152px 宽，
+    '2 days 2 hours 30 minutes' 会被截断。
+    """
     seconds = int(abs(float(total_seconds)))
     days, remainder = divmod(seconds, 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes = remainder // 60
+    if is_english():
+        return f"{days} d {hours} h {minutes} min"
     return f"{days} 天 {hours} 小时 {minutes} 分钟"
 
 
@@ -26,7 +34,7 @@ def format_interval(seconds: float | None) -> str:
     if seconds is None:
         return "—"
     if seconds < 0:
-        return f"时钟回拨 {format_duration(-float(seconds))}"
+        return tr("时钟回拨 {duration}", duration=format_duration(-float(seconds)))
     return format_duration(seconds)
 
 
@@ -85,5 +93,6 @@ def format_stamp(value: Any) -> str:
         return text or "—"
     body = dt.strftime("%Y-%m-%d %H:%M:%S")
     if dt.tzinfo is None or dt.utcoffset() is None:
-        return f"{body} (本地时间)"
+        prefix = " (local time)" if is_english() else " (本地时间)"
+        return f"{body}{prefix}"
     return f"{body} ({format_utc_offset(dt)})"

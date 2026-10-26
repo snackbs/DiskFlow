@@ -7,6 +7,7 @@ from typing import Sequence
 
 from .config import COUNTER_SOURCE_ATTR
 from .convert import _as_int
+from .i18n import tr, tr_message
 from .models import DiskRow, DiskSnapshot, MediaErrorStatus, disk_key
 from .timefmt import format_interval, timestamp_seconds
 
@@ -26,18 +27,19 @@ def evaluate_media_errors(protocol: str, previous: int | None, current: int | No
     - 相等 -> 稳定
     """
     if (protocol or "").upper() == "SATA":
-        return MediaErrorStatus("不适用", "na", 0)
+        return MediaErrorStatus(tr("不适用"), "na", 0)
     if current is None:
-        return MediaErrorStatus("不可用", "unavailable", 0)
+        return MediaErrorStatus(tr("不可用"), "unavailable", 0)
     if previous is None:
         if current > 0:
-            return MediaErrorStatus(f"⚠ 0E 新增 {current}", "first_seen", current)
-        return MediaErrorStatus("稳定", "stable", 0)
+            return MediaErrorStatus(tr("⚠ 0E 新增 {delta}", delta=current), "first_seen", current)
+        return MediaErrorStatus(tr("稳定"), "stable", 0)
     if current > previous:
-        return MediaErrorStatus(f"⚠ 0E 新增 {current - previous}", "increased", current - previous)
+        delta = current - previous
+        return MediaErrorStatus(tr("⚠ 0E 新增 {delta}", delta=delta), "increased", delta)
     if current < previous:
-        return MediaErrorStatus("稳定（计数较上次减小）", "reset", 0)
-    return MediaErrorStatus("稳定", "stable", 0)
+        return MediaErrorStatus(tr("稳定（计数较上次减小）"), "reset", 0)
+    return MediaErrorStatus(tr("稳定"), "stable", 0)
 
 
 def _record_gb(record: dict, field_name: str) -> float | None:
@@ -77,15 +79,16 @@ def build_rows(history_records: Sequence[dict],
         if not snapshot.ok:
             rows.append(DiskRow(
                 key=key,
-                model=snapshot.model or "（未知型号）",
+                model=snapshot.model or tr("（未知型号）"),
                 serial=snapshot.serial or "—",
                 protocol=snapshot.protocol,
                 device_path=snapshot.device_path,
+                capacity_bytes=snapshot.capacity_bytes,
                 drives=snapshot.drives,
                 health_text="—",
                 media_text="—",
                 media_kind="unavailable",
-                status_text=snapshot.error or "读取失败",
+                status_text=tr_message(snapshot.error) or tr("读取失败"),
                 failed=True,
             ))
             continue
@@ -97,10 +100,13 @@ def build_rows(history_records: Sequence[dict],
 
         row = DiskRow(
             key=key,
-            model=snapshot.model,
+            # 型号 / 协议里的占位值（"未知型号" / "未知"）在显示层翻译；
+            # 真实型号名不会被翻译表命中，原样返回。history.json 里仍然存中文原文。
+            model=tr(snapshot.model),
             serial=snapshot.serial,
-            protocol=snapshot.protocol,
+            protocol=tr(snapshot.protocol),
             device_path=snapshot.device_path,
+            capacity_bytes=snapshot.capacity_bytes,
             drives=snapshot.drives,
             read_gb=current_read,
             write_gb=current_write,
@@ -108,7 +114,7 @@ def build_rows(history_records: Sequence[dict],
         )
 
         if prior is None:
-            row.status_text = "新盘首次记录，暂无增量对比"
+            row.status_text = tr("新盘首次记录，暂无增量对比")
             row.interval_text = "—"
             row.read_delta_gb = None
             row.write_delta_gb = None
@@ -132,11 +138,11 @@ def build_rows(history_records: Sequence[dict],
             row.hist_write_delta_gb = _diff(current_write, first_write)
 
             if row.read_delta_gb is not None and row.read_delta_gb < 0:
-                row.status_text = "累计读数回退，疑似计数重置"
+                row.status_text = tr("累计读数回退，疑似计数重置")
             elif row.write_delta_gb is not None and row.write_delta_gb < 0:
-                row.status_text = "累计写数回退，疑似计数重置"
+                row.status_text = tr("累计写数回退，疑似计数重置")
             else:
-                row.status_text = "已更新记录"
+                row.status_text = tr("已更新记录")
 
         media = evaluate_media_errors(
             snapshot.protocol,
@@ -149,12 +155,15 @@ def build_rows(history_records: Sequence[dict],
         if media.is_alert:
             row.status_text = media.text
         if snapshot.protocol == "SATA" and (snapshot.reallocated or snapshot.pending):
-            extra = f"重映射 {snapshot.reallocated or 0} / 待映射 {snapshot.pending or 0}"
-            row.status_text = f"{row.status_text}（{extra}）"
+            extra = tr("重映射 {reallocated} / 待映射 {pending}",
+                       reallocated=snapshot.reallocated or 0,
+                       pending=snapshot.pending or 0)
+            row.status_text = tr("{status}（{extra}）", status=row.status_text, extra=extra)
         if snapshot.counter_source == COUNTER_SOURCE_ATTR:
             # 拿不到 Device Statistics，累计量只能按 SMART 241/242 的 512 字节假设换算，
             # 个别主控按 16/32 MiB 块计数，会明显偏小，必须在界面上说明。
-            row.status_text = f"{row.status_text}（累计量取自 SMART 241/242，可能偏小）"
+            row.status_text = tr("{status}（累计量取自 SMART 241/242，可能偏小）",
+                                 status=row.status_text)
 
         rows.append(row)
 
@@ -164,9 +173,9 @@ def build_rows(history_records: Sequence[dict],
             continue
         rows.append(DiskRow(
             key=key,
-            model=str(record.get("model") or "（未知型号）"),
+            model=str(record.get("model") or tr("（未知型号）")),
             serial=str(record.get("serial") or "—"),
-            protocol=str(record.get("protocol") or "未知"),
+            protocol=str(record.get("protocol") or tr("未知")),
             device_path=str(record.get("device") or "—"),
             read_gb=_record_gb(record, "read_gb"),
             write_gb=_record_gb(record, "write_gb"),
@@ -174,7 +183,7 @@ def build_rows(history_records: Sequence[dict],
             health_text="—",
             media_text="—",
             media_kind="unavailable",
-            status_text="本次未检测到（已移除或读取失败）",
+            status_text=tr("本次未检测到（已移除或读取失败）"),
             vanished=True,
         ))
 

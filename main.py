@@ -45,6 +45,7 @@ import diskflow.providers as providers  # noqa: F401
 import diskflow.diskmap as diskmap  # noqa: F401
 import diskflow.delta as delta  # noqa: F401
 import diskflow.history as history  # noqa: F401
+import diskflow.i18n as i18n  # noqa: F401
 import diskflow.orchestrate as orchestrate  # noqa: F401
 import diskflow.platformhelp as platformhelp  # noqa: F401
 import diskflow.theme as theme  # noqa: F401
@@ -65,8 +66,9 @@ from diskflow.config import (  # noqa: F401
 )
 
 from diskflow.convert import (  # noqa: F401
-    bytes_to_gb, lbas_to_gb, data_units_to_gb, _as_int, fmt_gb, fmt_delta, fmt_delta_gb,
-    fmt_delta_short, fmt_size_gb, fmt_size_short, fmt_bytes_size,
+    CAPACITY_UNKNOWN_TEXT, bytes_to_gb, lbas_to_gb, data_units_to_gb, _as_int,
+    fmt_gb, fmt_delta, fmt_delta_gb, fmt_delta_short, fmt_size_gb, fmt_size_short,
+    fmt_bytes_size, fmt_capacity,
 )
 
 from diskflow.timefmt import (  # noqa: F401
@@ -119,7 +121,13 @@ from diskflow.history import (  # noqa: F401
 )
 
 from diskflow.orchestrate import (  # noqa: F401
-    RunOutcome, perform_run,
+    RunOutcome, perform_run, rebuild_rows,
+)
+
+from diskflow.i18n import (  # noqa: F401
+    LANG_ZH, LANG_EN, LANG_ORDER, DEFAULT_LANG, LANG_LABELS,
+    normalize_lang, current_language, set_language, is_english, tr, tr_message,
+    has_translation, untranslated, ERROR_PREFIX, ERROR_PREFIX_EN,
 )
 
 from diskflow.platformhelp import (  # noqa: F401
@@ -151,7 +159,8 @@ from diskflow.gui import (  # noqa: F401
     STATUS_TEXT_LIMIT, _truncate, PAIR_SEPARATOR, TSV_PAIR_SEPARATOR, _pair,
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
     SERIAL_MASK_CHARS, SERIAL_MASK_VISIBLE_PREFIX, SERIAL_EMPTY_TEXT,
-    _mask_serial, _short_serial, _row_values, _row_sort_value, DiskTrackerApp,
+    _mask_serial, _short_serial, _serial_line, _row_values, _row_sort_value,
+    DiskTrackerApp,
 )
 
 from diskflow.entry import (  # noqa: F401
@@ -169,7 +178,7 @@ __all__ = [
     "HEALTH_NOT_AVAILABLE", "APP_ICON_FILENAME", "APP_ICON_DIRNAME", "SMARTCTL_EXE",
     "window_title", "about_text", "bytes_to_gb", "lbas_to_gb", "data_units_to_gb",
     "fmt_gb", "fmt_delta", "fmt_delta_gb", "fmt_delta_short", "fmt_size_gb",
-    "fmt_size_short", "fmt_bytes_size",
+    "fmt_size_short", "fmt_bytes_size", "fmt_capacity", "CAPACITY_UNKNOWN_TEXT",
     "format_duration", "format_interval", "format_stamp", "format_utc_offset",
     "parse_timestamp", "timestamp_seconds",
     "DiskSnapshot", "disk_key", "ProviderResult", "MediaErrorStatus", "DiskRow",
@@ -191,6 +200,9 @@ __all__ = [
     "HISTORY_BACKUP_PREFIX", "HISTORY_RESET_PREFIX", "trim_readings", "history_payload",
     "count_history_readings", "HistoryLoadResult", "HistoryStore", "validate_history",
     "records_from_snapshots", "latest_timestamp", "RunOutcome", "perform_run",
+    "rebuild_rows", "LANG_ZH", "LANG_EN", "LANG_ORDER", "DEFAULT_LANG", "LANG_LABELS",
+    "normalize_lang", "current_language", "set_language", "is_english", "tr",
+    "tr_message", "has_translation", "untranslated", "ERROR_PREFIX", "ERROR_PREFIX_EN",
     "is_admin", "THEME_SYSTEM", "THEME_LEDGER", "THEME_DARK", "THEME_GAUGE",
     "THEME_MINIMAL", "THEME_NATIVE", "THEME_ORDER", "THEME_LABELS", "THEME_SYSTEM_LIGHT",
     "THEME_SYSTEM_DARK", "REG_PERSONALIZE", "REG_LIGHT_VALUE", "THEMES",
@@ -205,6 +217,7 @@ __all__ = [
     "ALERT_COLOR", "MUTED_COLOR", "BASE_FONT", "SMARTCTL_INSTALL_HINT", "KPI_SPECS",
     "fmt_delta_compact", "STATUS_TEXT_LIMIT", "PAIR_SEPARATOR", "TSV_PAIR_SEPARATOR",
     "SERIAL_MASK_CHARS", "SERIAL_MASK_VISIBLE_PREFIX", "SERIAL_EMPTY_TEXT", "_mask_serial",
+    "_serial_line",
     "TREE_MENU_COPY_ROWS", "TREE_MENU_COPY_CELL", "TREE_MENU_SELECT_ALL", "TREE_MENU_COPY_TABLE",
     "DiskTrackerApp", "apply_window_icon", "create_app", "main",
 ]

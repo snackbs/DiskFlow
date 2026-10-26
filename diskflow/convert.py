@@ -8,6 +8,10 @@ from typing import Any
 from .config import BYTES_PER_GB, LBA_BYTES, NVME_DATA_UNIT_BYTES
 
 
+# 容量读不到时的占位符（与表格、卡片里的其它占位保持一致，都用全角破折号）
+CAPACITY_UNKNOWN_TEXT = "—"
+
+
 # ---------------------------------------------------------------------------
 # 容量换算层
 # ---------------------------------------------------------------------------
@@ -151,3 +155,44 @@ def fmt_bytes_size(value: Any) -> str:
     if number < 1024 ** 3:
         return f"{number / 1024 ** 2:,.1f} MB"
     return f"{number / 1024 ** 3:,.2f} GB"
+
+
+def fmt_capacity(value: Any) -> str:
+    """硬盘标称容量双单位显示：厂商标称（十进制）+ 系统可见（二进制）。
+
+    同一个字节数有两种常见口径，界面上把两个都给出来，避免用户对不上：
+
+    * 括号外：厂商标称容量，按 1 GB = 1,000,000,000 字节计算，
+      所以 960197124096 字节写成 "960 GB"、4000787030016 写成 "4 TB"；
+    * 括号内：操作系统里的可用量，按 1 GiB = 1024^3 字节计算，
+      写成 "894.25 GiB" / "3.64 TiB"。
+
+    实测样本：960197124096 -> "960 GB (894.25 GiB)"；
+    4000787030016 -> "4 TB (3.64 TiB)"；512110190592 -> "512 GB (476.94 GiB)"；
+    1000204886016 -> "1 TB (931.51 GiB)"（标称 1TB，但没到 1 TiB，括号仍走 GiB）。
+
+    括号用 ASCII 半角：这个串会进表格、卡片、TSV 与剪贴板，半角括号在
+    等宽字体与 Excel 里都不会撑宽对齐。
+
+    None、0、负数一律返回「—」，绝不因为取不到容量让界面报错。
+    """
+    number = _as_int(value)
+    if number is None or number <= 0:
+        return CAPACITY_UNKNOWN_TEXT
+
+    # 括号外：厂商标称值。GB 档取整（960、512），TB 档保留两位并去掉末尾 0（4、1.5）。
+    gb = number / 1_000_000_000
+    if round(gb) >= 1000:
+        vendor = f"{gb / 1000:,.2f}".rstrip("0").rstrip(".") + " TB"
+    else:
+        vendor = f"{round(gb):,} GB"
+
+    # 括号内：二进制口径。1024 GiB 以上才升到 TiB。
+    gib = number / BYTES_PER_GB
+    if gib >= 1024:
+        binary = f"{gib / 1024:,.2f} TiB"
+    else:
+        binary = f"{gib:,.2f} GiB"
+
+    return f"{vendor} ({binary})"
+

@@ -180,6 +180,33 @@ def test_delta_interval_and_history_totals():
     assert totals["hist_write_delta"] == pytest.approx(NVME_WRITE_GB - 7000.0)
 
 
+def test_build_rows_carries_capacity_into_disk_rows():
+    """容量从快照一路带到表格行（正常行、读取失败行都带），历史里没有就留空。"""
+    good = app.DiskSnapshot(
+        device_path="/dev/sda", protocol="NVMe", model="Test NVMe", serial="SN1",
+        capacity_bytes=512110190592, read_bytes=100 * 1024 ** 3, write_bytes=50 * 1024 ** 3,
+        media_errors=0,
+    )
+    good._now_hint = "2026-05-02T10:30:00+08:00"
+    bad = app.DiskSnapshot(
+        device_path="/dev/sdc", protocol="SATA", model="Broken", serial="SN9",
+        capacity_bytes=960197124096, error="读取失败：Permission denied",
+    )
+    rows = {row.key: row for row in app.build_rows([], [good, bad])}
+    assert rows[good.key].capacity_bytes == 512110190592
+    assert rows[bad.key].capacity_bytes == 960197124096
+    # 历史里有、本次消失的盘：history.json 不存容量，只能留 None
+    vanished = {
+        "timestamp": "2026-04-01T09:00:00+08:00",
+        "key": app.disk_key("Gone", "SN7"), "model": "Gone", "serial": "SN7",
+        "protocol": "SATA", "device": "/dev/sdd",
+        "read_gb": 10.0, "write_gb": 20.0, "media_errors": None,
+    }
+    gone_rows = app.build_rows([vanished], [])
+    assert gone_rows[0].vanished is True
+    assert gone_rows[0].capacity_bytes is None
+
+
 def test_clock_rollback_between_runs_is_reported():
     """本次时间早于上次时不产生负的间隔文本，而是标注时钟回拨。"""
     history = [_history_record(app.disk_key("M", "S"), "M", "S", 100.0, 200.0,
@@ -334,6 +361,52 @@ def test_fmt_bytes_size_steps_through_b_kb_mb_gb():
     assert app.fmt_bytes_size(None) == "—"
     assert app.fmt_bytes_size("not-a-number") == "—"
     assert app.fmt_bytes_size(-5) == "—"
+
+
+def test_fmt_capacity_shows_vendor_and_binary_units():
+    """容量双单位：括号外厂商标称（十进制），括号内系统可见（二进制）。"""
+    # 真实样本：960 GB 的 SATA SSD、512 GB 与 256 GB 的 NVMe
+    assert app.fmt_capacity(960197124096) == "960 GB (894.25 GiB)"
+    assert app.fmt_capacity(512110190592) == "512 GB (476.94 GiB)"
+    assert app.fmt_capacity(256060514304) == "256 GB (238.47 GiB)"
+    assert app.fmt_capacity(128035676160) == "128 GB (119.24 GiB)"
+    # 超过 1 TB 跟着厂商标称单位走：4 TB (3.64 TiB)，不是 4,001 GB
+    assert app.fmt_capacity(4000787030016) == "4 TB (3.64 TiB)"
+    assert app.fmt_capacity(2000398934016) == "2 TB (1.82 TiB)"
+    assert app.fmt_capacity(8001563222016) == "8 TB (7.28 TiB)"
+    assert app.fmt_capacity(32000000000000) == "32 TB (29.10 TiB)"
+    # 非整数 TB 去掉末尾的 0，写成 1.5 TB 而不是 1.50 TB
+    assert app.fmt_capacity(1500399726592) == "1.5 TB (1.36 TiB)"
+    # 标称正好 1 TB，但按 1024^3 算没到 1 TiB：括号里仍走 GiB
+    assert app.fmt_capacity(1000204886016) == "1 TB (931.51 GiB)"
+    # 小容量与最小可读值
+    assert app.fmt_capacity(1073741824) == "1 GB (1.00 GiB)"
+    # 取不到容量一律「—」，绝不抛异常
+    assert app.fmt_capacity(None) == app.CAPACITY_UNKNOWN_TEXT
+    assert app.fmt_capacity(0) == app.CAPACITY_UNKNOWN_TEXT
+    assert app.fmt_capacity(-1) == app.CAPACITY_UNKNOWN_TEXT
+    assert app.fmt_capacity("not-a-number") == app.CAPACITY_UNKNOWN_TEXT
+
+
+def test_serial_line_appends_capacity_only_when_known():
+    """首列第二行：序列号 + 容量；容量未知时只留序列号，不补「 · —」。"""
+    with_capacity = app.DiskRow(
+        key="Test NVMe|2013CV440309", model="Test NVMe", serial="2013CV440309",
+        protocol="NVMe", device_path="/dev/sda", capacity_bytes=256060514304,
+        read_gb=100.0, write_gb=50.0,
+    )
+    assert app._serial_line(with_capacity, show_serial=False) == "20********  ·  256 GB (238.47 GiB)"
+    assert app._serial_line(with_capacity, show_serial=True) == "2013CV440309  ·  256 GB (238.47 GiB)"
+    assert app._row_values(with_capacity, show_serial=False)[0] == (
+        "Test NVMe\n20********  ·  256 GB (238.47 GiB)")
+
+    without = app.DiskRow(
+        key="Test NVMe|SN1", model="Test NVMe", serial="SN1",
+        protocol="NVMe", device_path="/dev/sda", read_gb=100.0, write_gb=50.0,
+    )
+    assert app._serial_line(without, show_serial=False) == "SN********"
+    assert app._serial_line(without, show_serial=True) == "SN1"
+    assert "—" not in app._row_values(without, show_serial=True)[0]
 
 
 def test_health_text_nvme_uses_100_minus_percentage_used():
@@ -1070,7 +1143,7 @@ def test_gui_smoke_rows_columns_and_row_colors(tk_root, tmp_path):
     # 表头/列标题与需求一致
     headings = [window.tree.heading(col)["text"] for col in window.tree["columns"]]
     assert headings == [spec[1] for spec in app.COLUMN_SPECS]
-    assert headings[:3] == ["磁盘 / 序列号", "协议", "累计读 / 写"]
+    assert headings[:3] == ["磁盘 / 序列号 / 容量", "协议", "累计读 / 写"]
     assert headings[-2:] == ["0E / 健康", "状态"]   # 0E 与健康度合成一格
     # 合并列里读/写两个值都要出现，且共用同一个分隔符
     first_values = window.tree.item(window.tree.get_children()[0], "values")
@@ -1589,7 +1662,7 @@ def test_settings_store_roundtrip_defaults_and_corruption(tmp_path):
 
 
 def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
-    """精简版菜单栏：6 个一级菜单，主题菜单 6 个单选，语言菜单英文项禁用。"""
+    """精简版菜单栏：6 个一级菜单，主题菜单 6 个单选，语言菜单两项都可选。"""
     window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
                                 store=_gui_store(tmp_path), autostart=False,
                                 settings=app.SettingsStore(tmp_path))
@@ -1607,7 +1680,13 @@ def test_gui_menubar_has_six_menus_and_theme_radios(tk_root, tmp_path):
     assert theme_entries == [app.THEME_LABELS[k] for k in app.THEME_ORDER]
     assert "跟随系统" in theme_entries
 
-    assert window.lang_menu.entrycget(1, "state") == "disabled"
+    # 语言菜单：中英两项都能点（v0.8.0 起英文不再是 disabled 占位）。
+    # 菜单项用母语写法，所以不管当前语言是什么，这两条标签都不变。
+    assert window.lang_menu.entrycget(0, "label") == "简体中文"
+    assert window.lang_menu.entrycget(1, "label") == "English"
+    for index in (0, 1):
+        assert window.lang_menu.entrycget(index, "state") in ("", "normal")
+        assert window.lang_menu.entrycget(index, "value") in (app.LANG_ZH, app.LANG_EN)
     window.root.destroy()
 
 
@@ -3439,5 +3518,215 @@ def test_settings_store_normalizes_show_serial(tmp_path):
     store.save({"theme": app.THEME_DARK, "show_serial": "yes"})
     assert json.loads(store.path.read_text(encoding="utf-8"))["show_serial"] is False
     assert store.load()["theme"] == app.THEME_DARK
+
+
+# ---------------------------------------------------------------------------
+# 15. 界面语言（i18n，v0.8.0）
+# ---------------------------------------------------------------------------
+def _english():
+    """把界面语言切到英文，返回恢复函数（用例里务必在 finally 调一次）。"""
+    previous = app.current_language()
+    app.set_language(app.LANG_EN)
+    return lambda: app.set_language(previous)
+
+
+def test_normalize_lang_accepts_only_supported_codes():
+    """语言代码只认白名单，脏值/大小写不对一律回落中文（不能把界面切没）。"""
+    assert app.normalize_lang(app.LANG_EN) == app.LANG_EN
+    assert app.normalize_lang(app.LANG_ZH) == app.LANG_ZH
+    assert app.normalize_lang("en-US") == app.LANG_ZH
+    assert app.normalize_lang("EN") == app.LANG_ZH
+    assert app.normalize_lang("") == app.LANG_ZH
+    assert app.normalize_lang(None) == app.LANG_ZH
+    assert app.normalize_lang(123) == app.LANG_ZH
+    assert app.DEFAULT_LANG == app.LANG_ZH
+    assert app.LANG_ORDER == (app.LANG_ZH, app.LANG_EN)
+    assert set(app.LANG_LABELS) == {app.LANG_ZH, app.LANG_EN}
+
+    restore = _english()
+    try:
+        assert app.current_language() == app.LANG_EN
+        assert app.is_english() is True
+        assert app.is_english(app.LANG_ZH) is False
+        assert app.set_language("bogus") == app.LANG_ZH
+        assert app.current_language() == app.LANG_ZH
+    finally:
+        restore()
+    assert app.current_language() == app.LANG_ZH
+
+
+def test_tr_falls_back_to_chinese_and_never_returns_empty():
+    """英文表里没有的条目原样退回中文：宁可露一句中文，也不能出现空串或裸 key。"""
+    assert app.tr("刷新记录") == "刷新记录"          # 中文界面：原样
+    assert app.tr("刷新记录", app.LANG_EN) == "Refresh"
+    assert app.tr("这条还没翻译", app.LANG_EN) == "这条还没翻译"
+    assert app.tr("") == ""
+    assert app.tr(None) == ""
+
+    # 只有传了 kwargs 才会 format；占位符对不上时退回未格式化的原文，不抛异常
+    assert app.tr("✓ {verb}（{count} 块盘）", app.LANG_EN,
+                  verb="Records updated", count=3) == "✓ Records updated (3 disks)"
+    assert app.tr("✓ {verb}（{count} 块盘）", app.LANG_EN) == "✓ {verb} ({count} disks)"
+    assert app.tr("刷新记录", app.LANG_EN, unused=1) == "Refresh"
+
+    assert app.has_translation("刷新记录") is True
+    assert app.has_translation("这条还没翻译") is False
+
+
+def test_tr_message_translates_error_prefix_only():
+    """数据层的 error 串在库/测试里保持中文原文，显示层用它换前缀，后半段原样保留。"""
+    restore = _english()
+    try:
+        assert app.tr_message("读取失败：未找到 smartctl.exe") == \
+            "Read failed: smartctl.exe not found"
+        # smartctl 自己的英文报错不在词表里，只换前缀，后半段不许丢
+        assert app.tr_message("读取失败：Permission denied") == \
+            "Read failed: Permission denied"
+        assert app.tr_message("不是错误串") == "不是错误串"
+        assert app.tr_message("") == ""
+        assert app.tr_message(None) == ""
+    finally:
+        restore()
+    assert app.tr_message("读取失败：Permission denied") == "读取失败：Permission denied"
+
+
+def test_english_time_formats_are_compact():
+    """英文时间用紧凑写法（2 d 2 h 30 min）：表格该列只有 152px。"""
+    assert app.format_duration(181800) == "2 天 2 小时 30 分钟"
+    assert app.format_interval(181800) == "2 天 2 小时 30 分钟"
+    assert app.format_interval(None) == "—"
+
+    restore = _english()
+    try:
+        assert app.format_duration(181800) == "2 d 2 h 30 min"
+        assert app.format_interval(181800) == "2 d 2 h 30 min"
+        assert app.format_interval(0) == "0 d 0 h 0 min"
+        assert app.format_interval(None) == "—"
+        assert app.format_interval(-3600) == "Clock went back 0 d 1 h 0 min"
+        # 无时区的时间戳标注也要跟着语言走
+        assert app.format_stamp("2026-04-30T08:00:00") == "2026-04-30 08:00:00 (local time)"
+        # 有偏移的只换标签不换数字
+        assert app.format_stamp("2026-04-30T08:00:00+08:00") == \
+            "2026-04-30 08:00:00 (UTC+8)"
+    finally:
+        restore()
+    assert app.format_duration(181800) == "2 天 2 小时 30 分钟"
+
+
+def test_english_data_layer_status_texts():
+    """0E、状态列、history 报错都产自数据层，也必须跟着语言变。"""
+    restore = _english()
+    try:
+        assert app.evaluate_media_errors("SATA", 0, 5).text == "N/A"
+        assert app.evaluate_media_errors("NVMe", None, None).text == "n/a"
+        assert app.evaluate_media_errors("NVMe", 3, 3).text == "Stable"
+        assert app.evaluate_media_errors("NVMe", 3, 2).text == "Stable (count decreased)"
+        assert app.evaluate_media_errors("NVMe", 3, 5).text == "⚠ 0E +2"
+
+        # 磁盘行：正常盘状态是 Recorded，失败盘只换前缀
+        history, message = app.validate_history({"records": [1, 2]})
+        assert history == []
+        assert "record 1 is not an object" in message
+
+        records, _ = app.validate_history({
+            "schema_version": 2,
+            "disks": [{"readings": [{"t": "x", "r": 1, "w": 2}]}],
+        })
+        assert records == []
+    finally:
+        restore()
+
+
+def test_gui_language_switch_updates_menus_headers_and_rows(tk_root, tmp_path):
+    """切语言立即生效：菜单、表头、KPI、按钮、状态列、汇总行、诊断信息一起变。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    try:
+        assert window.lang == app.LANG_ZH
+        assert [window.menubar.entrycget(i, "label") for i in range(6)] == [
+            "文件(F)", "主题(T)", "工具(U)", "硬盘(D)", "帮助(H)", "语言(L)",
+        ]
+
+        assert window.set_language(app.LANG_EN, persist=False) == app.LANG_EN
+        tk_root.update_idletasks()
+
+        # 1) 菜单整条重建，助记符号与括号保留
+        assert [window.menubar.entrycget(i, "label") for i in range(6)] == [
+            "File(F)", "Theme(T)", "Tools(U)", "Disks(D)", "Help(H)", "Language(L)",
+        ]
+        # 语言菜单两项始终用母语写法，不跟着翻译
+        assert [window.lang_menu.entrycget(i, "label") for i in range(2)] == [
+            "简体中文", "English",
+        ]
+        # 2) 表头
+        headings = [window.tree.heading(col)["text"] for col in window.tree["columns"]]
+        assert headings[:3] == ["Disk / Serial / Capacity", "Protocol",
+                                "Total Read / Write"]
+        assert headings[-2:] == ["0E / Health", "Status"]
+        # 3) KPI / 按钮 / 视图切换
+        assert window.refresh_button.cget("text") == "Refresh"
+        assert window.about_button.cget("text") == "About"
+        assert [window._kpi_labels[key].cget("text")
+                for key, _caption in app.KPI_SPECS] == [
+            "Read delta (this run)", "Write delta (this run)",
+            "Historic read delta", "Historic write delta",
+        ]
+        assert [button.cget("text") for button in window.seg_buttons.values()] == [
+            "Table", "Cards", "Two columns",
+        ]
+        # 4) 状态栏与时间戳标签（数字不翻译）
+        assert window.prev_label.cget("text") == \
+            "Last record: 2026-04-30 08:00:00 (UTC+8)"
+        assert window.cur_label.cget("text") == \
+            "This record: 2026-05-02 10:30:00 (UTC+8)"
+        assert window.admin_label.cget("text").startswith("Privilege: ")
+        # 5) 数据层重算：状态列跟着语言变（新盘 / 旧盘 / 失败 / 消失四种都要翻）
+        rows = [window.tree.item(iid, "values") for iid in window.tree.get_children()]
+        statuses = [values[7] for values in rows]
+        # 状态列有 24 字截断，英文断言只取前缀（"First record for this d…"）
+        assert any(text.startswith("First record for this") for text in statuses)
+        assert any(text.startswith("Read failed") for text in statuses)
+        assert any(text.startswith("Not detected this time") for text in statuses)
+        # 6) 底部汇总与诊断信息
+        assert "All-time read Δ" in window.summary_label.cget("text")
+        diagnostics = window.diagnostics_text()
+        assert "Data source:" in diagnostics
+        assert "View: Table" in diagnostics
+        assert "序列号" not in diagnostics
+
+        # 切回中文：全部复原，历史数据没被这次切换改写
+        window.set_language(app.LANG_ZH, persist=False)
+        tk_root.update_idletasks()
+        assert [window.menubar.entrycget(i, "label") for i in range(6)][0] == "文件(F)"
+        assert window.tree.heading("status")["text"] == "状态"
+        assert window.refresh_button.cget("text") == "刷新记录"
+        statuses = [window.tree.item(iid, "values")[7] for iid in window.tree.get_children()]
+        assert any(text.startswith("新盘首次记录") for text in statuses)
+        assert any(text.startswith("读取失败") for text in statuses)
+        assert "历史总读增" in window.summary_label.cget("text")
+        assert "本次记录：" in window.cur_label.cget("text")
+    finally:
+        window.set_language(app.LANG_ZH, persist=False)
+        window.root.destroy()
+    assert app.current_language() == app.LANG_ZH
+
+
+def test_language_preference_is_persisted_and_normalized(tmp_path):
+    """settings.json 存 lang；脏值回落中文，不影响 theme/view/show_serial。"""
+    store = app.SettingsStore(tmp_path)
+    assert store.load()["lang"] == app.LANG_ZH
+
+    store.path.write_text(json.dumps({"lang": app.LANG_EN}), encoding="utf-8")
+    assert store.load()["lang"] == app.LANG_EN
+    store.path.write_text(json.dumps({"lang": "fr"}), encoding="utf-8")
+    assert store.load()["lang"] == app.LANG_ZH
+    store.path.write_text(json.dumps({"lang": 5}), encoding="utf-8")
+    assert store.load()["lang"] == app.LANG_ZH
+
+    store.save({"theme": app.THEME_DARK, "lang": app.LANG_EN})
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    assert payload["lang"] == app.LANG_EN
+    assert payload["theme"] == app.THEME_DARK
+    store.save({"lang": "bogus"})
+    assert json.loads(store.path.read_text(encoding="utf-8"))["lang"] == app.LANG_ZH
 
 
