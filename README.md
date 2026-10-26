@@ -64,7 +64,7 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 ## 三种视图
 
-窗口标题栏与左上角大标题只写英文名和版本号（`DiskFlow  v0.7.2`），不带中文——标题栏里中英
+窗口标题栏与左上角大标题只写英文名和版本号（`DiskFlow  v0.7.4`），不带中文——标题栏里中英
 混排显长，而 exe 文件名、Release 标题、artifact 名用的都是 `DiskFlow`，对外只需一个名字。
 中文显示名「磁盘流水」保留在「关于」框正文与本 README 里。
 
@@ -322,7 +322,7 @@ python -m pytest -v
 以及 `build.yml` / `build.bat` 必须把同一个图标同时交给 `--icon` 与 `--add-data`，
 Release 标题只由英文 EXE 名 + 版本号组成（不得回退成带中文显示名）。
 
-当前共 149 条用例，用 `python -m pytest -v` 一次跑完。
+当前共 150 条用例，用 `python -m pytest -v` 一次跑完。
 
 GUI 用例在没有图形环境的机器上会以明确的 `skip` 上报原因，不会静默通过。CI 的两个
 Windows job 会真实跑完整套用例，任何一个失败都不会进入打包步骤。
