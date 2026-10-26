@@ -17,8 +17,8 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 # 【单一配置点】软件名称。用户选定正式名称后，只改这三行 + APP_STORAGE_ID 说明即可。
 # ---------------------------------------------------------------------------
-APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 窗口标题/界面用（已定名；仅 GUI 使用）
-APP_EXE_NAME = "DiskFlow"                          # --name / exe 文件名 / artifact 前缀 / Release 标题
+APP_DISPLAY_NAME = "磁盘流水 DiskFlow"             # 中文显示名（「关于」框、README 用；不进标题栏）
+APP_EXE_NAME = "DiskFlow"                          # 英文名：标题栏 / --name / exe 文件名 / artifact 前缀 / Release 标题
 APP_ARTIFACT_NAME = "DiskFlow-windows"             # GitHub Actions artifact 名
 APP_STORAGE_ID = "DiskUsageTracker"                # 历史目录固定 ID，改名时【不要】跟着改
 APP_VERSION = "0.7.2"                              # 版本号（关于框显示；发版 tag 必须与之一致）
@@ -63,12 +63,16 @@ SMARTCTL_EXE = "smartctl.exe"
 
 
 def window_title() -> str:
-    """窗口标题 / 界面左上角标题栏文字的唯一来源：显示名 + 版本号。
+    """窗口标题 / 界面左上角大标题的唯一来源：英文名 + 版本号。
+
+    标题栏只写英文名 APP_EXE_NAME，不带中文显示名——中英文混排在系统标题栏里显长，
+    而 exe 文件名、Release 标题、artifact 名用的都是这个名字，对外的名字应保持一致。
+    中文显示名仍用于「关于」框与 README，见 APP_DISPLAY_NAME。
 
     版本号只引用 APP_VERSION，界面里不再出现任何写死的版本字面量；
     发版时改一处常量，窗口标题、左上角标题、关于框会同步跟上。
     """
-    return f"{APP_DISPLAY_NAME}  v{APP_VERSION}"
+    return f"{APP_EXE_NAME}  v{APP_VERSION}"
 
 
 def about_text(history_path: Any = None) -> str:

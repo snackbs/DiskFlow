@@ -1253,7 +1253,10 @@ def test_gui_about_button_shows_version(tk_root, tmp_path, monkeypatch):
     monkeypatch.setattr(mb, "showinfo", fake_showinfo)
     window.show_about()
     assert app.APP_VERSION in captured["message"]
-    assert app.APP_DISPLAY_NAME in captured["title"]
+    # 对话框标题与窗口标题同源（只写英文名 + 版本号）；中文名保留在正文里
+    assert captured["title"] == f"关于 {app.window_title()}"
+    assert app.APP_DISPLAY_NAME in captured["message"]
+    assert "磁盘流水" not in captured["title"]
     # 关于框标题也要带版本号，与窗口标题、左上角标题同源（window_title()）
     assert f"v{app.APP_VERSION}" in captured["title"]
     assert captured["title"] == f"关于 {app.window_title()}"
@@ -1288,12 +1291,16 @@ def test_names_are_configured_in_one_place():
     assert app.APP_EXE_NAME.isalnum()
 
 
-def test_window_title_carries_display_name_and_version():
-    """窗口标题与左上角标题必须带上版本号，且文字只来自 window_title()。"""
+def test_window_title_carries_english_name_and_version():
+    """窗口标题与左上角大标题只写英文名 + 版本号，不带中文显示名。"""
     title = app.window_title()
-    assert app.APP_DISPLAY_NAME in title
+    assert app.APP_EXE_NAME in title
     assert f"v{app.APP_VERSION}" in title
-    assert title == f"{app.APP_DISPLAY_NAME}  v{app.APP_VERSION}"
+    assert title == f"{app.APP_EXE_NAME}  v{app.APP_VERSION}"
+    # 中文显示名只用于「关于」框与 README，标题里不能出现
+    assert app.APP_DISPLAY_NAME not in title
+    assert "磁盘流水" not in title
+    assert title.count(app.APP_EXE_NAME) == 1
 
 
 def test_window_title_follows_app_version(monkeypatch):
@@ -1312,8 +1319,10 @@ def test_gui_title_bar_and_header_show_version(tk_root, tmp_path):
     tk_root.update_idletasks()
     assert window.root.title() == app.window_title()
     assert f"v{app.APP_VERSION}" in window.root.title()
+    assert "磁盘流水" not in window.root.title()
     assert window.title_label.cget("text") == app.window_title()
     assert f"v{app.APP_VERSION}" in window.title_label.cget("text")
+    assert "磁盘流水" not in window.title_label.cget("text")
     window.root.destroy()
 
 
