@@ -2994,7 +2994,10 @@ def test_copy_selection_falls_back_to_whole_table_when_empty(tk_root, tmp_path):
     # 表头 + 3 块本次读到的盘 + 1 条「本次未检测到」的历史盘（退化为整表时一起带上）
     assert len(text.splitlines()) == 5
     assert "Gamma HDD" in text
-    assert any("已复制 4 行" in part for part in window.hint_parts)
+    # 复制成功的反馈走单独的绿色行，不再往黄字提示栏里堆
+    assert window.action_parts == ["已复制 4 行数据到剪贴板。"]
+    assert window.action_label.cget("text") == "已复制 4 行数据到剪贴板。"
+    assert not any("已复制" in part for part in window.hint_parts)
     window.root.destroy()
 
 
@@ -3006,7 +3009,8 @@ def test_select_all_rows_selects_every_row(tk_root, tmp_path):
     # 3 块本次读到的盘 + 1 条历史里存在、本次消失的盘
     assert len(window.tree.selection()) == 4
     assert len(window.selected_rows()) == 4
-    assert any("已选中 4 行" in part for part in window.hint_parts)
+    assert window.action_parts == ["已选中 4 行，按 Ctrl+C 复制。"]
+    assert not any("已选中" in part for part in window.hint_parts)
     window.root.destroy()
 
 
@@ -3020,12 +3024,20 @@ def test_copy_cell_copies_only_the_clicked_cell(tk_root, tmp_path):
     text = tk_root.clipboard_get()
     assert "\t" not in text, "单元格复制不能带列分隔符"
     assert app.TSV_PAIR_SEPARATOR in text, f"成对列应拼成「读 / 写」，实际 {text!r}"
+    # 提示只留「已复制：<数值>」，不再重复一遍「「本次读增 / 写增」单元格：」
+    rw_title = dict((spec[0], spec[1]) for spec in app.COLUMN_SPECS)["rw"]
+    assert window.action_parts == [f"已复制：{text}"]
+    assert rw_title not in "".join(window.action_parts)
+    assert "单元格" not in window.action_parts[0]
 
     # 落点无效时不崩，只给可操作提示
     window._cell_column_key = ""
     window._cell_iid = ""
     window.copy_cell()
-    assert any("请先用右键" in part for part in window.hint_parts)
+    # 落点无效是操作失败，进红字那条，不进绿色反馈行
+    assert window.error_parts == ["请先用右键点一下要复制的单元格。"]
+    assert window.error_label.cget("text") == "请先用右键点一下要复制的单元格。"
+    assert window.action_parts == []
     window.root.destroy()
 
 
@@ -3104,7 +3116,101 @@ def test_context_menu_opens_repeatedly(tk_root, tmp_path):
                                      "state") == "normal"
     # 弹菜单失败不能静默：异常要变成可见提示
     assert not any("打开右键菜单失败" in part for part in window.hint_parts)
+    assert window.error_parts == []
     window.root.destroy()
+
+
+def test_action_feedback_does_not_accumulate(tk_root, tmp_path):
+    """操作反馈只留最新一条：连点三次复制，顶部不能一行行往上堆。
+
+    回归用：旧版把这些提示塞进黄字提示栏并按整串去重，而「已复制 N 行」每次都带
+    不同的行数，去重永远拦不住，于是刷新几次后顶栏变成一长串。
+    """
+    window = _three_disk_window(tk_root, tmp_path)
+    for _ in range(3):
+        window.copy_table()
+        window.select_all_rows()
+    tk_root.update_idletasks()
+    assert len(window.action_parts) == 1, f"反馈只能有一条，实际 {window.action_parts}"
+    assert window.action_parts == ["已选中 4 行，按 Ctrl+C 复制。"]
+    text = window.action_label.cget("text")
+    assert text.count("已") == 1, f"文案里不该出现多条拼在一起：{text!r}"
+    assert not any("已选中" in part for part in window.hint_parts)
+    assert not any("已复制" in part for part in window.hint_parts)
+    window.root.destroy()
+
+
+def test_action_row_shows_only_when_present(tk_root, tmp_path):
+    """绿色反馈行有内容才占位置，清空后整行收起，不留一条空白带。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    tk_root.update_idletasks()
+    assert window.action_visible is False
+    assert window.action_label.cget("text") == ""
+    window.select_all_rows()
+    tk_root.update_idletasks()
+    assert window.action_visible is True
+    window._clear_action()
+    tk_root.update_idletasks()
+    assert window.action_visible is False
+    assert window.action_parts == []
+    window.root.destroy()
+
+
+def test_refresh_clears_action_and_failure_feedback(tk_root, tmp_path):
+    """刷新记录换掉整张表，旧的「已复制／请先用右键」必须一起清掉。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    window.select_all_rows()
+    tk_root.update_idletasks()
+    assert window.action_parts
+    outcome = window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert window.action_parts == []
+    assert window.action_label.cget("text") == ""
+    assert window.action_visible is False
+    # 红字那条同样清掉；系统黄字（未提权等）不受影响
+    window._set_error("请先用右键点一下要复制的单元格。")
+    assert window.error_parts
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert window.error_parts == []
+    assert window.error_label.cget("text") == ""
+    assert outcome is not None
+    window.root.destroy()
+
+
+def test_action_and_error_share_one_slot(tk_root, tmp_path):
+    """成功反馈顶掉上一条红字，失败提示顶掉上一条绿字：屏幕上不会同时出现两种结论。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    window._set_error("请先用右键点一下要复制的单元格。")
+    assert window.error_parts == ["请先用右键点一下要复制的单元格。"]
+    assert window.action_parts == []
+    window.select_all_rows()
+    assert window.error_parts == [], "新的成功反馈要把上一条红字顶掉"
+    assert window.error_label.cget("text") == ""
+    window.tree.selection_remove(*window.tree.get_children())
+    window.copy_cell()          # 落点无效 -> 红字
+    assert window.action_parts == [], "新的失败提示要把上一条绿字顶掉"
+    assert window.action_label.cget("text") == ""
+    assert window.error_parts == ["请先用右键点一下要复制的单元格。"]
+    window.root.destroy()
+
+
+def test_action_and_error_labels_use_theme_colors(tk_root, tmp_path):
+    """绿色反馈与「✓ 数据已更新」同色；红色失败用 alert 色，二者不能混用。"""
+    window = _three_disk_window(tk_root, tmp_path)
+    style = window.ttk.Style(window.root)
+    action_tag = style.configure("Action.TLabel")
+    error_tag = style.configure("Error.TLabel")
+    ok_tag = style.configure("Ok.TLabel")
+    assert action_tag["foreground"] == window.theme["ok_fg"]
+    assert action_tag["foreground"] == ok_tag["foreground"]
+    assert error_tag["foreground"] == window.theme["alert_fg"]
+    assert error_tag["foreground"] != window.theme["ok_fg"]
+    assert error_tag["foreground"] != window.theme["hint_fg"]
+    assert window.action_label.cget("style") == "Action.TLabel"
+    assert window.error_label.cget("style") == "Error.TLabel"
+    window.root.destroy()
+
 
 
 def test_tree_menu_index_mapping_survives_label_change(tk_root, tmp_path):
