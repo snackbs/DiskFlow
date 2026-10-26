@@ -666,10 +666,24 @@ class DiskTrackerApp:
         self.fail_label.pack(side="left", padx=(0, 12))
         self.hint_parts: list[str] = []
         self.hint_label = ttk.Label(self.status_bar, text="", style="Hint.TLabel", anchor="w")
-        self.hint_label.pack(side="left", fill="x")
+        self.hint_label.pack(side="left")
+        # 操作失败（复制到剪贴板失败、打开目录失败、请先用右键……）接在黄字后面，
+        # 但必须是红字：ttk.Label 一个控件只能有一种前景色，所以另起一个 Label 紧跟其后。
+        # 它只保留最新一条，且与下面的绿色反馈共用同一个槽位（见 _set_error / _set_action）。
+        self.error_parts: list[str] = []
+        self.error_label = ttk.Label(self.status_bar, text="", style="Error.TLabel", anchor="w")
+        self.error_label.pack(side="left", fill="x")
+
+        # 绿色操作反馈单独占一行（在提示栏下面、时间行上面），有内容才出现，没有就整行收起。
+        # 它取代旧版把「已复制……」塞进黄字提示栏的做法：那些提示带行数/数值，
+        # 每一条都不一样，去重拦不住，于是一行行往上堆（用户反馈的「复制提示会堆积」）。
+        self.action_parts: list[str] = []
+        self.action_label = ttk.Label(outer, text="", style="Action.TLabel", anchor="w")
+        self.action_visible = False
 
         top = ttk.Frame(outer, style="App.TFrame")
         top.pack(fill="x", pady=(2, 6))
+        self.top_row = top
         self.prev_label = ttk.Label(top, text="上次记录：—", style="App.TLabel", anchor="w")
         self.prev_label.pack(side="left", padx=(0, 16))
         self.cur_label = ttk.Label(top, text="本次记录：—", style="App.TLabel", anchor="w")
@@ -837,13 +851,56 @@ class DiskTrackerApp:
             self._append_hint("未以管理员运行，部分磁盘可能读取失败。")
 
     def _append_hint(self, text: str) -> None:
-        """追加一条顶部提示。同样的提示只保留一条，重复触发不会越堆越长。"""
+        """追加一条**系统状态**提示（未提权 / 缺 smartctl / 历史文件异常……）。
+
+        这类提示描述的是环境，不是某次点击的结果，所以按去重累积：同一句只留一条，
+        反复刷新也不会越堆越长。
+        """
         text = (text or "").strip()
         if not text:
             return
         if text not in self.hint_parts:
             self.hint_parts.append(text)
         self.hint_label.configure(text="  ".join(self.hint_parts))
+
+    def _set_action(self, text: str) -> None:
+        """设置绿色操作反馈（复制成功、全选……）：覆盖式，只留最新一条。
+
+        单独一行、不再是黄字提示栏里的一条，因为这类文案都带行数或数值，一条一个样，
+        靠去重根本拦不住（旧版就是这样一行行堆上去的）。
+        """
+        text = (text or "").strip()
+        # 红绿共用同一个槽位：新的成功反馈要把上一次的失败红字顶掉，
+        # 否则一个字「请先用右键点一下」和一个「已复制」会同时挂在顶上自相矛盾。
+        self.error_parts = []
+        self.error_label.configure(text="")
+        self.action_parts = [text] if text else []
+        self.action_label.configure(text=text)
+        if text and not self.action_visible:
+            # 插在时间行之前：反馈属于「刚发生了什么」，时间与状态是背景信息，排在它后面
+            self.action_label.pack(fill="x", before=self.top_row)
+            self.action_visible = True
+        elif not text and self.action_visible:
+            self.action_label.pack_forget()
+            self.action_visible = False
+
+    def _set_error(self, text: str) -> None:
+        """设置红色操作失败提示：只留最新一条，且顶掉上一条绿色反馈。
+
+        用红色是因为它和「数据已更新并保存」是两回事——绿色永远只代表做成了。
+        """
+        text = (text or "").strip()
+        self.action_parts = []
+        self.action_label.configure(text="")
+        if self.action_visible:
+            self.action_label.pack_forget()
+            self.action_visible = False
+        self.error_parts = [text] if text else []
+        self.error_label.configure(text=text)
+
+    def _clear_action(self) -> None:
+        """清空绿、红两条操作反馈（刷新记录时调用：旧提示说的是旧数据）。"""
+        self._set_action("")
 
     @staticmethod
     def _ok_text(outcome: RunOutcome) -> str:
@@ -900,6 +957,12 @@ class DiskTrackerApp:
         style.configure("Ok.TLabel", background=theme["win_bg"], foreground=theme["ok_fg"],
                         font=(family, size, "bold"))
         style.configure("Muted.TLabel", background=theme["win_bg"], foreground=theme["muted_fg"])
+        # 绿色操作反馈行与红色失败提示：颜色沿用既有语义键，
+        # 不新造主题键（否则五套主题都得跟着补一遍）。
+        style.configure("Action.TLabel", background=theme["win_bg"], foreground=theme["ok_fg"],
+                        font=(family, size, "bold"))
+        style.configure("Error.TLabel", background=theme["win_bg"], foreground=theme["alert_fg"],
+                        font=(family, size, "bold"))
         style.configure("Note.TLabel", background=theme["win_bg"], foreground=theme["note_fg"])
         style.configure("Summary.TLabel", background=theme["win_bg"],
                         foreground=theme["summary_fg"])
@@ -1066,7 +1129,7 @@ class DiskTrackerApp:
         try:
             self.settings.save({name: value})
         except OSError as exc:      # 只读目录等，不影响使用
-            self._append_hint(f"偏好保存失败：{exc}")
+            self._set_error(f"偏好保存失败：{exc}")
 
     def _bind_card_wheel(self, widget: Any) -> None:
         """把滚轮事件绑到卡片里的每个控件上（含后续动态创建的子控件）。"""
@@ -1410,6 +1473,9 @@ class DiskTrackerApp:
             return
         self._busy = True
         self.refresh_button.configure(state="disabled")
+        # 刷新是把整张表换掉，旧的「已复制 / 已选中 / 请先用右键」说的是刷新前那份数据，
+        # 留着只会误导，所以绿红两条一起清掉；黄色系统提示（未提权、缺 smartctl）不清。
+        self._clear_action()
         self.smartctl_label.configure(text="数据源：读取中…")
         self.status_queue: list[RunOutcome | Exception] = []
 
@@ -1440,11 +1506,12 @@ class DiskTrackerApp:
         if isinstance(item, Exception):
             self.smartctl_label.configure(text="数据源：读取异常")
             self._set_ok(None)
-            self._append_hint(f"读取失败：{item}")
+            self._set_error(f"读取失败：{item}")
             return
         self.apply_outcome(item)
 
     def apply_outcome(self, outcome: RunOutcome) -> RunOutcome:
+        self._clear_action()
         self.clear_rows()
         self.rows = list(outcome.rows)
         self.render_rows(self.rows)
@@ -1520,9 +1587,9 @@ class DiskTrackerApp:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
         except Exception as exc:
-            self._append_hint(f"复制到剪贴板失败：{exc}")
+            self._set_error(f"复制到剪贴板失败：{exc}")
             return False
-        self._append_hint(hint)
+        self._set_action(hint)
         return True
 
     def copy_selection(self) -> None:
@@ -1542,19 +1609,20 @@ class DiskTrackerApp:
         children = self.tree.get_children()
         if children:
             self.tree.selection_set(children)
-            self._append_hint(f"已选中 {len(children)} 行，按 Ctrl+C 复制。")
+            self._set_action(f"已选中 {len(children)} 行，按 Ctrl+C 复制。")
 
     def copy_cell(self) -> None:
         """复制最近一次右键/双击落在的单元格。"""
         row = self._iid_to_row.get(self._cell_iid)
         keys = [spec[0] for spec in COLUMN_SPECS]
         if row is None or self._cell_column_key not in keys:
-            self._append_hint("请先用右键点一下要复制的单元格。")
+            self._set_error("请先用右键点一下要复制的单元格。")
             return
         value = _row_values(row)[keys.index(self._cell_column_key)]
-        titles = {spec[0]: spec[1] for spec in COLUMN_SPECS}
         text = str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
-        self._copy_text(text, f"已复制「{titles[self._cell_column_key]}」单元格：{text}")
+        # 只给数值：列名在表头里已经写着，再重复一遍「「本次读增 / 写增」单元格：」
+        # 除了占地方没别的用处（用户截图里圈出来要去掉的就是这一段）。
+        self._copy_text(text, f"已复制：{text}")
 
     def _remember_cell(self, x: int, y: int) -> bool:
         """记住右键落点：命中的行加入选区，命中的列记下来给「复制此单元格」用。
@@ -1605,7 +1673,7 @@ class DiskTrackerApp:
             self._sync_tree_menu()
             self.tree_menu.tk_popup(event.x_root, event.y_root)
         except Exception as exc:                      # noqa: BLE001 - 不让菜单故障炸窗口
-            self._append_hint(f"打开右键菜单失败：{exc}")
+            self._set_error(f"打开右键菜单失败：{exc}")
         finally:
             try:
                 self.tree_menu.grab_release()
@@ -1624,7 +1692,7 @@ class DiskTrackerApp:
                 import webbrowser
                 webbrowser.open(directory.as_uri())
         except Exception as exc:
-            self._append_hint(f"打开数据目录失败：{exc}")
+            self._set_error(f"打开数据目录失败：{exc}")
 
     def diagnostics_text(self) -> str:
         """诊断信息：出问题时让用户能一键复制出来。"""
@@ -1647,9 +1715,9 @@ class DiskTrackerApp:
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(self.diagnostics_text())
-            self._append_hint("已复制诊断信息到剪贴板。")
+            self._set_action("已复制诊断信息到剪贴板。")
         except Exception as exc:
-            self._append_hint(f"复制诊断信息失败：{exc}")
+            self._set_error(f"复制诊断信息失败：{exc}")
 
     def show_source_status(self) -> None:
         from tkinter import messagebox
@@ -1716,7 +1784,7 @@ class DiskTrackerApp:
         try:
             backup = self.store.reset()
         except OSError as exc:
-            self._append_hint(f"重置历史文件失败：{exc}")
+            self._set_error(f"重置历史文件失败：{exc}")
             return
         if backup is None:
             self._append_hint("历史文件已重置（旧文件未能备份，可能已被占用）。")
@@ -1735,4 +1803,4 @@ class DiskTrackerApp:
                 import webbrowser
                 webbrowser.open(path.as_uri())
         except Exception as exc:
-            self._append_hint(f"打开历史文件失败：{exc}")
+            self._set_error(f"打开历史文件失败：{exc}")
