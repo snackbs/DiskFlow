@@ -135,7 +135,8 @@ from diskflow.theme import (  # noqa: F401
 
 from diskflow.viewmodel import (  # noqa: F401
     VIEW_TABLE, VIEW_CARDS, VIEW_GRID, VIEW_ORDER, VIEW_LABELS, DEFAULT_VIEW,
-    CARD_METRICS, CARD_METRIC_COLUMNS, CARD_METRIC_COLUMNS_GRID, normalize_view_key,
+    CARD_METRICS, CARD_METRICS_GRID, CARD_METRIC_COLUMNS, CARD_METRIC_COLUMNS_GRID,
+    normalize_view_key,
 )
 
 from diskflow.prefs import (  # noqa: F401
@@ -194,8 +195,9 @@ __all__ = [
     "THEME_SYSTEM_DARK", "REG_PERSONALIZE", "REG_LIGHT_VALUE", "THEMES",
     "detect_system_dark_mode", "normalize_theme_key", "system_theme_name",
     "resolve_theme", "VIEW_TABLE", "VIEW_CARDS", "VIEW_GRID", "VIEW_ORDER",
-    "VIEW_LABELS", "DEFAULT_VIEW", "CARD_METRICS", "CARD_METRIC_COLUMNS",
-    "CARD_METRIC_COLUMNS_GRID", "normalize_view_key", "SETTINGS_FILENAME",
+    "VIEW_LABELS", "DEFAULT_VIEW", "CARD_METRICS", "CARD_METRICS_GRID",
+    "CARD_METRIC_COLUMNS", "CARD_METRIC_COLUMNS_GRID", "normalize_view_key",
+    "SETTINGS_FILENAME",
     "DEFAULT_SETTINGS", "SettingsStore", "SCROLL_GUTTER", "CARD_RESIZE_DELAY_MS",
     "CARD_GAP", "SlimScrollbar", "SegButton", "SORT_MENU_ITEMS", "COLUMN_SPECS",
     "TABLE_NATURAL_WIDTH", "ROW_ALERT_TAG", "ROW_MUTED_TAG", "ROW_ZEBRA_TAG",
