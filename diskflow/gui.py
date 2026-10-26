@@ -25,15 +25,23 @@ from .config import (
     window_title,
 )
 from .convert import (
+    CAPACITY_UNKNOWN_TEXT,
     fmt_bytes_size,
+    fmt_capacity,
     fmt_delta,
     fmt_delta_gb,
     fmt_delta_short,
     fmt_size_short,
 )
 from .history import SCHEMA_VERSION, HistoryStore
+from .i18n import (
+    LANG_LABELS,
+    LANG_ORDER,
+    set_language,
+    tr,
+)
 from .models import DiskRow
-from .orchestrate import RunOutcome, perform_run
+from .orchestrate import RunOutcome, perform_run, rebuild_rows
 from .platformhelp import is_admin
 from .prefs import DEFAULT_SETTINGS, SettingsStore
 from .providers import SmartctlProvider
@@ -302,6 +310,10 @@ class SegButton(_LABEL_BASE):   # type: ignore[misc,valid-type]
         self.configure(font=(family, size), padx=11, pady=4)
         self.refresh()
 
+    def set_text(self, text: str) -> None:
+        """只改文字（切语言时用）：字体、内边距、配色都保持 apply_palette 设好的。"""
+        self.configure(text=text)
+
     def set_selected(self, selected: bool) -> None:
         self.selected = bool(selected)
         self.refresh()
@@ -354,9 +366,11 @@ SORT_MENU_ITEMS: tuple[tuple[str, str], ...] = (
 # 表格视图固定 8 列：把成对的读/写指标合进同一格（"左  /  右"），
 # 型号与序列号也合并到首列，这样默认窗口下一屏放得下，不需要横向拖动。
 COLUMN_SPECS: tuple[tuple[str, str, int, str], ...] = (
-    ("model", "磁盘 / 序列号", 250, "text"),
-    ("protocol", "协议", 62, "text"),
-    ("rw", "累计读 / 写", 120, "num"),
+    ("model", "磁盘 / 序列号 / 容量", 270, "text"),
+    # 列宽按英文表头留够余量：Heading 有内边距，"Protocol"（49px 字宽）在 62px
+    # 的列里会被截成 "Protoce"，"Total Read / Write"（107px）在 120px 里会被截一节。
+    ("protocol", "协议", 78, "text"),
+    ("rw", "累计读 / 写", 134, "num"),
     ("interval", "距上次", 152, "text"),
     ("cur", "本次读增 / 写增", 128, "num"),
     ("hist", "历史读增 / 写增", 128, "num"),
@@ -477,6 +491,19 @@ def _short_serial(serial: str, show: bool = True) -> str:
     return (serial or "").strip() or SERIAL_EMPTY_TEXT
 
 
+def _serial_line(row: DiskRow, show_serial: bool = True) -> str:
+    """首列第二行 / 卡片副标题的第一段：序列号 [+ 容量]。
+
+    容量读不到（老记录、读取失败的盘）时只留序列号，不追加「 · —」，
+    否则每块读不到容量的盘都会多出一个没有信息量的破折号。
+    """
+    serial_text = _short_serial(row.serial, show_serial)
+    capacity_text = fmt_capacity(row.capacity_bytes)
+    if capacity_text == CAPACITY_UNKNOWN_TEXT:
+        return serial_text
+    return f"{serial_text}  ·  {capacity_text}"
+
+
 def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:
     """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。
 
@@ -487,7 +514,7 @@ def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:
     单格复制三条出口共用这一份实现，不会出现「界面藏了、复制又漏出去」。
     """
     return (
-        f"{row.model}\n{_short_serial(row.serial, show_serial)}",
+        f"{row.model}\n{_serial_line(row, show_serial)}",
         row.protocol,
         _pair(fmt_size_short(row.read_gb), fmt_size_short(row.write_gb)),
         row.interval_text,
@@ -508,6 +535,7 @@ def _row_sort_value(row: DiskRow, column: str) -> Any:
         "protocol": row.protocol,
         "rw": row.read_gb,
         "read_gb": row.read_gb,
+        "capacity": row.capacity_bytes,
         "write_gb": row.write_gb,
         "interval": row.interval_text,
         "cur": row.read_delta_gb,
@@ -570,6 +598,16 @@ class DiskTrackerApp:
         self.view_key = normalize_view_key(saved.get("view"))
         # 序列号默认隐藏；菜单「工具 → 显示序列号」可打开，偏好写进 settings.json
         self.show_serial = saved.get("show_serial") is True
+        # 界面语言必须先落到 i18n 的模块级状态，再建菜单与控件，
+        # 否则首屏文案还是上一次（默认中文）的语言，切完语言才变。
+        self.lang = set_language(saved.get("lang"))
+        # 最近一次运行结果：切语言时用它重算表格文案（不读盘、不写历史）
+        self.last_outcome: RunOutcome | None = None
+        # 状态栏那几行的**原始值**（不带「数据源：」这类前缀）。
+        # 诊断信息要按语言重新拼标签，直接读 Label 上的成品串会把前缀翻两遍。
+        self.prev_stamp_text = "—"
+        self.cur_stamp_text = "—"
+        self.source_text = tr("未检测")
         self._card_rows: list[Any] = []
         self._card_columns = 0
         self._cards_width = -1          # 上一次同步给内部 Frame 的宽度
@@ -598,66 +636,69 @@ class DiskTrackerApp:
         menubar = tk.Menu(self.root, tearoff=False)
 
         file_menu = tk.Menu(menubar, tearoff=False)
-        file_menu.add_command(label="刷新记录(R)", accelerator="Ctrl+R",
+        file_menu.add_command(label=tr("刷新记录(R)"), accelerator="Ctrl+R",
                               command=self.refresh_async)
-        file_menu.add_command(label="打开历史文件(O)", command=self.open_history_file)
-        file_menu.add_command(label="重置历史文件(E)", command=self.reset_history_file)
+        file_menu.add_command(label=tr("打开历史文件(O)"), command=self.open_history_file)
+        file_menu.add_command(label=tr("重置历史文件(E)"), command=self.reset_history_file)
         file_menu.add_separator()
-        file_menu.add_command(label="退出(X)", accelerator="Alt+F4", command=self.close)
+        file_menu.add_command(label=tr("退出(X)"), accelerator="Alt+F4", command=self.close)
 
         view_menu = tk.Menu(menubar, tearoff=False)
         self._theme_var = tk.StringVar(master=self.root, value=self.theme_key)
         for key in THEME_ORDER:
-            view_menu.add_radiobutton(label=THEME_LABELS[key], value=key,
+            view_menu.add_radiobutton(label=tr(THEME_LABELS[key]), value=key,
                                       variable=self._theme_var,
                                       command=lambda k=key: self.apply_theme(k))
 
         tools_menu = tk.Menu(menubar, tearoff=False)
-        tools_menu.add_command(label="复制选中行(C)", accelerator="Ctrl+C",
+        tools_menu.add_command(label=tr("复制选中行(C)"), accelerator="Ctrl+C",
                                command=self.copy_selection)
-        tools_menu.add_command(label="复制表格到剪贴板(T)", command=self.copy_table)
-        tools_menu.add_command(label="打开数据目录(D)", command=self.open_data_dir)
+        tools_menu.add_command(label=tr("复制表格到剪贴板(T)"), command=self.copy_table)
+        tools_menu.add_command(label=tr("打开数据目录(D)"), command=self.open_data_dir)
         tools_menu.add_separator()
         # 卡片视图没有表头，排序必须也能从菜单触发
         sort_menu = tk.Menu(tools_menu, tearoff=False)
         for column, title in SORT_MENU_ITEMS:
-            sort_menu.add_command(label=title, command=lambda c=column: self.sort_by(c))
+            sort_menu.add_command(label=tr(title), command=lambda c=column: self.sort_by(c))
         sort_menu.add_separator()
-        sort_menu.add_command(label="恢复默认顺序(R)", command=self.reset_sort)
-        tools_menu.add_cascade(label="排序(O)", menu=sort_menu)
-        tools_menu.add_command(label="重置排序(S)", command=self.reset_sort)
+        sort_menu.add_command(label=tr("恢复默认顺序(R)"), command=self.reset_sort)
+        tools_menu.add_cascade(label=tr("排序(O)"), menu=sort_menu)
+        tools_menu.add_command(label=tr("重置排序(S)"), command=self.reset_sort)
         tools_menu.add_separator()
         # 序列号属于设备身份信息，默认隐藏；勾选后表格首列、卡片副标题、
         # 复制（含 TSV 与单格）一起显示真实序列号。放在「工具」而不是「硬盘」，
         # 因为它只影响显示，不影响读取与记录。
         self._serial_var = tk.BooleanVar(master=self.root, value=self.show_serial)
-        tools_menu.add_checkbutton(label="显示序列号", variable=self._serial_var,
+        tools_menu.add_checkbutton(label=tr("显示序列号"), variable=self._serial_var,
                                    command=self.toggle_serial)
         self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
-        disk_menu.add_command(label="重新扫描并记录(R)", command=self.refresh_async)
-        disk_menu.add_command(label="数据源状态(S)", command=self.show_source_status)
-        disk_menu.add_command(label="复制诊断信息(I)", command=self.copy_diagnostics)
+        disk_menu.add_command(label=tr("重新扫描并记录(R)"), command=self.refresh_async)
+        disk_menu.add_command(label=tr("数据源状态(S)"), command=self.show_source_status)
+        disk_menu.add_command(label=tr("复制诊断信息(I)"), command=self.copy_diagnostics)
 
         help_menu = tk.Menu(menubar, tearoff=False)
-        help_menu.add_command(label="如何安装数据源(S)", command=self.show_source_help)
-        help_menu.add_command(label="容量与换算说明(C)", command=self.show_capacity_help)
+        help_menu.add_command(label=tr("如何安装数据源(S)"), command=self.show_source_help)
+        help_menu.add_command(label=tr("容量与换算说明(C)"), command=self.show_capacity_help)
         help_menu.add_separator()
-        help_menu.add_command(label="关于(A)", command=self.show_about)
+        help_menu.add_command(label=tr("关于(A)"), command=self.show_about)
 
+        # 语言菜单：两个语言项都用母语写法（中文项写「简体中文」、英文项写 English），
+        # 名词本身不走 tr()，切完语言菜单项不会自己变成另一种语言。
         lang_menu = tk.Menu(menubar, tearoff=False)
-        self._lang_var = tk.StringVar(master=self.root, value="zh-CN")
-        lang_menu.add_radiobutton(label="简体中文", value="zh-CN", variable=self._lang_var)
-        lang_menu.add_radiobutton(label="English（即将支持）", value="en",
-                                  variable=self._lang_var, state="disabled")
+        self._lang_var = tk.StringVar(master=self.root, value=self.lang)
+        for code in LANG_ORDER:
+            lang_menu.add_radiobutton(label=LANG_LABELS[code], value=code,
+                                      variable=self._lang_var,
+                                      command=lambda c=code: self.set_language(c))
 
-        menubar.add_cascade(label="文件(F)", menu=file_menu)
-        menubar.add_cascade(label="主题(T)", menu=view_menu)
-        menubar.add_cascade(label="工具(U)", menu=tools_menu)
-        menubar.add_cascade(label="硬盘(D)", menu=disk_menu)
-        menubar.add_cascade(label="帮助(H)", menu=help_menu)
-        menubar.add_cascade(label="语言(L)", menu=lang_menu)
+        menubar.add_cascade(label=tr("文件(F)"), menu=file_menu)
+        menubar.add_cascade(label=tr("主题(T)"), menu=view_menu)
+        menubar.add_cascade(label=tr("工具(U)"), menu=tools_menu)
+        menubar.add_cascade(label=tr("硬盘(D)"), menu=disk_menu)
+        menubar.add_cascade(label=tr("帮助(H)"), menu=help_menu)
+        menubar.add_cascade(label=tr("语言(L)"), menu=lang_menu)
 
         self.menubar = menubar
         self.file_menu = file_menu
@@ -690,7 +731,7 @@ class DiskTrackerApp:
         self.seg_frame.pack(side="right")
         self.seg_buttons: dict[str, SegButton] = {}
         for index, key in enumerate(VIEW_ORDER):
-            button = SegButton(self.seg_frame, text=VIEW_LABELS[key], value=key,
+            button = SegButton(self.seg_frame, text=tr(VIEW_LABELS[key]), value=key,
                                command=lambda k=key: self.set_view(k))
             button.pack(side="left", padx=(0 if index == 0 else 2, 0))
             self.seg_buttons[key] = button
@@ -727,13 +768,14 @@ class DiskTrackerApp:
         top = ttk.Frame(outer, style="App.TFrame")
         top.pack(fill="x", pady=(2, 6))
         self.top_row = top
-        self.prev_label = ttk.Label(top, text="上次记录：—", style="App.TLabel", anchor="w")
+        self.prev_label = ttk.Label(top, text=tr("上次记录：—"), style="App.TLabel", anchor="w")
         self.prev_label.pack(side="left", padx=(0, 16))
-        self.cur_label = ttk.Label(top, text="本次记录：—", style="App.TLabel", anchor="w")
+        self.cur_label = ttk.Label(top, text=tr("本次记录：—"), style="App.TLabel", anchor="w")
         self.cur_label.pack(side="left", padx=(0, 16))
-        self.smartctl_label = ttk.Label(top, text="数据源：未检测", style="App.TLabel", anchor="w")
+        self.smartctl_label = ttk.Label(
+            top, text=self._source_label_text(), style="App.TLabel", anchor="w")
         self.smartctl_label.pack(side="left", padx=(0, 16))
-        self.admin_label = ttk.Label(top, text="权限：检测中", style="App.TLabel", anchor="w")
+        self.admin_label = ttk.Label(top, text=tr("权限：检测中"), style="App.TLabel", anchor="w")
         self.admin_label.pack(side="left")
 
         # 指标卡（B/C/D 主题显示，A/E 主题隐藏；控件只建一次，切换主题时 pack/pack_forget）
@@ -741,6 +783,7 @@ class DiskTrackerApp:
         # 同一条右边界，否则最右一张卡会伸出去，和卡片右缘对不齐（v0.5.1 的观感问题）。
         self.kpi_frame = ttk.Frame(outer, style="App.TFrame", padding=(0, 0, SCROLL_GUTTER, 0))
         self.kpi_values: dict[str, Any] = {}
+        self._kpi_labels: dict[str, Any] = {}
         # 间距必须两侧对称（各 CARD_GAP//2），否则第一张卡比后面每张宽 CARD_GAP，
         # 四张卡宽度就会 290/272 交替；叠加 uniform 后每张卡严格等宽，
         # 第 2、3 张卡的分界线正好落在整行宽度的 50%，与双列卡片的中缝重合。
@@ -758,9 +801,10 @@ class DiskTrackerApp:
             self.kpi_frame.columnconfigure(index, weight=1, uniform="kpi")
             value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
             value.pack(fill="x")
-            label = ttk.Label(card, text=caption, style="CardLabel.TLabel", anchor="w")
+            label = ttk.Label(card, text=tr(caption), style="CardLabel.TLabel", anchor="w")
             label.pack(fill="x")
             self.kpi_values[key] = value
+            self._kpi_labels[key] = label
         self.kpi_visible = False
 
         # 数据区：三种视图叠在同一个容器里，按需 pack/pack_forget（控件只建一次）。
@@ -779,7 +823,7 @@ class DiskTrackerApp:
         # 选中的行导成 TSV，粘进 Excel 就是表格，粘进记事本也是齐整的文本。
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         for key, title, width, _kind in COLUMN_SPECS:
-            self.tree.heading(key, text=title, command=lambda c=key: self.sort_by(c))
+            self.tree.heading(key, text=tr(title), command=lambda c=key: self.sort_by(c))
             self.tree.column(key, width=width, minwidth=60, anchor="w", stretch=(key == "status"))
         # 细圆角滚动条（自绘，ttk.Scrollbar 做不出圆角），竖向常显、横向按需
         self.yscroll = SlimScrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -804,7 +848,8 @@ class DiskTrackerApp:
             (TREE_MENU_COPY_ROWS, self.copy_selection),
             (TREE_MENU_COPY_CELL, self.copy_cell),
         ):
-            menu.add_command(label=entry_label, command=entry_command)
+            # 下标以「中文常量」为键，标签才按当前语言翻译：切语言时靠这些下标回改文案
+            menu.add_command(label=tr(entry_label), command=entry_command)
             self._tree_menu_index[entry_label] = next_index
             next_index += 1
         menu.add_separator()
@@ -813,7 +858,7 @@ class DiskTrackerApp:
             (TREE_MENU_SELECT_ALL, self.select_all_rows),
             (TREE_MENU_COPY_TABLE, self.copy_table),
         ):
-            menu.add_command(label=entry_label, command=entry_command)
+            menu.add_command(label=tr(entry_label), command=entry_command)
             self._tree_menu_index[entry_label] = next_index
             next_index += 1
         self.tree_menu = menu
@@ -854,17 +899,17 @@ class DiskTrackerApp:
 
         bottom = ttk.Frame(outer, style="App.TFrame")
         bottom.pack(side="bottom", fill="x", pady=(8, 0))
-        self.summary_label = ttk.Label(bottom, text="尚无记录", style="Summary.TLabel", anchor="w")
+        self.summary_label = ttk.Label(bottom, text=tr("尚无记录"), style="Summary.TLabel", anchor="w")
         self.summary_label.pack(side="left")
         self.alert_label = ttk.Label(bottom, text="", style="Alert.TLabel", anchor="w")
         self.alert_label.pack(side="left", padx=(12, 0))
 
-        self.refresh_button = ttk.Button(bottom, text="刷新记录", command=self.refresh_async)
+        self.refresh_button = ttk.Button(bottom, text=tr("刷新记录"), command=self.refresh_async)
         self.refresh_button.pack(side="right")
         # 「打开历史文件」只在菜单「文件 → 打开历史文件(O)」里留一个入口，
         # 底部条不再重复放按钮：同一动作两个落点只会让用户想「到底哪个不一样」。
         # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死
-        self.about_button = ttk.Button(bottom, text="关于", command=self.show_about)
+        self.about_button = ttk.Button(bottom, text=tr("关于"), command=self.show_about)
         self.about_button.pack(side="right", padx=(0, 8))
 
         # 底部条与注释行已占位，数据区吃剩下的高度
@@ -884,14 +929,21 @@ class DiskTrackerApp:
         """底部注释行文案：换算说明 / 基线提示 + 历史文件路径 + 文件体积。"""
         size_text = self._history_size_text(path)
         if baseline:
-            return f"已记录基线，下次打开将显示增量。历史文件：{path}（{size_text}）"
-        return f"容量换算：{BYTES_PER_GIB_TEXT}；历史文件：{path}（{size_text}）"
+            return tr("已记录基线，下次打开将显示增量。历史文件：{path}（{size}）",
+                      path=path, size=size_text)
+        return tr("容量换算：{units}；历史文件：{path}（{size}）",
+                  units=tr(BYTES_PER_GIB_TEXT), path=path, size=size_text)
+
+    def _source_label_text(self) -> str:
+        """「数据源：xxx」整行文案；原始值单独存着，切语言才能重拼（见 diagnostics_text）。"""
+        return tr("数据源：{value}", value=self.source_text)
 
     def _refresh_admin_label(self) -> None:
         admin = is_admin()
-        self.admin_label.configure(text="权限：管理员" if admin else "权限：未以管理员运行")
+        self.admin_label.configure(text=tr("权限：管理员") if admin
+                                   else tr("权限：未以管理员运行"))
         if not admin:
-            self._append_hint("未以管理员运行，部分磁盘可能读取失败。")
+            self._append_hint(tr("未以管理员运行，部分磁盘可能读取失败。"))
 
     def _append_hint(self, text: str) -> None:
         """追加一条**系统状态**提示（未提权 / 缺 smartctl / 历史文件异常……）。
@@ -950,15 +1002,15 @@ class DiskTrackerApp:
         """绿色确认行的文案；一块盘都没读成功就返回空串（顶部只留黄/红提示）。"""
         if outcome.recorded <= 0:
             return ""
-        verb = "已记录基线" if outcome.baseline else "数据已更新并保存"
-        return f"✓ {verb}（{outcome.recorded} 块盘）"
+        verb = tr("已记录基线") if outcome.baseline else tr("数据已更新并保存")
+        return tr("✓ {verb}（{count} 块盘）", verb=verb, count=outcome.recorded)
 
     @staticmethod
     def _fail_text(outcome: RunOutcome) -> str:
         """灰色的失败计数；一块都没失败就返回空串。绿行只讲成功，失败单独挂在灰色 Label 上。"""
         if outcome.recorded <= 0 or outcome.failed <= 0:
             return ""
-        return f"{outcome.failed} 块读取失败"
+        return tr("{count} 块读取失败", count=outcome.failed)
 
     def _set_ok(self, outcome: RunOutcome | None = None) -> None:
         """设置顶部的成功/失败确认行（传 None = 两行都清掉）。
@@ -1101,6 +1153,87 @@ class DiskTrackerApp:
         self.render_rows(self.rows)
         return self.show_serial
 
+    # ---------- 界面语言 ----------
+    def set_language(self, code: Any, persist: bool = True) -> str:
+        """切换界面语言并**立即重画**当前窗口（不重启、不重读磁盘）。
+
+        文案分散在四个地方，逐个处理：
+        1) 菜单栏：整条重建（Tk 的菜单项没有批量改标签的接口，重建最省事）；
+        2) 固定控件（表头、视图切换、按钮、各状态栏标签）：直接 configure；
+        3) 数据层拼好的行文案（状态列、0E、时间间隔）：用上次的运行结果重算；
+        4) 底部注释与汇总：跟着第 3 步一起重跑。
+        """
+        self.lang = set_language(code)
+        if hasattr(self, "_lang_var"):
+            self._lang_var.set(self.lang)
+        if persist:
+            self._save_setting("lang", self.lang)
+
+        # 1) 菜单：先销毁旧的再重建，避免两套菜单叠在一起
+        old_menubar = getattr(self, "menubar", None)
+        if old_menubar is not None:
+            try:
+                self.root.configure(menu="")
+                old_menubar.destroy()
+            except Exception:            # noqa: BLE001 - 菜单已销毁/未建好都不影响后续
+                pass
+        self._build_menubar()
+
+        # 2) 固定文案控件
+        for key, button in getattr(self, "seg_buttons", {}).items():
+            button.set_text(tr(VIEW_LABELS[key]))
+        for key, title, _width, _kind in COLUMN_SPECS:
+            self.tree.heading(key, text=tr(title))
+        for key, holder in getattr(self, "_kpi_labels", {}).items():
+            holder.configure(text=tr(dict(KPI_SPECS)[key]))
+        self.refresh_button.configure(text=tr("刷新记录"))
+        self.about_button.configure(text=tr("关于"))
+        self.title_label.configure(text=window_title())
+        self._refresh_admin_label()
+        self.smartctl_label.configure(text=self._source_label_text())
+        self.prev_label.configure(text=tr("上次记录：{stamp}", stamp=self.prev_stamp_text))
+        self.cur_label.configure(text=tr("本次记录：{stamp}", stamp=self.cur_stamp_text))
+        self._refresh_tree_menu_labels()
+
+        # 3) 数据层文案 + 4) 底部汇总：有上次结果就原地重算，没有就只换静态文案
+        if self.last_outcome is not None:
+            rebuilt = RunOutcome(
+                rows=rebuild_rows(self.last_outcome),
+                totals=dict(self.last_outcome.totals),
+                media_alert=self.last_outcome.media_alert,
+                previous_stamp=self.last_outcome.previous_stamp,
+                current_stamp=self.last_outcome.current_stamp,
+                provider_status=self.last_outcome.provider_status,
+                history_message=self.last_outcome.history_message,
+                history_path=self.last_outcome.history_path,
+                smartctl_path=self.last_outcome.smartctl_path,
+                baseline=self.last_outcome.baseline,
+                recorded=self.last_outcome.recorded,
+                failed=self.last_outcome.failed,
+                records=list(self.last_outcome.records),
+                snapshots=list(self.last_outcome.snapshots),
+            )
+            fresh = self.apply_outcome(rebuilt)
+            self.last_outcome = fresh
+        else:
+            self.summary_label.configure(text=tr("尚无记录"))
+            self.note_label.configure(
+                text=self._history_note_text(self.store.path, baseline=False)
+            )
+            self._set_ok(None)
+        return self.lang
+
+    def _refresh_tree_menu_labels(self) -> None:
+        """右键菜单的四个标签跟着语言走（下标定位，不能用标签查，见 _sync_tree_menu）。"""
+        menu = getattr(self, "tree_menu", None)
+        indices = getattr(self, "_tree_menu_index", None)
+        if menu is None or not indices:
+            return
+        menu.entryconfigure(indices[TREE_MENU_COPY_ROWS], label=self._copy_rows_label())
+        menu.entryconfigure(indices[TREE_MENU_COPY_CELL], label=tr(TREE_MENU_COPY_CELL))
+        menu.entryconfigure(indices[TREE_MENU_SELECT_ALL], label=tr(TREE_MENU_SELECT_ALL))
+        menu.entryconfigure(indices[TREE_MENU_COPY_TABLE], label=tr(TREE_MENU_COPY_TABLE))
+
     # ---------- 表格 ----------
     def clear_rows(self) -> None:
         self._iid_to_row.clear()
@@ -1186,7 +1319,7 @@ class DiskTrackerApp:
         try:
             self.settings.save({name: value})
         except OSError as exc:      # 只读目录等，不影响使用
-            self._set_error(f"偏好保存失败：{exc}")
+            self._set_error(tr("偏好保存失败：{error}", error=exc))
 
     def _bind_card_wheel(self, widget: Any) -> None:
         """把滚轮事件绑到卡片里的每个控件上（含后续动态创建的子控件）。"""
@@ -1473,7 +1606,7 @@ class DiskTrackerApp:
                      highlightcolor=theme["seg_border"]
                      ).pack(side="left", padx=(6, 0))
 
-        subtitle = (f"{_short_serial(row.serial, self.show_serial)}"
+        subtitle = (f"{_serial_line(row, self.show_serial)}"
                     f"  ·  {row.device_path}")
         self._card_text(inner, subtitle, bg=background,
                         fg=theme["note_fg"],
@@ -1516,7 +1649,7 @@ class DiskTrackerApp:
             cell = tk.Frame(metric_row, bg=background)
             cell.grid(row=index // columns, column=index % columns,
                       sticky="ew", padx=(0, 14), pady=(0, 2))
-            self._card_text(cell, caption, bg=background, fg=theme["card_lbl"],
+            self._card_text(cell, tr(caption), bg=background, fg=theme["card_lbl"],
                             font=(self.base_font[0], self.base_font[1] - 1)).pack(fill="x")
             self._card_text(cell, text, bg=background, fg=color,
                             font=value_font).pack(fill="x")
@@ -1524,7 +1657,7 @@ class DiskTrackerApp:
 
     def rows_to_tsv(self, rows: Sequence[DiskRow] | None = None) -> str:
         """把行导成 TSV。与当前视图无关，卡片视图下复制表格也不会报错。"""
-        headers = [spec[1] for spec in COLUMN_SPECS]
+        headers = [tr(spec[1]) for spec in COLUMN_SPECS]
         lines = ["	".join(headers)]
         for row in (self.rows if rows is None else rows):
             lines.append("	".join(str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
@@ -1540,7 +1673,8 @@ class DiskTrackerApp:
         # 刷新是把整张表换掉，旧的「已复制 / 已选中 / 请先用右键」说的是刷新前那份数据，
         # 留着只会误导，所以绿红两条一起清掉；黄色系统提示（未提权、缺 smartctl）不清。
         self._clear_action()
-        self.smartctl_label.configure(text="数据源：读取中…")
+        self.source_text = tr("读取中…")
+        self.smartctl_label.configure(text=self._source_label_text())
         self.status_queue: list[RunOutcome | Exception] = []
 
         def worker() -> None:
@@ -1568,9 +1702,10 @@ class DiskTrackerApp:
         self._busy = False
         self.refresh_button.configure(state="normal")
         if isinstance(item, Exception):
-            self.smartctl_label.configure(text="数据源：读取异常")
+            self.source_text = tr("读取异常")
+            self.smartctl_label.configure(text=self._source_label_text())
             self._set_ok(None)
-            self._set_error(f"读取失败：{item}")
+            self._set_error(tr("读取失败：{error}", error=item))
             return
         self.apply_outcome(item)
 
@@ -1581,29 +1716,38 @@ class DiskTrackerApp:
         self.render_rows(self.rows)
 
         # 时间戳在界面上按「2026-04-30 08:00:00 (UTC+8)」显示；入库的仍是原始 ISO 串
-        self.prev_label.configure(text=f"上次记录：{format_stamp(outcome.previous_stamp)}")
-        self.cur_label.configure(text=f"本次记录：{format_stamp(outcome.current_stamp)}")
-        self.smartctl_label.configure(
-            text=f"数据源：{outcome.smartctl_path}" if outcome.smartctl_path
-            else f"数据源：{outcome.provider_status}"
+        self.prev_stamp_text = format_stamp(outcome.previous_stamp)
+        self.cur_stamp_text = format_stamp(outcome.current_stamp)
+        self.prev_label.configure(
+            text=tr("上次记录：{stamp}", stamp=self.prev_stamp_text)
         )
+        self.cur_label.configure(
+            text=tr("本次记录：{stamp}", stamp=self.cur_stamp_text)
+        )
+        # 有路径就显示 smartctl 路径，没有就显示数据源状态
+        # （status 本身在 providers.read_all 里已按当前语言生成，不再二次翻译）
+        self.source_text = outcome.smartctl_path or outcome.provider_status
+        self.smartctl_label.configure(text=self._source_label_text())
         if outcome.smartctl_path is None and outcome.provider_status:
-            self._append_hint(SMARTCTL_INSTALL_HINT)
+            self._append_hint(tr(SMARTCTL_INSTALL_HINT))
 
         totals = outcome.totals
         if outcome.baseline:
-            self.summary_label.configure(text="已记录基线，下次打开将显示增量")
+            self.summary_label.configure(text=tr("已记录基线，下次打开将显示增量"))
         else:
+            # 括号里的数值与单位不进翻译表：英文用同一串模板，只换标签词
             self.summary_label.configure(
-                text=(f"本次总读增 {fmt_delta(totals.get('read_delta'))} GB ｜ "
-                      f"本次总写增 {fmt_delta(totals.get('write_delta'))} GB ｜ "
-                      f"历史总读增 {fmt_delta(totals.get('hist_read_delta'))} GB ｜ "
-                      f"历史总写增 {fmt_delta(totals.get('hist_write_delta'))} GB")
+                text=tr("本次总读增 {read} GB ｜ 本次总写增 {write} GB ｜ "
+                        "历史总读增 {hread} GB ｜ 历史总写增 {hwrite} GB",
+                        read=fmt_delta(totals.get("read_delta")),
+                        write=fmt_delta(totals.get("write_delta")),
+                        hread=fmt_delta(totals.get("hist_read_delta")),
+                        hwrite=fmt_delta(totals.get("hist_write_delta")))
             )
         for key, label in self.kpi_values.items():
             label.configure(text="—" if outcome.baseline else fmt_delta_compact(totals.get(key)))
         self.alert_label.configure(
-            text="介质错误在累积，建议关注备份" if outcome.media_alert else ""
+            text=tr("介质错误在累积，建议关注备份") if outcome.media_alert else ""
         )
         self._set_ok(outcome)
         if outcome.history_message:
@@ -1611,6 +1755,8 @@ class DiskTrackerApp:
         self.note_label.configure(
             text=self._history_note_text(outcome.history_path, baseline=outcome.baseline)
         )
+        # 留一份给「切换语言」用：里面存着本次的历史记录与快照，能原地重算行文案
+        self.last_outcome = outcome
         return outcome
 
     def run_pipeline_sync(self) -> RunOutcome:
@@ -1633,7 +1779,7 @@ class DiskTrackerApp:
         直接由 rows 生成（不读 Treeview 的 values），因此卡片/双列视图下同样可用。
         """
         text = self.rows_to_tsv()
-        self._copy_text(text, f"已复制 {len(self.rows)} 行数据到剪贴板。")
+        self._copy_text(text, tr("已复制 {count} 行数据到剪贴板。", count=len(self.rows)))
 
     # ---------- 表格选区的复制 ----------
     def selected_rows(self) -> list[DiskRow]:
@@ -1651,7 +1797,7 @@ class DiskTrackerApp:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
         except Exception as exc:
-            self._set_error(f"复制到剪贴板失败：{exc}")
+            self._set_error(tr("复制到剪贴板失败：{error}", error=exc))
             return False
         self._set_action(hint)
         return True
@@ -1662,7 +1808,8 @@ class DiskTrackerApp:
         if not rows:
             self.copy_table()
             return
-        self._copy_text(self.rows_to_tsv(rows), f"已复制 {len(rows)} 行数据到剪贴板。")
+        self._copy_text(self.rows_to_tsv(rows),
+                        tr("已复制 {count} 行数据到剪贴板。", count=len(rows)))
 
     def copy_selection_event(self, _event: Any = None) -> str:
         """Ctrl+C。返回 "break"，避免 Treeview 的默认处理把事件再吃掉一次。"""
@@ -1673,20 +1820,20 @@ class DiskTrackerApp:
         children = self.tree.get_children()
         if children:
             self.tree.selection_set(children)
-            self._set_action(f"已选中 {len(children)} 行，按 Ctrl+C 复制。")
+            self._set_action(tr("已选中 {count} 行，按 Ctrl+C 复制。", count=len(children)))
 
     def copy_cell(self) -> None:
         """复制最近一次右键/双击落在的单元格。"""
         row = self._iid_to_row.get(self._cell_iid)
         keys = [spec[0] for spec in COLUMN_SPECS]
         if row is None or self._cell_column_key not in keys:
-            self._set_error("请先用右键点一下要复制的单元格。")
+            self._set_error(tr("请先用右键点一下要复制的单元格。"))
             return
         value = _row_values(row, self.show_serial)[keys.index(self._cell_column_key)]
         text = str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
         # 只给数值：列名在表头里已经写着，再重复一遍「「本次读增 / 写增」单元格：」
         # 除了占地方没别的用处（用户截图里圈出来要去掉的就是这一段）。
-        self._copy_text(text, f"已复制：{text}")
+        self._copy_text(text, tr("已复制：{value}", value=text))
 
     def _remember_cell(self, x: int, y: int) -> bool:
         """记住右键落点：命中的行加入选区，命中的列记下来给「复制此单元格」用。
@@ -1722,8 +1869,12 @@ class DiskTrackerApp:
         menu.entryconfigure(indices[TREE_MENU_COPY_ROWS], label=self._copy_rows_label())
 
     def _copy_rows_label(self) -> str:
+        """右键第一项的标签；有选中行时在标签后补计数（\t 让 Tk 把数字右对齐）。"""
+        label = tr(TREE_MENU_COPY_ROWS)
         count = len(self.tree.selection())
-        return TREE_MENU_COPY_ROWS if count == 0 else f"{TREE_MENU_COPY_ROWS}\t{count} 行"
+        if count == 0:
+            return label
+        return f"{label}\t{tr('{count} 行', count=count)}"
 
     def _on_tree_context_menu(self, event: Any) -> str:
         """右键：先把光标下的行加入选中（点在选区外时），再弹菜单。
@@ -1737,7 +1888,7 @@ class DiskTrackerApp:
             self._sync_tree_menu()
             self.tree_menu.tk_popup(event.x_root, event.y_root)
         except Exception as exc:                      # noqa: BLE001 - 不让菜单故障炸窗口
-            self._set_error(f"打开右键菜单失败：{exc}")
+            self._set_error(tr("打开右键菜单失败：{error}", error=exc))
         finally:
             try:
                 self.tree_menu.grab_release()
@@ -1756,52 +1907,56 @@ class DiskTrackerApp:
                 import webbrowser
                 webbrowser.open(directory.as_uri())
         except Exception as exc:
-            self._set_error(f"打开数据目录失败：{exc}")
+            self._set_error(tr("打开数据目录失败：{error}", error=exc))
 
     def diagnostics_text(self) -> str:
         """诊断信息：出问题时让用户能一键复制出来。"""
         return "\n".join((
-            f"{APP_DISPLAY_NAME} v{APP_VERSION}（{APP_EXE_NAME}.exe）",
-            f"Python：{platform.python_version()} / {platform.platform()}",
-            f"主题：{THEME_LABELS.get(self.theme_key, self.theme_key)}"
-            f" → {self.theme['label']}",
-            f"权限：{'管理员' if is_admin() else '未以管理员运行'}",
-            f"数据源：{self.smartctl_label.cget('text')}",
-            f"上次记录：{self.prev_label.cget('text')}",
-            f"本次记录：{self.cur_label.cget('text')}",
-            f"历史文件：{self.store.path}（schema v{SCHEMA_VERSION}）",
-            f"偏好文件：{self.settings.path}",
-            f"视图：{VIEW_LABELS.get(self.view_key, self.view_key)}",
-            f"序列号：{'显示' if self.show_serial else '已隐藏'}",
-            f"磁盘行数：{len(self.rows)}",
+            tr("{name} v{version}（{exe}.exe）", name=tr(APP_DISPLAY_NAME),
+               version=APP_VERSION, exe=APP_EXE_NAME),
+            tr("Python：{version} / {platform}", version=platform.python_version(),
+               platform=platform.platform()),
+            tr("主题：{theme} → {label}",
+               theme=tr(THEME_LABELS.get(self.theme_key, self.theme_key)),
+               label=tr(self.theme["label"])),
+            tr("权限：{value}", value=tr("管理员") if is_admin() else tr("未以管理员运行")),
+            self._source_label_text(),
+            tr("上次记录：{stamp}", stamp=self.prev_stamp_text),
+            tr("本次记录：{stamp}", stamp=self.cur_stamp_text),
+            tr("历史文件：{path}（schema v{version}）", path=self.store.path,
+               version=SCHEMA_VERSION),
+            tr("偏好文件：{path}", path=self.settings.path),
+            tr("视图：{value}", value=tr(VIEW_LABELS.get(self.view_key, self.view_key))),
+            tr("序列号：{value}", value=tr("显示") if self.show_serial else tr("已隐藏")),
+            tr("磁盘行数：{count}", count=len(self.rows)),
         ))
 
     def copy_diagnostics(self) -> None:
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(self.diagnostics_text())
-            self._set_action("已复制诊断信息到剪贴板。")
+            self._set_action(tr("已复制诊断信息到剪贴板。"))
         except Exception as exc:
-            self._set_error(f"复制诊断信息失败：{exc}")
+            self._set_error(tr("复制诊断信息失败：{error}", error=exc))
 
     def show_source_status(self) -> None:
         from tkinter import messagebox
 
-        messagebox.showinfo("数据源状态", self.diagnostics_text(), parent=self.root)
+        messagebox.showinfo(tr("数据源状态"), self.diagnostics_text(), parent=self.root)
 
     def show_source_help(self) -> None:
         from tkinter import messagebox
 
         messagebox.showinfo(
-            "如何安装数据源",
-            "本程序通过 smartmontools 的 smartctl 读取磁盘累计读写量与 0E。\n"
-            "\n"
-            "通常 exe 已自带一份，无需安装；若顶部提示未找到，可任选一种：\n"
-            "1) winget install smartmontools.smartmontools\n"
-            "2) 到 smartmontools 官网下载安装包，默认装到\n"
-            "   C:\\Program Files\\smartmontools\\bin\\\n"
-            "\n"
-            "安装后点「文件 → 刷新记录」即可。读取磁盘信息通常需要管理员权限。",
+            tr("如何安装数据源"),
+            tr("本程序通过 smartmontools 的 smartctl 读取磁盘累计读写量与 0E。\n"
+               "\n"
+               "通常 exe 已自带一份，无需安装；若顶部提示未找到，可任选一种：\n"
+               "1) winget install smartmontools.smartmontools\n"
+               "2) 到 smartmontools 官网下载安装包，默认装到\n"
+               "   C:\\Program Files\\smartmontools\\bin\\\n"
+               "\n"
+               "安装后点「文件 → 刷新记录」即可。读取磁盘信息通常需要管理员权限。"),
             parent=self.root,
         )
 
@@ -1809,16 +1964,21 @@ class DiskTrackerApp:
         from tkinter import messagebox
 
         messagebox.showinfo(
-            "容量与换算说明",
-            f"统一口径：{BYTES_PER_GIB_TEXT}\n"
-            "\n"
-            "累计读取 / 累计写入来自硬盘自己维护的计数器：\n"
-            "· NVMe：Data Units Read / Written，1 Data Unit = 512000 字节\n"
-            "· SATA：Device Statistics 的 Logical Sectors，1 LBA = 512 字节\n"
-            "  （该字段缺失时才退回 SMART 属性 241/242，部分主控按块计数，数值可能偏小）\n"
-            "\n"
-            "0E 是 NVMe 的「介质与数据完整性错误」计数，只增不减；\n"
-            "SATA 盘没有这个字段，显示「不适用」，可参考重映射扇区与待定扇区。",
+            tr("容量与换算说明"),
+            tr("统一口径：{units}\n"
+               "\n"
+               "表格首列括号外的容量是厂商标称值（按 1 GB = 1,000,000,000 字节），\n"
+               "括号内是系统显示口径（按 1 GiB = 1024^3 字节），所以同一块盘\n"
+               "会同时看到「960 GB」和「894.25 GiB」，两者说的是同一个字节数。\n"
+               "\n"
+               "累计读取 / 累计写入来自硬盘自己维护的计数器：\n"
+               "· NVMe：Data Units Read / Written，1 Data Unit = 512000 字节\n"
+               "· SATA：Device Statistics 的 Logical Sectors，1 LBA = 512 字节\n"
+               "  （该字段缺失时才退回 SMART 属性 241/242，部分主控按块计数，数值可能偏小）\n"
+               "\n"
+               "0E 是 NVMe 的「介质与数据完整性错误」计数，只增不减；\n"
+               "SATA 盘没有这个字段，显示「不适用」，可参考重映射扇区与待定扇区。",
+               units=tr(BYTES_PER_GIB_TEXT)),
             parent=self.root,
         )
 
@@ -1827,7 +1987,8 @@ class DiskTrackerApp:
         """弹出版本/来源说明。正文完全由 about_text() 生成，只引用 APP_VERSION。"""
         from tkinter import messagebox
 
-        messagebox.showinfo(f"关于 {window_title()}", about_text(self.store.path), parent=self.root)
+        messagebox.showinfo(tr("关于 {title}", title=window_title()),
+                            about_text(self.store.path), parent=self.root)
 
     def reset_history_file(self) -> None:
         """重置历史文件：二次确认 → 旧文件改名备份 → 清空重建基线 → 重新记录一次。
@@ -1838,10 +1999,10 @@ class DiskTrackerApp:
 
         path = self.store.path
         confirmed = messagebox.askyesno(
-            "重置历史文件",
-            f"将清空全部历史记录并重建基线：\n{path}\n\n"
-            "旧文件会改名备份为 history.reset-<时间戳>.json，不会直接删除。\n"
-            "重置后立即重新记录一次。确定继续吗？",
+            tr("重置历史文件"),
+            tr("将清空全部历史记录并重建基线：\n{path}\n\n"
+               "旧文件会改名备份为 history.reset-<时间戳>.json，不会直接删除。\n"
+               "重置后立即重新记录一次。确定继续吗？", path=path),
             parent=self.root,
         )
         if not confirmed:
@@ -1849,12 +2010,12 @@ class DiskTrackerApp:
         try:
             backup = self.store.reset()
         except OSError as exc:
-            self._set_error(f"重置历史文件失败：{exc}")
+            self._set_error(tr("重置历史文件失败：{error}", error=exc))
             return
         if backup is None:
-            self._append_hint("历史文件已重置（旧文件未能备份，可能已被占用）。")
+            self._append_hint(tr("历史文件已重置（旧文件未能备份，可能已被占用）。"))
         else:
-            self._append_hint(f"历史文件已重置，旧文件备份为 {backup.name}。")
+            self._append_hint(tr("历史文件已重置，旧文件备份为 {name}。", name=backup.name))
         self.refresh_async()
 
     def open_history_file(self) -> None:
@@ -1868,4 +2029,4 @@ class DiskTrackerApp:
                 import webbrowser
                 webbrowser.open(path.as_uri())
         except Exception as exc:
-            self._set_error(f"打开历史文件失败：{exc}")
+            self._set_error(tr("打开历史文件失败：{error}", error=exc))

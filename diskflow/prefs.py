@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .history import _default_app_dir
+from .i18n import DEFAULT_LANG, normalize_lang
 from .theme import THEME_SYSTEM, normalize_theme_key
 from .viewmodel import DEFAULT_VIEW, normalize_view_key
 
@@ -24,6 +25,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "theme": THEME_SYSTEM,
     "view": DEFAULT_VIEW,
     "show_serial": False,
+    # 界面语言：zh-CN / en。语言只影响界面文案，history.json 的 schema 与内容一个字节都不变。
+    "lang": DEFAULT_LANG,
 }
 
 
@@ -61,6 +64,10 @@ class SettingsStore:
         show_serial = payload.get("show_serial")
         if isinstance(show_serial, bool):
             data["show_serial"] = show_serial
+        # 语言：非法值（含旧版本没写过这个键）一律回落中文
+        lang = payload.get("lang")
+        if isinstance(lang, str):
+            data["lang"] = normalize_lang(lang)
         return data
 
     def save(self, data: dict[str, Any]) -> Path:
@@ -71,6 +78,7 @@ class SettingsStore:
         merged["theme"] = normalize_theme_key(merged.get("theme"))
         merged["view"] = normalize_view_key(merged.get("view"))
         merged["show_serial"] = merged.get("show_serial") is True
+        merged["lang"] = normalize_lang(merged.get("lang"))
         self.directory.mkdir(parents=True, exist_ok=True)
         text = json.dumps(merged, ensure_ascii=False, indent=2)
         tmp = self.path.with_name(self.path.name + ".tmp")

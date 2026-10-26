@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from .config import HEALTH_NOT_AVAILABLE
 from .convert import bytes_to_gb
+from .i18n import tr
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ class DiskSnapshot:
         if not self.ok:
             return "—"
         if self.life_percent is None:
-            return HEALTH_NOT_AVAILABLE
+            return tr(HEALTH_NOT_AVAILABLE)
         return f"{self.life_percent}%"
 
 
@@ -96,6 +97,7 @@ class DiskRow:
     serial: str
     protocol: str
     device_path: str
+    capacity_bytes: int | None = None   # 硬盘标称容量（字节），读不到为 None
     read_gb: float | None = None
     write_gb: float | None = None
     interval_text: str = "—"

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from .config import APP_ICON_DIRNAME, APP_ICON_FILENAME, PROJECT_DIR, SMARTCTL_EXE
+from .i18n import tr
 from .models import DiskSnapshot, ProviderResult
 from .parse import parse_smartctl_payload
 
@@ -173,15 +174,18 @@ class SmartctlProvider:
     def read_all(self) -> ProviderResult:
         path = self.resolve_path()
         if not path:
-            return ProviderResult(smartctl_path=None, ok=False,
-                                  status="未找到 smartctl.exe（可执行 winget install smartmontools.smartmontools）")
+            return ProviderResult(
+                smartctl_path=None, ok=False,
+                status=tr("未找到 smartctl.exe（可执行 winget install smartmontools.smartmontools）"))
         devices = self.scan_devices()
         if not devices:
             return ProviderResult(smartctl_path=path, ok=False,
-                                  status="未发现可用磁盘（可能需要管理员权限）")
+                                  status=tr("未发现可用磁盘（可能需要管理员权限）"))
         snapshots = [self.read_device(device) for device in devices]
-        return ProviderResult(snapshots=snapshots, smartctl_path=path,
-                              status=f"已读取 {len(snapshots)} 块磁盘（smartctl: {path}）")
+        return ProviderResult(
+            snapshots=snapshots, smartctl_path=path,
+            status=tr("已读取 {count} 块磁盘（smartctl: {path}）",
+                      count=len(snapshots), path=path))
 
 
 class FixturesProvider:
@@ -212,6 +216,6 @@ class FixturesProvider:
             if isinstance(mock, dict):
                 device_path = str(mock.get("device_path") or "")
             snapshots.append(parse_smartctl_payload(payload, device_path=device_path))
-        status = f"fixture provider: {self.fixtures_dir.name}（{len(snapshots)} 个样本）"
+        status = f"fixture provider: {self.fixtures_dir.name} ({len(snapshots)} samples)"
         return ProviderResult(snapshots=snapshots, smartctl_path=None,
                               status=status, ok=bool(snapshots))
