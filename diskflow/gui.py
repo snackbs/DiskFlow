@@ -426,10 +426,12 @@ def _truncate(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
 
 # 表格右键菜单的标签。tk.Menu 的索引可以直接用标签，所以这里把标签抽成常量，
 # 供 _sync_tree_menu() 按标签改状态（不用记住 add_command 的下标，改顺序也不会错位）。
-TREE_MENU_COPY_ROWS = "复制选中行(&C)"
-TREE_MENU_COPY_CELL = "复制此单元格(&L)"
-TREE_MENU_SELECT_ALL = "全选(&A)"
-TREE_MENU_COPY_TABLE = "复制整表(&T)"
+# 菜单文字一律不带 "(&X)" 助记符：中文界面里 Alt 助记符会把括号里的字母画成下划线，
+# 看起来像漏了字，用户明确要求去掉（右键菜单与主菜单一致）。
+TREE_MENU_COPY_ROWS = "复制选中行"
+TREE_MENU_COPY_CELL = "复制此单元格"
+TREE_MENU_SELECT_ALL = "全选"
+TREE_MENU_COPY_TABLE = "复制整表"
 
 # 合并列在同一格里上下两行显示：上面的值对应表头「/」左边，下面的对应右边。
 PAIR_SEPARATOR = "\n"
@@ -442,19 +444,33 @@ def _pair(left: str, right: str) -> str:
     return f"{left}{PAIR_SEPARATOR}{right}"
 
 
-def _short_serial(serial: str) -> str:
-    """序列号只做清洗，不再截断——首列改成上下两行后放得下完整序列号。"""
+# 序列号默认隐藏（隐私）：界面与所有复制出口都换成这串占位符，
+# 但 history.json 里依旧写真实序列号——跨次匹配必须靠「型号 + 序列号」，
+# 隐藏只是显示层的事，不能影响数据层。
+SERIAL_HIDDEN_TEXT = "序列号已隐藏"
+
+
+def _short_serial(serial: str, show: bool = True) -> str:
+    """序列号只做清洗，不再截断——首列改成上下两行后放得下完整序列号。
+
+    show=False 时返回占位符，真实序列号不出现在界面与剪贴板上。
+    """
+    if not show:
+        return SERIAL_HIDDEN_TEXT
     return (serial or "").strip() or "—"
 
 
-def _row_values(row: DiskRow) -> tuple[str, ...]:
+def _row_values(row: DiskRow, show_serial: bool = True) -> tuple[str, ...]:
     """表格 8 列的一行文本。合并列里两个值上下两行，与表头「/」的左右一一对应。
 
     增量格必须自带单位（fmt_delta_short）：表头写的是「本次读增 / 写增」，
     没有「(GB)」三个字，光一个「+348.80」看不出是容量还是次数。
+
+    show_serial 由调用方传入当前偏好（默认隐藏），表格渲染、TSV 导出、
+    单格复制三条出口共用这一份实现，不会出现「界面藏了、复制又漏出去」。
     """
     return (
-        f"{row.model}\n{_short_serial(row.serial)}",
+        f"{row.model}\n{_short_serial(row.serial, show_serial)}",
         row.protocol,
         _pair(fmt_size_short(row.read_gb), fmt_size_short(row.write_gb)),
         row.interval_text,
@@ -535,6 +551,8 @@ class DiskTrackerApp:
         saved = self._load_settings()
         self.theme_key = normalize_theme_key(theme if theme is not None else saved.get("theme"))
         self.view_key = normalize_view_key(saved.get("view"))
+        # 序列号默认隐藏；菜单「工具 → 显示序列号」可打开，偏好写进 settings.json
+        self.show_serial = saved.get("show_serial") is True
         self._card_rows: list[Any] = []
         self._card_columns = 0
         self._cards_width = -1          # 上一次同步给内部 Frame 的宽度
@@ -563,12 +581,12 @@ class DiskTrackerApp:
         menubar = tk.Menu(self.root, tearoff=False)
 
         file_menu = tk.Menu(menubar, tearoff=False)
-        file_menu.add_command(label="刷新记录(&R)", accelerator="Ctrl+R",
+        file_menu.add_command(label="刷新记录", accelerator="Ctrl+R",
                               command=self.refresh_async)
-        file_menu.add_command(label="打开历史文件(&O)", command=self.open_history_file)
-        file_menu.add_command(label="重置历史文件(&E)", command=self.reset_history_file)
+        file_menu.add_command(label="打开历史文件", command=self.open_history_file)
+        file_menu.add_command(label="重置历史文件", command=self.reset_history_file)
         file_menu.add_separator()
-        file_menu.add_command(label="退出(&X)", accelerator="Alt+F4", command=self.close)
+        file_menu.add_command(label="退出", accelerator="Alt+F4", command=self.close)
 
         view_menu = tk.Menu(menubar, tearoff=False)
         self._theme_var = tk.StringVar(master=self.root, value=self.theme_key)
@@ -578,31 +596,38 @@ class DiskTrackerApp:
                                       command=lambda k=key: self.apply_theme(k))
 
         tools_menu = tk.Menu(menubar, tearoff=False)
-        tools_menu.add_command(label="复制选中行(&C)", accelerator="Ctrl+C",
+        tools_menu.add_command(label="复制选中行", accelerator="Ctrl+C",
                                command=self.copy_selection)
-        tools_menu.add_command(label="复制表格到剪贴板(&T)", command=self.copy_table)
-        tools_menu.add_command(label="打开数据目录(&D)", command=self.open_data_dir)
+        tools_menu.add_command(label="复制表格到剪贴板", command=self.copy_table)
+        tools_menu.add_command(label="打开数据目录", command=self.open_data_dir)
         tools_menu.add_separator()
         # 卡片视图没有表头，排序必须也能从菜单触发
         sort_menu = tk.Menu(tools_menu, tearoff=False)
         for column, title in SORT_MENU_ITEMS:
             sort_menu.add_command(label=title, command=lambda c=column: self.sort_by(c))
         sort_menu.add_separator()
-        sort_menu.add_command(label="恢复默认顺序(&R)", command=self.reset_sort)
-        tools_menu.add_cascade(label="排序(&O)", menu=sort_menu)
-        tools_menu.add_command(label="重置排序(&S)", command=self.reset_sort)
+        sort_menu.add_command(label="恢复默认顺序", command=self.reset_sort)
+        tools_menu.add_cascade(label="排序", menu=sort_menu)
+        tools_menu.add_command(label="重置排序", command=self.reset_sort)
+        tools_menu.add_separator()
+        # 序列号属于设备身份信息，默认隐藏；勾选后表格首列、卡片副标题、
+        # 复制（含 TSV 与单格）一起显示真实序列号。放在「工具」而不是「硬盘」，
+        # 因为它只影响显示，不影响读取与记录。
+        self._serial_var = tk.BooleanVar(master=self.root, value=self.show_serial)
+        tools_menu.add_checkbutton(label="显示序列号", variable=self._serial_var,
+                                   command=self.toggle_serial)
         self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
-        disk_menu.add_command(label="重新扫描并记录(&R)", command=self.refresh_async)
-        disk_menu.add_command(label="数据源状态(&S)", command=self.show_source_status)
-        disk_menu.add_command(label="复制诊断信息(&I)", command=self.copy_diagnostics)
+        disk_menu.add_command(label="重新扫描并记录", command=self.refresh_async)
+        disk_menu.add_command(label="数据源状态", command=self.show_source_status)
+        disk_menu.add_command(label="复制诊断信息", command=self.copy_diagnostics)
 
         help_menu = tk.Menu(menubar, tearoff=False)
-        help_menu.add_command(label="如何安装数据源(&S)", command=self.show_source_help)
-        help_menu.add_command(label="容量与换算说明(&C)", command=self.show_capacity_help)
+        help_menu.add_command(label="如何安装数据源", command=self.show_source_help)
+        help_menu.add_command(label="容量与换算说明", command=self.show_capacity_help)
         help_menu.add_separator()
-        help_menu.add_command(label="关于(&A)", command=self.show_about)
+        help_menu.add_command(label="关于", command=self.show_about)
 
         lang_menu = tk.Menu(menubar, tearoff=False)
         self._lang_var = tk.StringVar(master=self.root, value="zh-CN")
@@ -610,12 +635,12 @@ class DiskTrackerApp:
         lang_menu.add_radiobutton(label="English（即将支持）", value="en",
                                   variable=self._lang_var, state="disabled")
 
-        menubar.add_cascade(label="文件(&F)", menu=file_menu)
-        menubar.add_cascade(label="主题(&T)", menu=view_menu)
-        menubar.add_cascade(label="工具(&U)", menu=tools_menu)
-        menubar.add_cascade(label="硬盘(&D)", menu=disk_menu)
-        menubar.add_cascade(label="帮助(&H)", menu=help_menu)
-        menubar.add_cascade(label="语言(&L)", menu=lang_menu)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        menubar.add_cascade(label="主题", menu=view_menu)
+        menubar.add_cascade(label="工具", menu=tools_menu)
+        menubar.add_cascade(label="硬盘", menu=disk_menu)
+        menubar.add_cascade(label="帮助", menu=help_menu)
+        menubar.add_cascade(label="语言", menu=lang_menu)
 
         self.menubar = menubar
         self.file_menu = file_menu
@@ -1046,6 +1071,19 @@ class DiskTrackerApp:
     def _save_theme(self, key: str) -> None:
         self._save_setting("theme", key)
 
+    # ---------- 序列号显示 ----------
+    def toggle_serial(self, show: Any = None) -> bool:
+        """切换序列号显示；不传参时读菜单勾选状态。返回切换后的状态。"""
+        if show is None:
+            show = bool(self._serial_var.get())
+        self.show_serial = bool(show)
+        if hasattr(self, "_serial_var"):
+            self._serial_var.set(self.show_serial)
+        self._save_setting("show_serial", self.show_serial)
+        # 三条出口都从 _row_values / _build_card 走，重画一遍就一致了
+        self.render_rows(self.rows)
+        return self.show_serial
+
     # ---------- 表格 ----------
     def clear_rows(self) -> None:
         self._iid_to_row.clear()
@@ -1073,7 +1111,8 @@ class DiskTrackerApp:
             while self.tree.exists(iid):
                 suffix += 1
                 iid = f"{base}#{suffix}"
-            self.tree.insert("", "end", iid=iid, values=_row_values(row), tags=tags)
+            self.tree.insert("", "end", iid=iid, values=_row_values(row, self.show_serial),
+                             tags=tags)
             self._iid_to_row[iid] = row
         if self.view_key != VIEW_TABLE:
             self.render_cards()
@@ -1417,7 +1456,9 @@ class DiskTrackerApp:
                      highlightcolor=theme["seg_border"]
                      ).pack(side="left", padx=(6, 0))
 
-        self._card_text(inner, f"{row.serial}  ·  {row.device_path}", bg=background,
+        subtitle = (f"{_short_serial(row.serial, self.show_serial)}"
+                    f"  ·  {row.device_path}")
+        self._card_text(inner, subtitle, bg=background,
                         fg=theme["note_fg"],
                         font=(self.base_font[0], self.base_font[1] - 1), width=1
                         ).pack(fill="x", pady=(2, 7))
@@ -1469,7 +1510,8 @@ class DiskTrackerApp:
         headers = [spec[1] for spec in COLUMN_SPECS]
         lines = ["	".join(headers)]
         for row in (self.rows if rows is None else rows):
-            lines.append("	".join(str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR) for value in _row_values(row)))
+            lines.append("	".join(str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
+                                 for value in _row_values(row, self.show_serial)))
         return "\n".join(lines)
 
     # ---------- 数据刷新 ----------
@@ -1623,7 +1665,7 @@ class DiskTrackerApp:
         if row is None or self._cell_column_key not in keys:
             self._set_error("请先用右键点一下要复制的单元格。")
             return
-        value = _row_values(row)[keys.index(self._cell_column_key)]
+        value = _row_values(row, self.show_serial)[keys.index(self._cell_column_key)]
         text = str(value).replace(PAIR_SEPARATOR, TSV_PAIR_SEPARATOR)
         # 只给数值：列名在表头里已经写着，再重复一遍「「本次读增 / 写增」单元格：」
         # 除了占地方没别的用处（用户截图里圈出来要去掉的就是这一段）。
@@ -1713,6 +1755,7 @@ class DiskTrackerApp:
             f"历史文件：{self.store.path}（schema v{SCHEMA_VERSION}）",
             f"偏好文件：{self.settings.path}",
             f"视图：{VIEW_LABELS.get(self.view_key, self.view_key)}",
+            f"序列号：{'显示' if self.show_serial else '已隐藏'}",
             f"磁盘行数：{len(self.rows)}",
         ))
 

@@ -18,7 +18,13 @@ from .viewmodel import DEFAULT_VIEW, normalize_view_key
 # ---------------------------------------------------------------------------
 
 SETTINGS_FILENAME = "settings.json"
-DEFAULT_SETTINGS: dict[str, Any] = {"theme": THEME_SYSTEM, "view": DEFAULT_VIEW}
+# show_serial 默认 False：序列号属于设备身份信息，默认不在界面上暴露，
+# 需要时应从「工具 → 显示序列号」手动打开（偏好跟着 settings.json 走）。
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "theme": THEME_SYSTEM,
+    "view": DEFAULT_VIEW,
+    "show_serial": False,
+}
 
 
 class SettingsStore:
@@ -51,6 +57,10 @@ class SettingsStore:
         view = payload.get("view")
         if isinstance(view, str):
             data["view"] = normalize_view_key(view)
+        # 只认真正的布尔值：字符串 "false" 之类一律落回默认（隐藏）
+        show_serial = payload.get("show_serial")
+        if isinstance(show_serial, bool):
+            data["show_serial"] = show_serial
         return data
 
     def save(self, data: dict[str, Any]) -> Path:
@@ -60,6 +70,7 @@ class SettingsStore:
                 merged[key] = value
         merged["theme"] = normalize_theme_key(merged.get("theme"))
         merged["view"] = normalize_view_key(merged.get("view"))
+        merged["show_serial"] = merged.get("show_serial") is True
         self.directory.mkdir(parents=True, exist_ok=True)
         text = json.dumps(merged, ensure_ascii=False, indent=2)
         tmp = self.path.with_name(self.path.name + ".tmp")

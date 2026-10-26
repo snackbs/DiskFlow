@@ -150,7 +150,7 @@ from diskflow.gui import (  # noqa: F401
     SMARTCTL_INSTALL_HINT, KPI_SPECS, fmt_delta_compact, _default_geometry,
     STATUS_TEXT_LIMIT, _truncate, PAIR_SEPARATOR, TSV_PAIR_SEPARATOR, _pair,
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
-    _short_serial, _row_values, _row_sort_value, DiskTrackerApp,
+    SERIAL_HIDDEN_TEXT, _short_serial, _row_values, _row_sort_value, DiskTrackerApp,
 )
 
 from diskflow.entry import (  # noqa: F401
@@ -203,6 +203,7 @@ __all__ = [
     "TABLE_NATURAL_WIDTH", "ROW_ALERT_TAG", "ROW_MUTED_TAG", "ROW_ZEBRA_TAG",
     "ALERT_COLOR", "MUTED_COLOR", "BASE_FONT", "SMARTCTL_INSTALL_HINT", "KPI_SPECS",
     "fmt_delta_compact", "STATUS_TEXT_LIMIT", "PAIR_SEPARATOR", "TSV_PAIR_SEPARATOR",
+    "SERIAL_HIDDEN_TEXT",
     "TREE_MENU_COPY_ROWS", "TREE_MENU_COPY_CELL", "TREE_MENU_SELECT_ALL", "TREE_MENU_COPY_TABLE",
     "DiskTrackerApp", "apply_window_icon", "create_app", "main",
 ]
