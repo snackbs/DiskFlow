@@ -426,12 +426,13 @@ def _truncate(text: str, limit: int = STATUS_TEXT_LIMIT) -> str:
 
 # 表格右键菜单的标签。tk.Menu 的索引可以直接用标签，所以这里把标签抽成常量，
 # 供 _sync_tree_menu() 按标签改状态（不用记住 add_command 的下标，改顺序也不会错位）。
-# 菜单文字一律不带 "(&X)" 助记符：中文界面里 Alt 助记符会把括号里的字母画成下划线，
-# 看起来像漏了字，用户明确要求去掉（右键菜单与主菜单一致）。
-TREE_MENU_COPY_ROWS = "复制选中行"
-TREE_MENU_COPY_CELL = "复制此单元格"
-TREE_MENU_SELECT_ALL = "全选"
-TREE_MENU_COPY_TABLE = "复制整表"
+# 菜单文字的括号保留，但括号里只写字母、不写 "&" 助记符：
+# 中文界面里 Alt 助记符会把那个字母画上一条下划线，看起来像多了一道横线，
+# 用户明确要求只去掉 & 号本身（右键菜单与主菜单一致）。
+TREE_MENU_COPY_ROWS = "复制选中行(C)"
+TREE_MENU_COPY_CELL = "复制此单元格(L)"
+TREE_MENU_SELECT_ALL = "全选(A)"
+TREE_MENU_COPY_TABLE = "复制整表(T)"
 
 # 合并列在同一格里上下两行显示：上面的值对应表头「/」左边，下面的对应右边。
 PAIR_SEPARATOR = "\n"
@@ -597,12 +598,12 @@ class DiskTrackerApp:
         menubar = tk.Menu(self.root, tearoff=False)
 
         file_menu = tk.Menu(menubar, tearoff=False)
-        file_menu.add_command(label="刷新记录", accelerator="Ctrl+R",
+        file_menu.add_command(label="刷新记录(R)", accelerator="Ctrl+R",
                               command=self.refresh_async)
-        file_menu.add_command(label="打开历史文件", command=self.open_history_file)
-        file_menu.add_command(label="重置历史文件", command=self.reset_history_file)
+        file_menu.add_command(label="打开历史文件(O)", command=self.open_history_file)
+        file_menu.add_command(label="重置历史文件(E)", command=self.reset_history_file)
         file_menu.add_separator()
-        file_menu.add_command(label="退出", accelerator="Alt+F4", command=self.close)
+        file_menu.add_command(label="退出(X)", accelerator="Alt+F4", command=self.close)
 
         view_menu = tk.Menu(menubar, tearoff=False)
         self._theme_var = tk.StringVar(master=self.root, value=self.theme_key)
@@ -612,19 +613,19 @@ class DiskTrackerApp:
                                       command=lambda k=key: self.apply_theme(k))
 
         tools_menu = tk.Menu(menubar, tearoff=False)
-        tools_menu.add_command(label="复制选中行", accelerator="Ctrl+C",
+        tools_menu.add_command(label="复制选中行(C)", accelerator="Ctrl+C",
                                command=self.copy_selection)
-        tools_menu.add_command(label="复制表格到剪贴板", command=self.copy_table)
-        tools_menu.add_command(label="打开数据目录", command=self.open_data_dir)
+        tools_menu.add_command(label="复制表格到剪贴板(T)", command=self.copy_table)
+        tools_menu.add_command(label="打开数据目录(D)", command=self.open_data_dir)
         tools_menu.add_separator()
         # 卡片视图没有表头，排序必须也能从菜单触发
         sort_menu = tk.Menu(tools_menu, tearoff=False)
         for column, title in SORT_MENU_ITEMS:
             sort_menu.add_command(label=title, command=lambda c=column: self.sort_by(c))
         sort_menu.add_separator()
-        sort_menu.add_command(label="恢复默认顺序", command=self.reset_sort)
-        tools_menu.add_cascade(label="排序", menu=sort_menu)
-        tools_menu.add_command(label="重置排序", command=self.reset_sort)
+        sort_menu.add_command(label="恢复默认顺序(R)", command=self.reset_sort)
+        tools_menu.add_cascade(label="排序(O)", menu=sort_menu)
+        tools_menu.add_command(label="重置排序(S)", command=self.reset_sort)
         tools_menu.add_separator()
         # 序列号属于设备身份信息，默认隐藏；勾选后表格首列、卡片副标题、
         # 复制（含 TSV 与单格）一起显示真实序列号。放在「工具」而不是「硬盘」，
@@ -635,15 +636,15 @@ class DiskTrackerApp:
         self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
-        disk_menu.add_command(label="重新扫描并记录", command=self.refresh_async)
-        disk_menu.add_command(label="数据源状态", command=self.show_source_status)
-        disk_menu.add_command(label="复制诊断信息", command=self.copy_diagnostics)
+        disk_menu.add_command(label="重新扫描并记录(R)", command=self.refresh_async)
+        disk_menu.add_command(label="数据源状态(S)", command=self.show_source_status)
+        disk_menu.add_command(label="复制诊断信息(I)", command=self.copy_diagnostics)
 
         help_menu = tk.Menu(menubar, tearoff=False)
-        help_menu.add_command(label="如何安装数据源", command=self.show_source_help)
-        help_menu.add_command(label="容量与换算说明", command=self.show_capacity_help)
+        help_menu.add_command(label="如何安装数据源(S)", command=self.show_source_help)
+        help_menu.add_command(label="容量与换算说明(C)", command=self.show_capacity_help)
         help_menu.add_separator()
-        help_menu.add_command(label="关于", command=self.show_about)
+        help_menu.add_command(label="关于(A)", command=self.show_about)
 
         lang_menu = tk.Menu(menubar, tearoff=False)
         self._lang_var = tk.StringVar(master=self.root, value="zh-CN")
@@ -651,12 +652,12 @@ class DiskTrackerApp:
         lang_menu.add_radiobutton(label="English（即将支持）", value="en",
                                   variable=self._lang_var, state="disabled")
 
-        menubar.add_cascade(label="文件", menu=file_menu)
-        menubar.add_cascade(label="主题", menu=view_menu)
-        menubar.add_cascade(label="工具", menu=tools_menu)
-        menubar.add_cascade(label="硬盘", menu=disk_menu)
-        menubar.add_cascade(label="帮助", menu=help_menu)
-        menubar.add_cascade(label="语言", menu=lang_menu)
+        menubar.add_cascade(label="文件(F)", menu=file_menu)
+        menubar.add_cascade(label="主题(T)", menu=view_menu)
+        menubar.add_cascade(label="工具(U)", menu=tools_menu)
+        menubar.add_cascade(label="硬盘(D)", menu=disk_menu)
+        menubar.add_cascade(label="帮助(H)", menu=help_menu)
+        menubar.add_cascade(label="语言(L)", menu=lang_menu)
 
         self.menubar = menubar
         self.file_menu = file_menu
