@@ -54,7 +54,11 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 ## 使用
 
-1. 从 [Releases](../../releases) 下载 `DiskFlow.exe`（或从 Actions 的 Artifacts 里取）。
+1. 从 [Releases](../../releases) 下载，两种形式任选（或从 Actions 的 Artifacts 里取）：
+   - `DiskFlow.exe`：便携版，双击直接用，不进注册表；
+   - `DiskFlow-<版本>-windows-setup.exe`：安装版，装到 `Program Files`、带开始菜单项与卸载器，
+     安装向导默认简体中文。历史数据两者都写在同一个目录 ID 下（见
+     [history.json 存在哪](#historyjson-存在哪)）。
 2. 双击运行，弹出 UAC 时选择「是」——读 SMART 需要管理员权限。
 3. **首次打开**只建立基线：顶部出现绿色的「✓ 已记录基线（N 块盘）」，底部提示「已记录基线，下次打开将显示增量」。
 4. **之后每次打开**自动读取 + 记录 + 对比，表格给出「距上次」「本次读增/写增」「历史读增/写增」。
@@ -149,7 +153,8 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 深色模式用「深色专业」（深底浅字 + 暗红告警行）。也可以在「主题」菜单里固定选
 数据台账 / 深色专业 / 清爽仪表 / 极简留白 / 原生默认，选「跟随系统」恢复自动判断。
 
-选择会存进 exe 同目录的 `settings.json`。主题偏好是独立文件，**不写进 `history.json`**，
+选择会存进 `settings.json`——与 `history.json` 同目录（便携版在 exe 同目录，安装版在
+`%LOCALAPPDATA%\DiskUsageTracker`）。主题偏好是独立文件，**不写进 `history.json`**，
 换皮肤不会影响历史数据。标题栏与原生菜单栏都由系统绘制、始终跟随系统配色，
 不随主题变深——深色主题下窗口边框保持系统样式，避免出现「深色标题栏 + 浅色菜单栏」的割裂。
 
@@ -221,9 +226,17 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 ## history.json 存在哪
 
-优先存在 **exe 同目录**；该目录不可写（例如装进 `Program Files`）时自动回退到
-`%LOCALAPPDATA%\DiskUsageTracker\history.json`。
+分两种情况，按 **exe 所在位置**自动判断，不需要任何开关：
 
+| 形式 | 位置 | 原因 |
+|---|---|---|
+| 便携版（exe 放在任意可写目录） | exe 同目录的 `history.json` | 拷走整个文件夹就是全套 |
+| 安装版（exe 在 `Program Files` 下） | `%LOCALAPPDATA%\DiskUsageTracker\history.json` | 卸载不连数据一起删，多用户各存各的 |
+
+安装版之所以不能写安装目录：exe 带 `requireAdministrator`，提权后「能不能写」的探测会
+假性成功，历史就落到 `Program Files` 里了——卸载时被一起删除，多个 Windows 账号还会
+共享同一份。所以只要探测到 exe 位于 `Program Files` / `Program Files (x86)` 下，程序
+直接跳过主目录，强制走 `%LOCALAPPDATA%`。
 同一目录下还有一个 `settings.json`，只存界面偏好（`{"theme": "system", "view": "table", "show_serial": false, "lang": "zh-CN"}`）。
 它是最容易重建的配置，删掉就等于回到「跟随系统」，不会影响历史。
 
@@ -293,6 +306,39 @@ python -m PyInstaller --onefile --noconsole --uac-admin ^
 
 也可以直接跑仓库里的 `build.bat`。产物在 `dist\DiskFlow.exe`。
 
+### 安装包（可选产物）
+
+除了便携 exe，仓库还提供 Inno Setup 安装包（CI 每次都会一并产出，本地可选）。
+安装包做的事：装到 `Program Files`、建开始菜单项、注册卸载器、可选桌面快捷方式，
+安装向导**默认简体中文**（也可切英文）。
+
+脚本在 `installer/`：
+
+| 文件 | 作用 |
+|---|---|
+| `DiskFlow.iss` | 安装脚本。**不含任何写死的名字/版本**，全部引用编译期宏 |
+| `make_build_info.py` | 从 `diskflow/config.py` 生成 `build-info.iss`（宏文件）；`--print-setup-name` 输出安装包文件名 |
+| `ChineseSimplified.isl` | 简体中文语言文件，构建时从 jrsoftware/issrc 下载（已 gitignore） |
+
+本地编译：
+
+```powershell
+winget install JRSoftware.InnoSetup     # 只需装一次（CI 镜像里已自带）
+python installer\make_build_info.py      # 生成 installer\build-info.iss
+& "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\DiskFlow.iss
+# 产物：dist\DiskFlow-<版本>-windows-setup.exe
+```
+
+两个必须知道的取舍：
+
+- **装好之后每次启动照样弹 UAC**。这是 exe 自己的 manifest（`--uac-admin`）决定的，
+  与装法无关；安装包只能省掉「找目录、建快捷方式」这些手工步骤。
+- **卸载不会删除历史数据**。安装版的 `history.json` / `settings.json` 强制在
+  `%LOCALAPPDATA%\DiskUsageTracker`，与安装目录无关，升级、卸载、换装便携版都读得到。
+
+安装脚本里 `AppId` 是一个**固定 GUID**，改显示名 / exe 名时不要动它——它是安装包
+判断「同一个软件的旧版」的唯一依据，改了两代安装包会并存成两份。
+
 图标用仓库里的 `diskflow-icons/diskflow.ico`（16~256 共七种尺寸）：`--icon` 决定 exe 在资源管理器、
 任务栏、快捷方式上显示的图标；`--add-data` 把同一个 .ico 打进单文件包，程序运行时的窗口图标
 也从包里取（先找 `sys._MEIPASS`，再找 exe 同目录与源码目录）。两个参数都要有：只给 `--icon` 时
@@ -356,7 +402,13 @@ Release 标题只由英文 EXE 名 + 版本号组成（不得回退成带中文�
 数据层的 0E 与状态文案跟着语言变、切语言后菜单/表头/KPI/按钮/状态栏/汇总行全部立即换语言、
 切回中文完全复原、`settings.json` 的 `lang` 持久化与脏值回落）。
 
-当前共 163 条用例，用 `python -m pytest -v` 一次跑完。
+还有安装包相关（`Program Files` 下强制改存 `%LOCALAPPDATA%`、`settings.json` 跟随同一条规则、
+`Program Files2` 这类前缀相近目录不得误判、安装脚本的固定 GUID 与全宏引用、
+安装脚本里不得写死版本号、缺宏必须编译失败、卸载器不得碰用户数据目录、
+`make_build_info.py` 的宏全部来自 `diskflow/config.py` 且改名后跟着变、
+CI 必须真的编译安装包并把它同时放进 artifact 与 Release）。
+
+当前共 174 条用例，用 `python -m pytest -v` 一次跑完。
 
 GUI 用例在没有图形环境的机器上会以明确的 `skip` 上报原因，不会静默通过。CI 的两个
 Windows job 会真实跑完整套用例，任何一个失败都不会进入打包步骤。
@@ -416,7 +468,9 @@ Windows job 会真实跑完整套用例，任何一个失败都不会进入打�
 ├─ diskflow-icons/             # 应用图标：.ico（exe / 窗口图标）+ 各尺寸 PNG + SVG 源
 │                              # （设计稿的预览 html 只在本地，不进仓库）
 ├─ build.bat                   # 本地 Windows 手动打包脚本（PyInstaller 入口仍是 main.py）
-└─ .github/workflows/build.yml # CI：test → build → artifact → Release
+├─ installer/                  # Inno Setup 安装包：DiskFlow.iss（全宏）+ make_build_info.py
+│                              # （.isl 与 build-info.iss 是构建期产物，已 gitignore）
+└─ .github/workflows/build.yml # CI：test → build → artifact（exe + 安装包）→ Release
 ```
 
 > `main.py` 保留为兼容入口，是为了让构建脚本、`build.bat` 和测试里的
@@ -446,7 +500,8 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即
    读者先想知道「多了什么」，再想知道「修了什么」，最后才是内部怎么变好的；
 3. 提交并推送 `main`，等 CI 的 test + build 全绿；
 4. `git tag v<APP_VERSION>` 并推送——CI 会用 `CHANGELOG.md` 里该小节作为 **Release 正文**，
-   并把 `dist/<APP_EXE_NAME>.exe` 挂成 Release 附件。
+   并把 `dist/<APP_EXE_NAME>.exe` 与安装包 `dist/<APP_EXE_NAME>-<版本>-windows-setup.exe`
+   一起挂成 Release 附件。
 
 顺序反过来会被 CI 拦住：先打 tag 再改 `APP_VERSION`，版本校验直接失败；只改版本不写日志，
 抽取 Release 正文的步骤会因为找不到小节而失败。

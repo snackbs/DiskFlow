@@ -12,6 +12,44 @@
   顺序由 `test_changelog_sections_follow_fixed_order` 守着，写反了 CI 直接失败。
 - 某类没有内容时整节省略；确实需要交代「这版没有用户可见的变化」时，保留一行说明即可。
 
+## [未发布]
+
+这一版加了**安装包**：除了便携 exe，还会产出一个 Inno Setup 安装程序，装到 `Program Files`
+并带开始菜单、卸载项，安装界面默认简体中文。同时改了安装版的存储位置——历史与设置
+一律落在 `%LOCALAPPDATA%`。便携版的行为没有变化。
+
+### 新增
+
+- **安装包（Inno Setup）**：`dist/<exe 名>-<版本>-windows-setup.exe`，与便携 exe 一起挂在
+  Release 上、一起放进 Actions 的 artifact。安装到 `Program Files`、建开始菜单项、注册
+  卸载器，桌面快捷方式可选。安装向导**默认简体中文**（也可在上一步切英文），
+  语言文件取自 Inno Setup 官方仓库 jrsoftware/issrc 的 `ChineseSimplified.isl`。
+- **安装脚本不含任何写死的名字与版本**：`installer/DiskFlow.iss` 的 AppName / AppVersion /
+  安装包文件名全部引用编译期宏，宏由新增的 `installer/make_build_info.py` 从
+  `diskflow/config.py` 生成。缺宏时 ISCC 直接编译失败（`#error`），不会产出名字空白的安装包。
+- **`AppId` 用固定 GUID**：安装包靠它判断「同一个软件的旧版」，升级时覆盖安装、卸载项
+  只出现一次。改显示名 / exe 名都不要动它。
+
+### 修复
+
+- **安装版不再把历史写进 `Program Files`**：exe 带 `requireAdministrator`，提权运行时
+  「能不能写」的探测会假性成功，`history.json` 就会落在安装目录里——卸载时被一起删掉，
+  同一台机器的多个 Windows 账号还会共享同一份。现在只要检测到 exe 位于
+  `Program Files` / `Program Files (x86)` 下，就跳过主目录、强制用
+  `%LOCALAPPDATA%\DiskUsageTracker\`。便携版（exe 在任意可写目录）仍然写 exe 同目录，
+  行为与以前一致。
+- **`settings.json` 跟着同一条规则走**：`SettingsStore` 的默认目录改用
+  `default_storage_dir()`，安装版的界面偏好也不会落进安装目录。
+
+### 改进
+
+- 卸载器只清理安装目录里可能残留的 `history.json` / `settings.json`（早期版本留下的），
+  `%LOCALAPPDATA%` 下的用户数据一律不删，卸载后重装还是原样。
+- 安装时若程序正在运行，由 Windows Restart Manager 提示关闭，不用强杀（不设 `force`，
+  避免丢未保存的工作）。
+- `build.bat` 顺手支持本地编译安装包：找得到 Inno Setup 6 就一并出安装包，找不到只提示、
+  不报错。
+
 ## [0.8.0] - 2026-10-27
 
 这一版三件事：界面多了英文，表格首列多了每块盘的实际容量，容量括号里的系统口径可以关掉。

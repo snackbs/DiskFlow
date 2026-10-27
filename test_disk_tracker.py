@@ -3836,3 +3836,198 @@ def test_language_preference_is_persisted_and_normalized(tmp_path):
     assert json.loads(store.path.read_text(encoding="utf-8"))["lang"] == app.LANG_ZH
 
 
+
+
+# ---------------------------------------------------------------------------
+# 16. 安装包（Inno Setup）与安装版存储位置（v0.8.x）
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parent
+INSTALLER_DIR = ROOT / "installer"
+ISS_PATH = INSTALLER_DIR / "DiskFlow.iss"
+
+
+def _load_make_build_info():
+    """按文件路径加载 installer/make_build_info.py（它不是 diskflow 包的一部分）。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "diskflow_make_build_info", INSTALLER_DIR / "make_build_info.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_program_files_roots_reads_environment(monkeypatch, tmp_path):
+    """Program Files 根目录只从环境变量读，读不到就是空列表（不猜默认路径）。"""
+    monkeypatch.setenv("ProgramW6432", str(tmp_path / "PF64"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "PF64"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "PF32"))
+    roots = app.program_files_roots()
+    assert tmp_path / "PF64" in roots
+    assert tmp_path / "PF32" in roots
+    # 同一个路径在多个变量里重复出现时只保留一份
+    assert len(roots) == len(set(roots))
+    assert len(roots) == 2
+
+    for name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        monkeypatch.delenv(name, raising=False)
+    assert app.program_files_roots() == []
+
+
+def test_is_program_files_dir_matches_case_insensitively(monkeypatch, tmp_path):
+    """Windows 路径大小写不敏感，且不能把「Program Files2」误判成 Program Files。"""
+    program_files = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("ProgramW6432", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    assert app.is_program_files_dir(program_files) is True
+    assert app.is_program_files_dir(program_files / "DiskFlow") is True
+    if sys.platform == "win32":
+        # 只有 Windows 的路径比较才忽略大小写（POSIX 上 normcase 是恒等）
+        assert app.is_program_files_dir(str(program_files).upper()) is True
+    assert app.is_program_files_dir(tmp_path / "Program Files2") is False
+    assert app.is_program_files_dir(tmp_path / "Users" / "someone") is False
+
+
+def test_history_store_forces_localappdata_under_program_files(monkeypatch, tmp_path):
+    """exe 装在 Program Files 下时必须跳过主目录，强制写 %LOCALAPPDATA%。
+
+    原因：exe 带 requireAdministrator，提权后写探测会假性成功，历史会存进安装目录，
+    卸载时连数据一起删、多用户还会共用同一份。
+    """
+    program_files = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("ProgramW6432", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    install_dir = program_files / "DiskFlow"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    fallback = tmp_path / "localappdata" / app.APP_STORAGE_ID
+
+    store = app.HistoryStore(primary_dir=install_dir, fallback_dir=fallback)
+    # 即使安装目录实际可写（提权场景），也必须回退到 LOCALAPPDATA
+    assert store.resolve_dir() == fallback
+    assert store.path.parent == fallback
+    store.save([])
+    assert store.path.exists()
+    assert not (install_dir / app.HISTORY_FILENAME).exists()
+
+    # 不在 Program Files 下时行为不变：优先 exe 同目录
+    portable_dir = tmp_path / "portable"
+    portable_dir.mkdir(parents=True, exist_ok=True)
+    portable = app.HistoryStore(primary_dir=portable_dir, fallback_dir=fallback)
+    assert portable.resolve_dir() == portable_dir
+
+
+def test_default_storage_dir_switches_with_install_location(monkeypatch, tmp_path):
+    """default_storage_dir()：便携版用 exe 同目录，安装版用 %LOCALAPPDATA%。"""
+    program_files = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("ProgramW6432", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    fallback = tmp_path / "LocalAppData" / app.APP_STORAGE_ID
+
+    monkeypatch.setattr(app.history, "_default_app_dir", lambda: program_files / "DiskFlow")
+    assert app.default_storage_dir() == fallback
+
+    portable_dir = tmp_path / "portable"
+    monkeypatch.setattr(app.history, "_default_app_dir", lambda: portable_dir)
+    assert app.default_storage_dir() == portable_dir
+
+
+def test_settings_store_follows_history_directory_rule(monkeypatch, tmp_path):
+    """settings.json 与 history.json 同目录：安装版也落到 %LOCALAPPDATA%。"""
+    program_files = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("ProgramW6432", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    monkeypatch.setattr(app.history, "_default_app_dir", lambda: program_files / "DiskFlow")
+    store = app.SettingsStore()
+    assert store.directory == tmp_path / "LocalAppData" / app.APP_STORAGE_ID
+
+
+def test_installer_script_uses_fixed_app_id_and_macros():
+    """安装脚本：AppId 固定 GUID、名字/版本全走宏、不写死版本号。"""
+    text = ISS_PATH.read_text(encoding="utf-8")
+    assert "#define MyAppId" in text
+    match = re.search(r'#define MyAppId "\{\{([0-9A-Fa-f-]{36})\}"', text)
+    assert match, "AppId 必须是固定的 {{GUID}} 字面量"
+    assert match.group(1).upper() == "8F3C2E51-9A4B-4E7D-9C1A-6B2D5F0A7C43"
+    assert "AppId={#MyAppId}" in text
+    for directive in ("AppName={#MyAppName}",
+                      "AppVersion={#MyAppVersion}",
+                      "OutputBaseFilename={#MySetupBaseName}",
+                      'Source: "..\\dist\\{#MyAppExeName}.exe"'):
+        assert directive in text, f"缺少宏引用：{directive}"
+    assert not re.search(r'\d+\.\d+\.\d+', text), "安装脚本里不能写死版本号"
+    assert "#error" in text
+    assert "#ifndef MyAppVersion" in text
+    assert "ChineseSimplified.isl" in text
+    assert "PrivilegesRequired=admin" in text
+    assert "ArchitecturesInstallIn64BitMode=x64compatible" in text
+
+
+def test_installer_script_never_deletes_user_data_directory():
+    """卸载器只清理安装目录里可能残留的历史，绝不碰 %LOCALAPPDATA% 里的用户数据。"""
+    text = ISS_PATH.read_text(encoding="utf-8")
+    uninstall = text.split("[UninstallDelete]", 1)[1]
+    # 只看真正生效的指令行（注释里出现 %LOCALAPPDATA% 是在解释「为什么不动它」）
+    directives = [line for line in uninstall.splitlines()
+                  if line.strip() and not line.strip().startswith(";")]
+    body = "\n".join(directives)
+    assert "{app}" in body
+    assert "localappdata" not in body.lower()
+    assert "filesandordirs" not in body.lower()
+
+
+def test_make_build_info_derives_everything_from_config():
+    """build-info.iss 的每个宏都来自 diskflow/config.py，改名只改一处。"""
+    module = _load_make_build_info()
+    text = "\n".join(module.build_info_lines())
+    assert f'#define MyAppName "{app.APP_DISPLAY_NAME}"' in text
+    assert f'#define MyAppExeName "{app.APP_EXE_NAME}"' in text
+    assert f'#define MyAppVersion "{app.APP_VERSION}"' in text
+    assert f'#define MyAppPublisher "{app.APP_AUTHOR}"' in text
+    expected_setup = f"{app.APP_EXE_NAME}-{app.APP_VERSION}-windows-setup"
+    assert f'#define MySetupBaseName "{expected_setup}"' in text
+    # 换一组假名字，宏跟着变，证明没有硬编码
+    renamed = "\n".join(module.build_info_lines(
+        display_name="磁盘流水 X", exe_name="FlowX", version="9.9.9", publisher="someone"))
+    assert '#define MyAppName "磁盘流水 X"' in renamed
+    assert '#define MyAppExeName "FlowX"' in renamed
+    assert '#define MyAppVersion "9.9.9"' in renamed
+    assert '#define MySetupBaseName "FlowX-9.9.9-windows-setup"' in renamed
+
+
+def test_make_build_info_escapes_double_quotes():
+    """显示名里含双引号时不能破坏 Inno 脚本（双引号成对翻倍）。"""
+    module = _load_make_build_info()
+    assert module.iss_string('a"b') == '"a""b"'
+    text = "\n".join(module.build_info_lines(display_name='A"B'))
+    assert '#define MyAppName "A""B"' in text
+
+
+def test_make_build_info_prints_setup_name(capsys):
+    """--print-setup-name 输出必须与 .iss 的 OutputBaseFilename 同源。"""
+    module = _load_make_build_info()
+    assert module.main(["--print-setup-name"]) == 0
+    out = capsys.readouterr().out.strip()
+    assert out == f"{app.APP_EXE_NAME}-{app.APP_VERSION}-windows-setup"
+
+
+def test_build_workflow_builds_and_ships_installer():
+    """CI 必须真的编译安装包，并把它同时放进 artifact 与 Release。"""
+    workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
+    assert "installer/make_build_info.py" in workflow.replace("\\", "/")
+    assert "--print-setup-name" in workflow
+    assert "ISCC.exe" in workflow
+    assert "installer\\DiskFlow.iss" in workflow
+    assert "ChineseSimplified.isl" in workflow
+    # 文件名来自脚本输出，而不是在 yml 里再拼一遍
+    assert "steps.setup.outputs.setup_path" in workflow
+    artifact_block = workflow.split("Upload artifact", 1)[1].split("Extract release notes", 1)[0]
+    assert "steps.setup.outputs.setup_path" in artifact_block
+    release_block = workflow.split("Create Release", 1)[1]
+    assert "steps.setup.outputs.setup_path" in release_block
+
