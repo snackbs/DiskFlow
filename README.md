@@ -329,6 +329,9 @@ python installer\make_build_info.py      # 生成 installer\build-info.iss
 # 产物：dist\DiskFlow-<版本>-windows-setup.exe
 ```
 
+用 winget 装 Inno Setup 时它可能落在用户目录而不是 `Program Files (x86)`，此时 ISCC 在
+`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`，把上面那行换成这个路径即可。
+
 两个必须知道的取舍：
 
 - **装好之后每次启动照样弹 UAC**。这是 exe 自己的 manifest（`--uac-admin`）决定的，
@@ -338,6 +341,10 @@ python installer\make_build_info.py      # 生成 installer\build-info.iss
 
 安装脚本里 `AppId` 是一个**固定 GUID**，改显示名 / exe 名时不要动它——它是安装包
 判断「同一个软件的旧版」的唯一依据，改了两代安装包会并存成两份。
+
+快捷方式（开始菜单、桌面）与「安装完成后启动」的文案一律用英文 exe 名 `DiskFlow`，
+中文显示名只出现在开始菜单分组名和卸载列表里；安装完成页那一项走 `shellexec`，
+否则系统会直接用 `CreateProcess` 拉起要求管理员权限的 exe，报**错误代码 740**。
 
 图标用仓库里的 `diskflow-icons/diskflow.ico`（16~256 共七种尺寸）：`--icon` 决定 exe 在资源管理器、
 任务栏、快捷方式上显示的图标；`--add-data` 把同一个 .ico 打进单文件包，程序运行时的窗口图标
@@ -405,10 +412,11 @@ Release 标题只由英文 EXE 名 + 版本号组成（不得回退成带中文�
 还有安装包相关（`Program Files` 下强制改存 `%LOCALAPPDATA%`、`settings.json` 跟随同一条规则、
 `Program Files2` 这类前缀相近目录不得误判、安装脚本的固定 GUID 与全宏引用、
 安装脚本里不得写死版本号、缺宏必须编译失败、卸载器不得碰用户数据目录、
+快捷方式与启动项一律用英文 exe 名且必须带 `shellexec`（否则报错误代码 740）、
 `make_build_info.py` 的宏全部来自 `diskflow/config.py` 且改名后跟着变、
 CI 必须真的编译安装包并把它同时放进 artifact 与 Release）。
 
-当前共 174 条用例，用 `python -m pytest -v` 一次跑完。
+当前共 176 条用例，用 `python -m pytest -v` 一次跑完。
 
 GUI 用例在没有图形环境的机器上会以明确的 `skip` 上报原因，不会静默通过。CI 的两个
 Windows job 会真实跑完整套用例，任何一个失败都不会进入打包步骤。
