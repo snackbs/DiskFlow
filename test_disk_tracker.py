@@ -4031,3 +4031,34 @@ def test_build_workflow_builds_and_ships_installer():
     release_block = workflow.split("Create Release", 1)[1]
     assert "steps.setup.outputs.setup_path" in release_block
 
+
+
+def test_installer_shortcuts_use_english_exe_name():
+    """开始菜单 / 桌面快捷方式一律用英文 exe 名，中文显示名只出现在分组与卸载列表。"""
+    text = ISS_PATH.read_text(encoding="utf-8")
+    icons = text.split("[Icons]", 1)[1].split("[Run]", 1)[0]
+    lines = [line for line in icons.splitlines()
+             if line.strip() and not line.strip().startswith(";")]
+    assert lines, "[Icons] 段不能是空的"
+    for line in lines:
+        assert "{#MyAppExeName}" in line, f"快捷方式名必须用英文 exe 名：{line}"
+        assert "{#MyAppName}" not in line, f"快捷方式名不能用中文显示名：{line}"
+    # 完成页的启动复选框文案也一样，不能出现中文名
+    custom = text.split("[CustomMessages]", 1)[1].split("[Tasks]", 1)[0]
+    assert "LaunchApp=" in custom
+    for line in custom.splitlines():
+        if "LaunchApp=" in line:
+            assert "{#MyAppExeName}" in line
+            assert "{#MyAppName}" not in line
+
+
+def test_installer_launch_step_uses_shellexec():
+    """完成页启动程序必须走 ShellExecuteEx：目标 exe 要求提权，CreateProcess 会报 740。"""
+    text = ISS_PATH.read_text(encoding="utf-8")
+    run_section = text.split("[Run]", 1)[1].split("[UninstallDelete]", 1)[0]
+    lines = [line for line in run_section.splitlines()
+             if line.strip() and not line.strip().startswith(";")]
+    assert len(lines) == 1, "[Run] 段应当只有一条启动项"
+    entry = lines[0]
+    assert "postinstall" in entry
+    assert "shellexec" in entry.split("Flags:", 1)[1], "Flags 里必须有 shellexec"
