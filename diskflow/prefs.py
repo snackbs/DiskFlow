@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .history import _default_app_dir
+from .history import default_storage_dir
 from .i18n import DEFAULT_LANG, normalize_lang
 from .theme import THEME_SYSTEM, normalize_theme_key
 from .viewmodel import DEFAULT_VIEW, normalize_view_key
@@ -35,11 +35,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 class SettingsStore:
-    """界面偏好读写：与 history.json 同目录；文件损坏或字段缺失时静默回落默认值。"""
+    """界面偏好读写：与 history.json 同目录；文件损坏或字段缺失时静默回落默认值。
+
+    默认目录走 default_storage_dir()，所以安装版（exe 在 Program Files 下）
+    与 history.json 一样落到 %LOCALAPPDATA%\\<APP_STORAGE_ID>。
+    """
 
     def __init__(self, directory: str | os.PathLike[str] | None = None,
                  filename: str = SETTINGS_FILENAME) -> None:
-        self.directory = Path(directory) if directory else _default_app_dir()
+        self.directory = Path(directory) if directory else default_storage_dir()
         self.filename = filename
 
     @property

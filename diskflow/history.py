@@ -1,6 +1,9 @@
 """历史存储层：history.json 的读写、校验、损坏备份与 v1→v2 迁移。
 
 优先写 exe 同目录，不可写时回退 %LOCALAPPDATA% 下的 APP_STORAGE_ID 目录；
+例外：exe 落在 Program Files / Program Files (x86) 下（安装版）时直接走
+%LOCALAPPDATA%，因为提权运行会让写探测假性成功，历史会存进安装目录，
+卸载时连数据一起删、多用户共用一份。
 目录 ID 固定，显示名改名不影响历史数据。
 """
 
@@ -173,6 +176,55 @@ def _default_fallback_dir() -> Path:
     return base / APP_STORAGE_ID
 
 
+def program_files_roots() -> list[Path]:
+    """本机 Program Files 类目录（用于识别「装在安装目录」的场景）。
+
+    只认环境变量，不去猜默认路径：读不到就返回空列表，判定一律按「不是」处理，
+    这样测试与非 Windows 环境都不会被误判。
+    """
+    roots: list[Path] = []
+    for name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(name)
+        if not value:
+            continue
+        try:
+            path = Path(value)
+        except (TypeError, ValueError):  # pragma: no cover - 环境变量异常值
+            continue
+        if path not in roots:
+            roots.append(path)
+    return roots
+
+
+def _is_under(directory: Path, root: Path) -> bool:
+    """directory 是否等于 root 或位于 root 之下（Windows 下不区分大小写）。"""
+    try:
+        dir_key = os.path.normcase(os.path.abspath(str(directory)))
+        root_key = os.path.normcase(os.path.abspath(str(root)))
+    except (OSError, ValueError):  # pragma: no cover - 非法路径
+        return False
+    if not root_key:
+        return False
+    return dir_key == root_key or dir_key.startswith(root_key + os.sep)
+
+
+def is_program_files_dir(directory: str | os.PathLike[str]) -> bool:
+    """目录是否落在 Program Files / Program Files (x86) 之下。"""
+    try:
+        candidate = Path(directory)
+    except (TypeError, ValueError):  # pragma: no cover - 非法入参
+        return False
+    return any(_is_under(candidate, root) for root in program_files_roots())
+
+
+def default_storage_dir() -> Path:
+    """默认存储目录：exe 同目录；该目录在 Program Files 下时改用 %LOCALAPPDATA%。"""
+    primary = _default_app_dir()
+    if is_program_files_dir(primary):
+        return _default_fallback_dir()
+    return primary
+
+
 def _try_json(path: Path) -> Any:
     """尽量读出 JSON；读不到返回 None（只用于判断文件格式，不参与校验）。"""
     try:
@@ -207,6 +259,12 @@ class HistoryStore:
 
     def resolve_dir(self) -> Path:
         if self._resolved_dir is not None:
+            return self._resolved_dir
+        # 安装版：exe 装在 Program Files 下时，提权运行会让写探测假性成功，
+        # 历史就会被写进安装目录（卸载时连数据一起删、多用户共用一份）。
+        # 这种情形直接跳过 primary，强制用 %LOCALAPPDATA%。
+        if is_program_files_dir(self.primary_dir):
+            self._resolved_dir = self.fallback_dir
             return self._resolved_dir
         for candidate in (self.primary_dir, self.fallback_dir):
             try:

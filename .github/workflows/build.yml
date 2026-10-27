@@ -1,11 +1,14 @@
 # ---------------------------------------------------------------------------
-# 测试 -> 打包 -> 上传产物（全部在 GitHub 原生 windows-latest runner 上执行）
+# 测试 -> 打包便携 exe -> 打包安装包 -> 上传产物
+#（全部在 GitHub 原生 windows-latest runner 上执行）
 #
 # 关键约定：
-#  * 名称只从 main.py 读取（APP_DISPLAY_NAME / APP_EXE_NAME / APP_ARTIFACT_NAME），
-#    workflow 里没有任何写死的软件名，改名只需要改 main.py 顶部三行。
-#  * build job 通过 needs: test 硬依赖 test job：测试不过就不会打包。
-#  * 不使用 Wine / 交叉编译：runner 本身就是 Windows，PyInstaller 原生出 exe。
+#  * 名称只从 diskflow/config.py 读取（APP_DISPLAY_NAME / APP_EXE_NAME / APP_ARTIFACT_NAME，
+#    main.py 只是再导出），workflow 里没有任何写死的软件名，改名只需改那一处；
+#  * build job 通过 needs: test 硬依赖 test job：测试不过就不会打包；
+#  * 不使用 Wine / 交叉编译：runner 本身就是 Windows，PyInstaller 原生出 exe；
+#  * 安装包用 Inno Setup 编译，名字/版本由 installer/make_build_info.py 从 config 生成，
+#    语言文件 ChineseSimplified.isl 在 CI 里现下，不往仓库塞第三方文本。
 # ---------------------------------------------------------------------------
 name: build
 
@@ -242,11 +245,97 @@ jobs:
             Write-Host 'UAC manifest: requireAdministrator 已嵌入'
           }
 
+      # ---------------------------------------------------------------
+      # 安装包（可选产物）：用 Inno Setup 把 dist\<exe>.exe 装成正式安装程序。
+      # windows-latest（Windows Server 2025）镜像自带 Inno Setup 6，ISCC.exe 零下载；
+      # 万一镜像里没有则退回 choco 安装。
+      #
+      # 名字与版本不写死：installer/make_build_info.py 从 diskflow/config.py 生成
+      # installer/build-info.iss（AppName / AppExeName / AppVersion / MySetupBaseName），
+      # .iss 只引用这些宏。同一个脚本的 --print-setup-name 给出安装包文件名，
+      # 与 .iss 里 OutputBaseFilename 完全同源，避免坐标散落两处。
+      # ---------------------------------------------------------------
+      - name: Resolve installer paths
+        id: setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python installer\make_build_info.py
+          if ($LASTEXITCODE -ne 0) { throw "生成 build-info.iss 失败（退出码 $LASTEXITCODE）" }
+          $base = (python installer\make_build_info.py --print-setup-name).Trim()
+          if (-not $base) { throw '取不到安装包文件名（--print-setup-name 输出为空）' }
+          $setup = "dist/$base.exe"
+          Write-Host "安装包文件名 = $base"
+          "setup_path=$setup" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "setup_base=$base"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Download Simplified Chinese language file
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # ChineseSimplified.isl 只在 jrsoftware/issrc（Inno 自己的仓库）里维护。
+          # 用 Invoke-WebRequest -OutFile 拿原始字节：raw.githubusercontent 对文本会包一层
+          # <html><pre>，按字符串处理会被污染。
+          $dest = 'installer\ChineseSimplified.isl'
+          $url = 'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl'
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 120
+          $bytes = (Get-Item $dest).Length
+          Write-Host "ChineseSimplified.isl = $bytes 字节"
+          if ($bytes -lt 5000) { throw "语言文件过小（$bytes 字节），下载可能不是完整的 .isl" }
+          $head = Get-Content -Path $dest -TotalCount 3 -Encoding utf8
+          $head | ForEach-Object { Write-Host $_ }
+          if (-not (Select-String -Path $dest -Pattern '\[LangOptions\]' -Quiet)) {
+            throw '.isl 里找不到 [LangOptions]，下载到的不是有效的 Inno 语言文件'
+          }
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 找不到 ISCC.exe 时的搜索顺序：先 Program Files (x86)（Inno 默认装这里），
+          # 再 Program Files。用函数包一层，choco 装完可以再找一次。
+          function Find-Iscc {
+            $candidates = @()
+            foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+              if ($base) { $candidates += (Join-Path $base 'Inno Setup 6\ISCC.exe') }
+            }
+            foreach ($path in $candidates) {
+              if (Test-Path $path) { return $path }
+            }
+            return $null
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            Write-Warning '镜像里没有 Inno Setup，改用 choco 安装'
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) { throw '找不到 ISCC.exe（Inno Setup 6 未安装且 choco 安装失败）' }
+          Write-Host "ISCC = $iscc"
+          # .iss 里的名字/版本来自 installer/build-info.iss（上一步刚生成），不传 /D
+          & $iscc 'installer\DiskFlow.iss'
+          if ($LASTEXITCODE -ne 0) { throw "ISCC 退出码 $LASTEXITCODE" }
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = '${{ steps.setup.outputs.setup_path }}'
+          if (-not (Test-Path $setup)) { throw "缺少安装包：$setup" }
+          $size = (Get-Item $setup).Length
+          Write-Host ("{0} = {1:N0} 字节 ({2:N2} MB)" -f $setup, $size, ($size / 1MB))
+          # 安装包 = 便携 exe + 少量安装逻辑，正常应比 exe 略大或相当
+          if ($size -lt 3MB)   { throw "安装包过小（$size 字节）" }
+          if ($size -gt 160MB) { throw "安装包过大（$size 字节）" }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.names.outputs.artifact_name }}
-          path: dist/${{ steps.names.outputs.exe_name }}.exe
+          # 便携 exe + 安装包都放进同一个 artifact，下载一次就齐了
+          path: |
+            dist/${{ steps.names.outputs.exe_name }}.exe
+            ${{ steps.setup.outputs.setup_path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -305,7 +394,10 @@ jobs:
           body_path: ${{ steps.notes.outputs.release_notes_path }}
           # 已有手写更新日志，不再让 GitHub 追加自动生成的 "What's Changed"
           generate_release_notes: false
-          files: dist/${{ steps.names.outputs.exe_name }}.exe
+          # Release 同时挂便携 exe 与安装包；两个文件名都来自单一配置点
+          files: |
+            dist/${{ steps.names.outputs.exe_name }}.exe
+            ${{ steps.setup.outputs.setup_path }}
           fail_on_unmatched_files: true
           draft: false
           prerelease: false

@@ -56,5 +56,31 @@ if errorlevel 1 (
 
 echo.
 echo 构建完成：dist\%APP_EXE_NAME%.exe
-echo 提示：程序以管理员身份启动，history.json 默认写在 exe 同目录。
+echo 提示：程序以管理员身份启动。便携版把 history.json 写在 exe 同目录；
+echo       安装版（装到 Program Files）会强制改存 %%LOCALAPPDATA%%\DiskUsageTracker。
+
+echo.
+rem --- 可选：如果本机装了 Inno Setup，顺手把安装包也编译出来 -------------------
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+
+if defined ISCC (
+  rem 语言文件与宏文件都是构建期产物（已 gitignore），这里现场准备
+  if not exist "installer\ChineseSimplified.isl" (
+    echo 正在下载简体中文语言文件 ...
+    powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl' -OutFile 'installer\ChineseSimplified.isl' -UseBasicParsing"
+  )
+  python installer\make_build_info.py
+  "%ISCC%" installer\DiskFlow.iss
+  if errorlevel 1 (
+    echo [错误] Inno Setup 编译失败。
+    exit /b 1
+  )
+  for /f "usebackq delims=" %%i in (`python installer\make_build_info.py --print-setup-name`) do set "SETUP_NAME=%%i"
+  echo 安装包完成：dist\!SETUP_NAME!.exe
+) else (
+  echo 未找到 Inno Setup 6，跳过安装包。
+  echo   想要安装包：winget install JRSoftware.InnoSetup，然后重跑本脚本。
+)
 endlocal

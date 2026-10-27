@@ -116,6 +116,7 @@ from diskflow.history import (  # noqa: F401
     _history_schema_version, _reading_day,
     trim_readings, history_payload, count_history_readings, HistoryLoadResult,
     _default_app_dir, _default_fallback_dir, _try_json, HistoryStore,
+    program_files_roots, is_program_files_dir, default_storage_dir,
     _flatten_v1_records, _flatten_v2_disks, validate_history, records_from_snapshots,
     latest_timestamp,
 )
@@ -199,6 +200,7 @@ __all__ = [
     "SCHEMA_VERSION_LEGACY", "REQUIRED_RECORD_FIELDS", "HISTORY_TRIM_HOURS",
     "HISTORY_BACKUP_PREFIX", "HISTORY_RESET_PREFIX", "trim_readings", "history_payload",
     "count_history_readings", "HistoryLoadResult", "HistoryStore", "validate_history",
+    "program_files_roots", "is_program_files_dir", "default_storage_dir",
     "records_from_snapshots", "latest_timestamp", "RunOutcome", "perform_run",
     "rebuild_rows", "LANG_ZH", "LANG_EN", "LANG_ORDER", "DEFAULT_LANG", "LANG_LABELS",
     "normalize_lang", "current_language", "set_language", "is_english", "tr",

@@ -103,7 +103,8 @@ def about_text(history_path: Any = None) -> str:
         "健康度：只显示硬盘自报的剩余寿命（NVMe 100 − 已用百分比；\n"
         "        SATA 依次取 231/202/177/233/169 属性），没有该字段显示「不适用」，不做推算。\n"
         "历史文件：{path}\n"
-        "历史目录 ID：{storage}（显示名改名不影响历史数据）\n"
+        "历史目录 ID：{storage}（显示名改名不影响历史数据；安装到 Program Files 时\n"
+        "           history.json 与 settings.json 都改存 %LOCALAPPDATA%\\{storage}）\n"
         "\n"
         "本程序为单窗口工具，关闭即退出，不驻留后台、不写系统服务、不设置开机自启。\n"
         "磁盘读取通常需要管理员权限，未提权时部分磁盘可能读取失败。",
