@@ -107,8 +107,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
 ; 中文其余文案由 ChineseSimplified.isl 提供，这里只补本程序专有的几条
-chinesesimplified.LaunchApp=启动 {#MyAppName}
-english.LaunchApp=Launch {#MyAppName}
+chinesesimplified.LaunchApp=启动 {#MyAppExeName}
+english.LaunchApp=Launch {#MyAppExeName}
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -120,12 +120,15 @@ Source: "..\dist\{#MyAppExeName}.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\diskflow-icons\diskflow.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}.exe"
-Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}.exe"; Tasks: desktopicon
+; 快捷方式一律用英文 exe 名（DiskFlow），中文显示名只用在开始菜单分组与卸载列表
+Name: "{group}\{#MyAppExeName}"; Filename: "{app}\{#MyAppExeName}.exe"
+Name: "{group}\{cm:UninstallProgram,{#MyAppExeName}}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppExeName}"; Filename: "{app}\{#MyAppExeName}.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
+; 必须带 shellexec：目标 exe 的清单要求 requireAdministrator，用 CreateProcess 直接起
+; 会失败在错误代码 740（请求的操作需要提升）。ShellExecuteEx 会走 UAC、由系统提权启动。
+Filename: "{app}\{#MyAppExeName}.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallDelete]
 ; 正常情况这两个文件不会出现在安装目录（程序已强制写 %LOCALAPPDATA%）。
