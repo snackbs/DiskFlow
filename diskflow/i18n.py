@@ -84,6 +84,11 @@ _EN: dict[str, str] = {
     "如何安装数据源(S)": "How to Install the Data Source(S)",
     "容量与换算说明(C)": "Capacity and Units(C)",
     "关于(A)": "About(A)",
+    # ---- 工具菜单里的系统工具快捷入口 ----
+    "打开磁盘管理(M)": "Open Disk Management(M)",
+    "打开设备管理器(V)": "Open Device Manager(V)",
+    "磁盘管理": "Disk Management",
+    "设备管理器": "Device Manager",
     # ---- 工具 → 排序子菜单 ----
     "按磁盘型号": "By disk model",
     "按累计读取": "By total read",
@@ -193,6 +198,7 @@ _EN: dict[str, str] = {
         "Selected {count} rows. Press Ctrl+C to copy.",
     "已复制：{value}": "Copied: {value}",
     "已复制诊断信息到剪贴板。": "Diagnostics copied to the clipboard.",
+    "已打开 {name}。": "Opened {name}.",
     # ---- 操作失败（红色行）----
     "请先用右键点一下要复制的单元格。": "Right-click a cell first.",
     "复制到剪贴板失败：{error}": "Clipboard copy failed: {error}",
@@ -201,6 +207,7 @@ _EN: dict[str, str] = {
     "打开右键菜单失败：{error}": "Could not open the context menu: {error}",
     "打开数据目录失败：{error}": "Could not open the data folder: {error}",
     "打开历史文件失败：{error}": "Could not open the history file: {error}",
+    "打开工具失败：{error}": "Could not open the tool: {error}",
     "重置历史文件失败：{error}": "Could not reset the history file: {error}",
     "复制诊断信息失败：{error}": "Could not copy diagnostics: {error}",
     # ---- 提示（黄色行）----

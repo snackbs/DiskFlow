@@ -42,7 +42,12 @@ from .i18n import (
 )
 from .models import DiskRow
 from .orchestrate import RunOutcome, perform_run, rebuild_rows
-from .platformhelp import is_admin
+from .platformhelp import (
+    MSC_DEVICE_MANAGER,
+    MSC_DISK_MANAGEMENT,
+    is_admin,
+    open_management_console,
+)
 from .prefs import DEFAULT_SETTINGS, SettingsStore
 from .providers import SmartctlProvider
 from .timefmt import format_stamp
@@ -392,6 +397,14 @@ BASE_FONT = ("Microsoft YaHei UI", 9)
 SMARTCTL_INSTALL_HINT = ("未找到 smartctl.exe，请执行："
                          "winget install smartmontools.smartmontools")
 
+# 「工具」菜单里的系统工具快捷入口：(要打开的 .msc, 名词, 菜单项文案)。
+# 这两项点下去只是叫 Windows 自己开一个自带工具，不读它的输出、不进表格也不写历史，
+# 所以只是两条普通菜单命令；名词单独留着，成功提示里拼成「已打开 磁盘管理。」。
+TOOL_SHORTCUTS: tuple[tuple[str, str, str], ...] = (
+    (MSC_DISK_MANAGEMENT, "磁盘管理", "打开磁盘管理(M)"),
+    (MSC_DEVICE_MANAGER, "设备管理器", "打开设备管理器(V)"),
+)
+
 KPI_SPECS: tuple[tuple[str, str], ...] = (
     ("read_delta", "本次总读增"),
     ("write_delta", "本次总写增"),
@@ -664,6 +677,14 @@ class DiskTrackerApp:
                                command=self.copy_selection)
         tools_menu.add_command(label=tr("复制表格到剪贴板(T)"), command=self.copy_table)
         tools_menu.add_command(label=tr("打开数据目录(D)"), command=self.open_data_dir)
+        tools_menu.add_separator()
+        # 系统自带管理工具的快捷入口：只是启动 diskmgmt.msc / devmgmt.msc，
+        # 不读它们的输出、不进表格、不写历史，所以没有自己的状态，
+        # 成功/失败只在顶部那行操作反馈里说一句。
+        for filename, caption, menu_text in TOOL_SHORTCUTS:
+            tools_menu.add_command(
+                label=tr(menu_text),
+                command=lambda f=filename, c=caption: self._open_tool(f, c))
         tools_menu.add_separator()
         # 卡片视图没有表头，排序必须也能从菜单触发
         sort_menu = tk.Menu(tools_menu, tearoff=False)
@@ -1939,6 +1960,20 @@ class DiskTrackerApp:
                 webbrowser.open(directory.as_uri())
         except Exception as exc:
             self._set_error(tr("打开数据目录失败：{error}", error=exc))
+
+    def _open_tool(self, filename: str, caption: str) -> None:
+        """打开一个 Windows 自带管理工具（磁盘管理 / 设备管理器）。
+
+        失败不弹窗、也不假装成功：直接走红色操作行，把系统原话带上
+        （最常见的是「没有提权」，用户看到原话自己就知道该右键以管理员运行）。
+        绿色的「已打开」只在这一步真的没抛异常时才写。
+        """
+        try:
+            open_management_console(filename)
+        except Exception as exc:  # noqa: BLE001 - 打不开就是打不开，原样报给用户
+            self._set_error(tr("打开工具失败：{error}", error=exc))
+            return
+        self._set_action(tr("已打开 {name}。", name=tr(caption)))
 
     def diagnostics_text(self) -> str:
         """诊断信息：出问题时让用户能一键复制出来。"""
