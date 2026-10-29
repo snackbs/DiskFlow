@@ -940,13 +940,19 @@ class DiskTrackerApp:
         self.alert_label = ttk.Label(bottom, text="", style="Alert.TLabel", anchor="w")
         self.alert_label.pack(side="left", padx=(12, 0))
 
-        self.refresh_button = ttk.Button(bottom, text=tr("刷新记录"), command=self.refresh_async)
+        # width=0：按文字自身宽度排，不走 ttk 的 width=-11（按字符数算最小宽，
+        # 那会把两个字的「关于」和四个字的「刷新记录」拉成一样宽）。
+        self.refresh_button = ttk.Button(bottom, text=tr("刷新记录"), style="Primary.TButton",
+                                         width=0, command=self.refresh_async)
         self.refresh_button.pack(side="right")
         # 「打开历史文件」只在菜单「文件 → 打开历史文件(O)」里留一个入口，
         # 底部条不再重复放按钮：同一动作两个落点只会让用户想「到底哪个不一样」。
-        # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死
-        self.about_button = ttk.Button(bottom, text=tr("关于"), command=self.show_about)
-        self.about_button.pack(side="right", padx=(0, 8))
+        # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死。
+        # 它用 Quiet.TButton：有边框、无填充，和主按钮同高但不同分量——
+        # 低频次操作不该和主操作抢同样的视觉重量，也不该看起来像一段纯文字。
+        self.about_button = ttk.Button(bottom, text=tr("关于"), style="Quiet.TButton",
+                                       width=0, command=self.show_about)
+        self.about_button.pack(side="right", padx=(0, 6))
 
         # 底部条与注释行已占位，数据区吃剩下的高度
         self.body.pack(fill="both", expand=True)
@@ -1100,6 +1106,48 @@ class DiskTrackerApp:
         style.configure("Alert.TLabel", background=theme["win_bg"],
                         foreground=theme["alert_fg"], font=(family, size, "bold"))
 
+        # 底部条两个按钮：一个是主操作（刷新记录），一个是低频次操作（关于）。
+        # 之前两个都是 clam 的默认 TButton——同一块灰底、同一套系统配色，切到深色主题
+        # 也还是浅灰，还会因为 clam 的 width=-11（按字符数算最小宽）被拉成一样宽。
+        # 这里只取主题表里已有的键：强调色用 seg_*（本来就是给「选中/主操作」用的），
+        # 底色文字用 win_bg / tree_fg / muted_fg，不新造主题键（否则五套主题都得补）。
+        accent_bg = theme["seg_sel_bg"]
+        # vista / winnative / xpnative 这几个原生主题由系统画 TButton，background 之类
+        # 的配置会被忽略（实测 Primary.TButton 在 vista 下只剩一个空框，文字都不画）。
+        # 原生主题的意义就是「跟系统一致」，所以在这几套主题下直接退回默认 TButton。
+        native_base = base in ("vista", "winnative", "xpnative")
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.configure(style="TButton" if native_base else "Primary.TButton")
+        if hasattr(self, "about_button"):
+            self.about_button.configure(style="TButton" if native_base else "Quiet.TButton")
+        style.configure("Primary.TButton", background=accent_bg,
+                        foreground=theme["seg_sel_fg"], borderwidth=0, relief="flat",
+                        padding=(14, 5), font=(family, size, "bold"),
+                        bordercolor=accent_bg, lightcolor=accent_bg,
+                        darkcolor=accent_bg, focuscolor=accent_bg)
+        style.map("Primary.TButton",
+                  background=[("disabled", theme["seg_border"]),
+                              ("pressed", theme["seg_hover_bg"]),
+                              ("active", theme["seg_hover_bg"])],
+                  foreground=[("disabled", theme["muted_fg"]),
+                              ("pressed", theme["seg_hover_fg"]),
+                              ("active", theme["seg_hover_fg"])])
+        # 次级按钮：描边 + 透明填充。clam 的 TButton 画的是 border 元素，
+        # borderwidth/bordercolor/lightcolor/darkcolor 四个一起设才有一条颜色可控的细边
+        # （只设 bordercolor 时上下会留 lightcolor/darkcolor 的立体高光）。
+        style.configure("Quiet.TButton", background=theme["win_bg"],
+                        foreground=theme["tree_fg"], borderwidth=1, relief="solid",
+                        padding=(10, 4), font=(family, size),
+                        bordercolor=theme["seg_border"], lightcolor=theme["seg_border"],
+                        darkcolor=theme["seg_border"], focuscolor=theme["seg_border"])
+        style.map("Quiet.TButton",
+                  background=[("disabled", theme["win_bg"]),
+                              ("pressed", theme["seg_hover_bg"]),
+                              ("active", theme["seg_hover_bg"])],
+                  foreground=[("disabled", theme["muted_fg"]),
+                              ("pressed", theme["seg_hover_fg"]),
+                              ("active", theme["seg_hover_fg"])])
+
         border = 1 if theme["card_border"] else 0
         style.configure("Card.TFrame", background=theme["card_bg"], borderwidth=border,
                         relief="solid" if border else "flat",
@@ -1235,7 +1283,7 @@ class DiskTrackerApp:
             self.tree.heading(key, text=tr(title))
         for key, holder in getattr(self, "_kpi_labels", {}).items():
             holder.configure(text=tr(dict(KPI_SPECS)[key]))
-        self.refresh_button.configure(text=tr("刷新记录"))
+        self._sync_refresh_button()
         self.about_button.configure(text=tr("关于"))
         self.title_label.configure(text=window_title())
         self._refresh_admin_label()
@@ -1716,11 +1764,21 @@ class DiskTrackerApp:
         return "\n".join(lines)
 
     # ---------- 数据刷新 ----------
+    def _sync_refresh_button(self) -> None:
+        """刷新按钮的文字跟着忙碌态走。
+
+        调用方负责 state（禁用/恢复），这里只管文字：读取时写「读取中…」，
+        完成后回到「刷新记录」。切语言时也要走一遍，否则英文界面会卡在
+        上一次留下的中文「读取中…」（set_language 只 configure 文字）。
+        """
+        self.refresh_button.configure(text=tr("读取中…") if self._busy else tr("刷新记录"))
+
     def refresh_async(self) -> None:
         if self._busy:
             return
         self._busy = True
         self.refresh_button.configure(state="disabled")
+        self._sync_refresh_button()
         # 刷新是把整张表换掉，旧的「已复制 / 已选中 / 请先用右键」说的是刷新前那份数据，
         # 留着只会误导，所以绿红两条一起清掉；黄色系统提示（未提权、缺 smartctl）不清。
         self._clear_action()
@@ -1752,6 +1810,7 @@ class DiskTrackerApp:
         item = self.status_queue.pop()
         self._busy = False
         self.refresh_button.configure(state="normal")
+        self._sync_refresh_button()
         if isinstance(item, Exception):
             self.source_text = tr("读取异常")
             self.smartctl_label.configure(text=self._source_label_text())

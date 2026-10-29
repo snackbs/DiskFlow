@@ -1368,6 +1368,89 @@ def test_gui_about_button_shows_version(tk_root, tmp_path, monkeypatch):
     window.root.destroy()
 
 
+
+def test_gui_bottom_buttons_use_theme_styles(tk_root, tmp_path):
+    """底部两个按钮：主操作走强调色，关于走描边次级样式，两套都跟主题走。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    tk_root.update_idletasks()
+    style = window.ttk.Style(window.root)
+    ledger = app.THEMES[app.THEME_LEDGER]
+    try:
+        # 1) 普通主题（clam 系列）：主按钮吃强调色，次级按钮吃描边色
+        assert window.refresh_button.cget("style") == "Primary.TButton"
+        assert window.about_button.cget("style") == "Quiet.TButton"
+        assert style.lookup("Primary.TButton", "background") == ledger["seg_sel_bg"]
+        assert style.lookup("Primary.TButton", "foreground") == ledger["seg_sel_fg"]
+        assert style.lookup("Quiet.TButton", "foreground") == ledger["tree_fg"]
+        assert int(float(style.lookup("Quiet.TButton", "borderwidth"))) == 1
+
+        # 2) 换主题后样式颜色跟着换（不新建控件，只重配 style）
+        window.apply_theme(app.THEME_DARK)
+        tk_root.update_idletasks()
+        dark = app.THEMES[app.THEME_DARK]
+        assert style.lookup("Primary.TButton", "background") == dark["seg_sel_bg"]
+        assert style.lookup("Quiet.TButton", "foreground") == dark["tree_fg"]
+        assert window.refresh_button is not None
+
+        # 3) 原生主题由系统画按钮，自定义 background 会被忽略（实测只剩空框），
+        #    所以退回默认 TButton，保证「原生默认」真的是原生外观。
+        window.apply_theme(app.THEME_NATIVE)
+        tk_root.update_idletasks()
+        assert window.refresh_button.cget("style") == "TButton"
+        assert window.about_button.cget("style") == "TButton"
+
+        # 再切回 clam 系列要恢复自定义样式
+        window.apply_theme(app.THEME_LEDGER)
+        tk_root.update_idletasks()
+        assert window.refresh_button.cget("style") == "Primary.TButton"
+        assert window.about_button.cget("style") == "Quiet.TButton"
+    finally:
+        window.root.destroy()
+
+
+def test_gui_bottom_buttons_size_by_text(tk_root, tmp_path):
+    """width=0 生效：两个按钮宽度按文字算，不再被 ttk 的 width=-11 拉成一样宽。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    tk_root.update_idletasks()
+    try:
+        refresh_width = window.refresh_button.winfo_reqwidth()
+        about_width = window.about_button.winfo_reqwidth()
+        assert refresh_width > about_width, \
+            f"刷新记录({refresh_width}) 应比 关于({about_width}) 宽"
+        # 也不能窄到放不下文字（两个字的「关于」至少 40px）
+        assert about_width >= 40
+    finally:
+        window.root.destroy()
+
+
+def test_gui_refresh_button_text_follows_busy_state(tk_root, tmp_path):
+    """忙碌态按钮文字变「读取中…」，结束后回到「刷新记录」；切语言也不卡住。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+    try:
+        assert window.refresh_button.cget("text") == "刷新记录"
+        window._busy = True
+        window._sync_refresh_button()
+        assert window.refresh_button.cget("text") == "读取中…"
+        # 忙碌中切到英文：不能留着一个中文「读取中…」
+        window.set_language(app.LANG_EN, persist=False)
+        tk_root.update_idletasks()
+        assert window.refresh_button.cget("text") == "Reading…"
+        # 读完恢复：文字随之回到当前语言的「刷新」
+        window._busy = False
+        window._sync_refresh_button()
+        assert window.refresh_button.cget("text") == "Refresh"
+    finally:
+        window.set_language(app.LANG_ZH, persist=False)
+        window.root.destroy()
+
+
 def test_gui_sorting_does_not_crash(tk_root, tmp_path):
     store = _gui_store(tmp_path)
     window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
