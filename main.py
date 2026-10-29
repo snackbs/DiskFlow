@@ -132,7 +132,8 @@ from diskflow.i18n import (  # noqa: F401
 )
 
 from diskflow.platformhelp import (  # noqa: F401
-    is_admin,
+    MSC_DEVICE_MANAGER, MSC_DISK_MANAGEMENT, MSC_FILENAMES,
+    is_admin, open_management_console, system32_msc_path,
 )
 
 from diskflow.theme import (  # noqa: F401
@@ -156,7 +157,7 @@ from diskflow.gui import (  # noqa: F401
     _SCROLLBAR_BASE, _LABEL_BASE, SCROLL_GUTTER, CARD_RESIZE_DELAY_MS, CARD_GAP,
     SlimScrollbar, SegButton, SORT_MENU_ITEMS, COLUMN_SPECS, TABLE_NATURAL_WIDTH,
     ROW_ALERT_TAG, ROW_MUTED_TAG, ROW_ZEBRA_TAG, ALERT_COLOR, MUTED_COLOR, BASE_FONT,
-    SMARTCTL_INSTALL_HINT, KPI_SPECS, fmt_delta_compact, _default_geometry,
+    SMARTCTL_INSTALL_HINT, KPI_SPECS, TOOL_SHORTCUTS, fmt_delta_compact, _default_geometry,
     STATUS_TEXT_LIMIT, _truncate, PAIR_SEPARATOR, TSV_PAIR_SEPARATOR, _pair,
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
     SERIAL_MASK_CHARS, SERIAL_MASK_VISIBLE_PREFIX, SERIAL_EMPTY_TEXT,
@@ -205,7 +206,9 @@ __all__ = [
     "rebuild_rows", "LANG_ZH", "LANG_EN", "LANG_ORDER", "DEFAULT_LANG", "LANG_LABELS",
     "normalize_lang", "current_language", "set_language", "is_english", "tr",
     "tr_message", "has_translation", "untranslated", "ERROR_PREFIX", "ERROR_PREFIX_EN",
-    "is_admin", "THEME_SYSTEM", "THEME_LEDGER", "THEME_DARK", "THEME_GAUGE",
+    "is_admin", "MSC_DISK_MANAGEMENT", "MSC_DEVICE_MANAGER", "MSC_FILENAMES",
+    "open_management_console", "system32_msc_path", "TOOL_SHORTCUTS",
+    "THEME_SYSTEM", "THEME_LEDGER", "THEME_DARK", "THEME_GAUGE",
     "THEME_MINIMAL", "THEME_NATIVE", "THEME_ORDER", "THEME_LABELS", "THEME_SYSTEM_LIGHT",
     "THEME_SYSTEM_DARK", "REG_PERSONALIZE", "REG_LIGHT_VALUE", "THEMES",
     "detect_system_dark_mode", "normalize_theme_key", "system_theme_name",

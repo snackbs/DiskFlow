@@ -1430,6 +1430,140 @@ def test_gui_title_bar_and_header_show_version(tk_root, tmp_path):
     window.root.destroy()
 
 
+def _tools_menu_labels(window) -> list[str]:
+    """「工具」菜单里所有 command 项的标签（去掉快捷键后缀，按菜单顺序）。"""
+    menu = window.tools_menu
+    labels: list[str] = []
+    for index in range(menu.index("end") + 1):
+        if menu.type(index) != "command":
+            continue
+        labels.append(menu.entrycget(index, "label").split("\t")[0])
+    return labels
+
+
+def _invoke_tools_menu(window, label: str) -> None:
+    """按标签点「工具」菜单里的一项（菜单命令没有控件对象，只能走 Menu.invoke）。"""
+    menu = window.tools_menu
+    for index in range(menu.index("end") + 1):
+        if menu.type(index) != "command":
+            continue
+        if menu.entrycget(index, "label").split("\t")[0] == label:
+            menu.invoke(index)
+            return
+    raise AssertionError(f"「工具」菜单里没有 {label}，实际是 {_tools_menu_labels(window)}")
+
+
+def test_gui_tools_menu_has_management_console_entries(tk_root, tmp_path):
+    """「工具」菜单要有「打开磁盘管理」「打开设备管理器」，紧跟「打开数据目录」之后。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                               store=store, autostart=False,
+                               settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+    labels = _tools_menu_labels(window)
+    data_index = labels.index("打开数据目录(D)")
+    assert labels[data_index + 1:data_index + 3] == [
+        "打开磁盘管理(M)", "打开设备管理器(V)"]
+    # 一级菜单仍是六个，新功能挂在既有菜单下面，标题栏不再放这两个按钮
+    assert [window.menubar.entrycget(i, "label") for i in range(6)] == [
+        "文件(F)", "主题(T)", "工具(U)", "硬盘(D)", "帮助(H)", "语言(L)"]
+    assert not hasattr(window, "tool_buttons")
+    assert list(window.seg_buttons) == list(app.VIEW_ORDER)
+    window.root.destroy()
+
+
+def test_gui_tool_shortcut_invokes_platform_helper(tk_root, tmp_path, monkeypatch):
+    """点一下只调 platformhelp 的打开函数，成功时给绿色反馈（GUI 里不许出现 subprocess）。"""
+    calls: list[str] = []
+    monkeypatch.setattr(app.gui, "open_management_console",
+                        lambda filename: calls.append(filename) or filename)
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                               store=store, autostart=False,
+                               settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+    _invoke_tools_menu(window, "打开磁盘管理(M)")
+    assert calls == [app.MSC_DISK_MANAGEMENT]
+    assert window.action_parts == ["已打开 磁盘管理。"]
+    assert window.error_parts == []
+    _invoke_tools_menu(window, "打开设备管理器(V)")
+    assert calls == [app.MSC_DISK_MANAGEMENT, app.MSC_DEVICE_MANAGER]
+    assert window.action_parts == ["已打开 设备管理器。"]
+    window.root.destroy()
+
+
+def test_gui_tool_shortcut_reports_failure_in_red(tk_root, tmp_path, monkeypatch):
+    """打不开（最常见是没提权）时走红色操作行，把系统原话带上，不当成功。"""
+    def boom(_filename: str) -> str:
+        raise OSError("拒绝访问。")
+
+    monkeypatch.setattr(app.gui, "open_management_console", boom)
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                               store=store, autostart=False,
+                               settings=app.SettingsStore(tmp_path))
+    tk_root.update_idletasks()
+    _invoke_tools_menu(window, "打开磁盘管理(M)")
+    assert window.error_parts == ["打开工具失败：拒绝访问。"]
+    assert window.action_parts == []
+    window.root.destroy()
+
+
+def test_gui_tool_shortcuts_follow_language(tk_root, tmp_path):
+    """切英文后这两项的菜单文案要跟着换（不能露中文）。"""
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                               store=store, autostart=False,
+                               settings=app.SettingsStore(tmp_path))
+    try:
+        tk_root.update_idletasks()
+        assert "打开磁盘管理(M)" in _tools_menu_labels(window)
+        assert "打开设备管理器(V)" in _tools_menu_labels(window)
+        window.set_language(app.LANG_EN, persist=False)
+        labels = _tools_menu_labels(window)
+        assert "Open Disk Management(M)" in labels
+        assert "Open Device Manager(V)" in labels
+        assert "打开磁盘管理(M)" not in labels
+        window.set_language(app.LANG_ZH, persist=False)
+        assert "打开磁盘管理(M)" in _tools_menu_labels(window)
+    finally:
+        window.set_language(app.LANG_ZH, persist=False)
+        window.root.destroy()
+
+
+def test_tool_shortcut_texts_are_translated():
+    """新增的中文文案必须已收录英文，否则英文界面会露中文。"""
+    for text in ("打开磁盘管理(M)", "打开设备管理器(V)", "磁盘管理", "设备管理器",
+                 "已打开 {name}。", "打开工具失败：{error}"):
+        assert app.has_translation(text), text
+
+
+def test_open_management_console_launches_system32_msc(tmp_path, monkeypatch):
+    """优先打开 System32 下的绝对路径；非 Windows 直接抛错，不静默。"""
+    target = tmp_path / "diskmgmt.msc"
+    target.write_text("fake", encoding="utf-8")
+    opened: list[str] = []
+    monkeypatch.setattr(app.platformhelp.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(app.platformhelp, "system32_msc_path", lambda name: target)
+    monkeypatch.setattr(app.platformhelp.os, "startfile",
+                        lambda path: opened.append(path), raising=False)
+    assert app.open_management_console(app.MSC_DISK_MANAGEMENT) == str(target)
+    assert opened == [str(target)]
+
+    monkeypatch.setattr(app.platformhelp.platform, "system", lambda: "Linux")
+    with pytest.raises(OSError):
+        app.open_management_console(app.MSC_DISK_MANAGEMENT)
+    assert opened == [str(target)]
+
+
+def test_system32_msc_path_uses_system_root(monkeypatch):
+    """路径拼在 SystemRoot 的 System32 下，不依赖当前工作目录。"""
+    monkeypatch.setenv("SystemRoot", r"D:\WinRoot")
+    path = app.system32_msc_path(app.MSC_DEVICE_MANAGER)
+    assert path.name == "devmgmt.msc"
+    assert str(path).replace("/", "\\").endswith(r"System32\devmgmt.msc")
+
+
 def test_app_version_is_configured_and_has_single_source():
     """版本号必须有唯一来源 APP_VERSION，且是点分数字（发版 tag 用它对齐）。"""
     assert re.fullmatch(r"\d+\.\d+\.\d+", app.APP_VERSION), app.APP_VERSION
