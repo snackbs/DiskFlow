@@ -424,6 +424,18 @@ _EN: dict[str, str] = {
     "未以管理员运行": "not elevated",
     "显示": "shown",
     "已隐藏": "hidden",
+    # ---- 第 7 套「图片背景」主题 ----
+    "图片背景": "Photo Background",
+    "选择背景图…": "Choose Background Image…",
+    "清除背景图": "Clear Background Image",
+    "背景图透明度(A)": "Background Opacity(A)",
+    "不透明度 {value}%": "Opacity {value}%",
+    "背景图已载入：{name}": "Background loaded: {name}",
+    "背景图读不出来，已退回纯色面板：{error}": "Could not read the background image; "
+                                               "using a solid panel instead: {error}",
+    "背景图已清除": "Background cleared",
+    "图片文件": "Image files",
+    "打开文件对话框失败：{error}": "Could not open the file dialog: {error}",
 }
 
 

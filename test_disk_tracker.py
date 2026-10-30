@@ -1824,12 +1824,13 @@ REQUIRED_THEME_KEYS = (
 
 
 def test_theme_table_covers_every_theme_with_same_keys():
-    """五套主题 + 「跟随系统」都必须在表里，且键集合一致（apply_theme 不会 KeyError）。"""
+    """六套主题 + 「跟随系统」都必须在表里，且键集合一致（apply_theme 不会 KeyError）。"""
     assert set(app.THEME_ORDER) == {
         app.THEME_SYSTEM, app.THEME_LEDGER, app.THEME_DARK,
         app.THEME_GAUGE, app.THEME_MINIMAL, app.THEME_NATIVE,
+        app.THEME_PHOTO,
     }
-    assert len(app.THEME_ORDER) == 6
+    assert len(app.THEME_ORDER) == 7
     for key in app.THEME_ORDER:
         assert key in app.THEME_LABELS, key
     assert set(app.THEMES) == set(app.THEME_ORDER) - {app.THEME_SYSTEM}
@@ -4279,3 +4280,364 @@ def test_installer_launch_step_uses_shellexec():
     entry = lines[0]
     assert "postinstall" in entry
     assert "shellexec" in entry.split("Flags:", 1)[1], "Flags 里必须有 shellexec"
+
+
+# ---------------------------------------------------------------------------
+# 11. 第 7 套「图片背景」主题：底座分流、壁纸层、不透明度、菜单入口
+# ---------------------------------------------------------------------------
+
+
+def test_theme_surface_sends_only_photo_to_the_canvas_table():
+    """只有图片背景主题走自绘表格；其余六套必须继续用原生 Treeview。"""
+    assert app.theme_surface(app.THEME_PHOTO) == app.SURFACE_CANVAS
+    for key in app.THEME_ORDER:
+        if key == app.THEME_PHOTO:
+            continue
+        assert app.theme_surface(key) == app.SURFACE_TABLE, key
+    # 非法主题名归一成系统主题，底座仍是 Treeview（不能让一次手改配置把表格换掉）
+    assert app.theme_surface("bogus") == app.SURFACE_TABLE
+
+
+def test_normalize_alpha_clamps_and_rejects_junk():
+    """settings.json 是用户可手改的，任何怪值都必须收敛成 0~100 的整数。"""
+    assert app.normalize_alpha(app.DEFAULT_ALPHA_LEVEL) == app.DEFAULT_ALPHA_LEVEL
+    assert app.normalize_alpha(0) == 0
+    assert app.normalize_alpha(100) == 100
+    assert app.normalize_alpha(120) == 100
+    assert app.normalize_alpha(-5) == 0
+    assert app.normalize_alpha(66.6) == 67
+    assert app.normalize_alpha(None) == app.DEFAULT_ALPHA_LEVEL
+    assert app.normalize_alpha("80%") == app.DEFAULT_ALPHA_LEVEL
+    # bool 是 int 的子类，但 True 不该被当成 1% —— 显式排除
+    assert app.normalize_alpha(True) == app.DEFAULT_ALPHA_LEVEL
+
+
+def test_alpha_pair_restores_the_calibrated_layers():
+    """默认档必须精确还原实测那组 55% / 65%，其余档位按同一比例缩放。"""
+    conv, panel = app.alpha_pair(app.DEFAULT_ALPHA_LEVEL)
+    assert panel == pytest.approx(app.DEFAULT_ALPHA_LEVEL / 100)
+    assert conv == pytest.approx(app.CONVERSATION_ALPHA)
+    assert app.alpha_pair(0) == (0.0, 0.0)
+    # 100% 只表示"控件层完全不透"，对话层仍按固定比例跟随
+    assert app.alpha_pair(100)[1] == 1.0
+    assert app.alpha_pair(100)[0] == pytest.approx(app.CONVERSATION_ALPHA / app.CONTROL_ALPHA)
+    half = app.alpha_pair(50)
+    assert 0.0 < half[0] < half[1] < 1.0
+
+
+def test_hex_rgb_parses_theme_colors():
+    assert app.hex_rgb("#FFE0DD") == (255, 224, 221)
+    assert app.hex_rgb("EEF2F8") == (238, 242, 248)
+    assert app.hex_rgb("#EEF2F8") == app.CONVERSATION_RGB
+    assert app.hex_rgb("#EBF") == (238, 187, 255)
+    assert app.hex_rgb("nope") == (247, 249, 252)
+    assert app.hex_rgb(None) == (247, 249, 252)
+
+
+def test_merge_layers_combines_two_translucent_coats():
+    """两层半透明合并成一层：不透明度按 1-(1-a1)(1-a2)，颜色按预乘 alpha 加权。"""
+    color, alpha = app.merge_layers((0, 0, 0), 0.5, (255, 255, 255), 0.5)
+    assert alpha == pytest.approx(0.75)
+    assert color == (170, 170, 170)
+    _color, merged = app.merge_layers(app.CONVERSATION_RGB, app.CONVERSATION_ALPHA,
+                                      app.CONTROL_RGB, app.CONTROL_ALPHA)
+    assert merged == pytest.approx(0.8425)
+    # 全透明叠加不产生新的不透明层
+    assert app.merge_layers((10, 20, 30), 0.0, (40, 50, 60), 0.0) == ((0, 0, 0), 0.0)
+
+
+def test_cover_geometry_fills_the_target_without_letterboxing():
+    # 源 16x12 铺满 8x6：正好等比缩小一半，没有裁切
+    assert app.cover_geometry(16, 12, 8, 6) == (8, 6, 0, 0)
+    # 宽屏源放进方形框：按高度放大，左右各裁 150
+    assert app.cover_geometry(400, 100, 100, 100) == (400, 100, 150, 0)
+    # 目标比源大也要放大，绝不留下空白边
+    dw, dh, _ox, _oy = app.cover_geometry(10, 10, 40, 20)
+    assert dw >= 40 and dh >= 20
+    # 非法尺寸不除零
+    assert app.cover_geometry(0, 0, 30, 20) == (30, 20, 0, 0)
+
+
+def test_compose_png_fallback_is_a_solid_ppm():
+    """壁纸不可用时的纯色兜底：格式必须是 Tk PhotoImage 认得的 P6。"""
+    data = app.compose_png_fallback(4, 3, (10, 20, 30))
+    assert data.startswith(b"P6\n4 3\n255\n")
+    body = data.split(b"255\n", 1)[1]
+    assert len(body) == 4 * 3 * 3
+    assert body == bytes((10, 20, 30)) * 12
+
+
+def test_compose_ppm_blends_the_fixture_wallpaper():
+    """真跑一次壁纸合成（CI 的 windows-latest 有 gdiplus.dll）。"""
+    if not app.gdiplus_available():
+        pytest.skip("当前环境没有 GDI+（gdiplus.dll 不可用），跳过真实壁纸合成测试")
+    ppm = app.compose_ppm(str(FIXTURES / "wallpaper_sample.png"), 8, 6, [(0, 0, 4, 6)])
+    assert ppm is not None
+    assert ppm.startswith(b"P6\n8 6\n255\n")
+    body = ppm.split(b"255\n", 1)[1]
+    assert len(body) == 8 * 6 * 3
+    # 面板区(左半)叠了两层混色，左侧第一像素与右侧(只叠对话层)必须不同
+    left = body[0:3]
+    right = body[(4 * 3):(4 * 3) + 3]
+    assert left != right
+    # 面板区等效不透明度更高 -> 更靠近控件层色 (250,251,253)，整体更亮
+    assert sum(left) >= sum(right)
+
+
+def test_compose_ppm_returns_none_for_unreadable_wallpaper(tmp_path):
+    """图被删/路径失效只能退化成纯色，不能抛异常。"""
+    missing = tmp_path / "nope.png"
+    assert app.compose_ppm(str(missing), 8, 6, []) is None
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not an image")
+    assert app.compose_ppm(str(broken), 8, 6, []) is None
+
+
+def test_canvas_table_mimics_the_treeview_api(tk_root):
+    """gui.py 里 27 处 self.tree.* 都靠这层兼容接口，逐条钉死。"""
+    table = app.CanvasTable(tk_root, columns=["a", "b", "c"], selectmode="extended")
+    assert tuple(table["columns"]) == ("a", "b", "c")
+    assert table["show"] == "headings"
+    assert str(table.cget("selectmode")) == "extended"
+
+    table.insert("", "end", iid="r1", values=("x", "y", "z"), tags=(app.ROW_ALERT_TAG,))
+    table.insert("", "end", iid="r2", values=("p", "q", "r"))
+    assert table.get_children() == ("r1", "r2")
+    assert table.exists("r1") is True
+    assert table.exists("nope") is False
+    assert table.item("r1", "values") == ("x", "y", "z")
+    assert table.item("r1", "tags") == (app.ROW_ALERT_TAG,)
+    assert table.item("r1", "text") == "x"
+    with pytest.raises(ValueError):
+        table.insert("", "end", iid="r1", values=("dup",))
+
+    # tag_configure 必须回读得到（测试是靠这个断言配色的）
+    table.tag_configure(app.ROW_ALERT_TAG, foreground="#c00000", background="#ffe0dd")
+    assert table.tag_configure(app.ROW_ALERT_TAG)["foreground"] == "#c00000"
+    assert table.tag_configure(app.ROW_ALERT_TAG)["background"] == "#ffe0dd"
+    # 传 None 表示"不铺底色"，回读时键存在但值为 None
+    table.tag_configure(app.ROW_ZEBRA_TAG, background=None)
+    assert table.tag_configure(app.ROW_ZEBRA_TAG)["background"] is None
+
+    # gui.select_all_rows 传的是整个 tuple，必须能被展开
+    table.selection_set(table.get_children())
+    assert table.selection() == ("r1", "r2")
+    table.selection_remove(*table.get_children())
+    assert table.selection() == ()
+
+    table.delete("r2")
+    assert table.get_children() == ("r1",)
+
+
+def test_canvas_table_paints_the_wallpaper_below_the_rows(tk_root):
+    """壁纸必须贴在底层：redraw 会清空整块画布，重画后 image 仍要在最下面。"""
+    tk_root.deiconify()
+    tk_root.geometry("320x200")
+    tk_root.update()
+    table = app.CanvasTable(tk_root, columns=["a", "b"], palette={"bg": None})
+    table.pack(fill="both", expand=True)
+    tk_root.update()
+    if table.winfo_width() <= 1:
+        pytest.skip("窗口未映射，Canvas 拿不到实际尺寸，跳过壁纸贴底测试")
+    photo = tkinter.PhotoImage(master=tk_root, width=8, height=8)
+    table.wallpaper_provider = lambda: (photo, 8, 8)
+    table.insert("", "end", iid="r1", values=("x", "y"))
+    tk_root.update()
+    table.redraw()
+    assert table._background_item is not None
+    # find_all 按堆叠顺序返回，第一个就是最底层
+    assert table.find_all()[0] == table._background_item
+    # provider 返回 None 时不能留下半张图
+    table.wallpaper_provider = lambda: None
+    table.redraw()
+    assert table._background_item is None
+
+
+def test_gui_photo_theme_switches_the_table_surface(tk_root, tmp_path):
+    """切到图片背景主题换成自绘表格，切回来换回 Treeview，两次都要保住行。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert not isinstance(window.tree, app.CanvasTable)
+    assert window._surface == app.SURFACE_TABLE
+    rows_before = len(window.tree.get_children())
+    assert rows_before >= 3
+
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    tk_root.update_idletasks()
+    assert window.theme_key == app.THEME_PHOTO
+    assert window._surface == app.SURFACE_CANVAS
+    assert isinstance(window.tree, app.CanvasTable)
+    assert len(window.tree.get_children()) == rows_before
+    # 列与表头沿用同一份 COLUMN_SPECS，换底座不该换布局
+    assert tuple(window.tree["columns"]) == tuple(spec[0] for spec in app.COLUMN_SPECS)
+    assert window.tree.heading(app.COLUMN_SPECS[0][0])["text"] == app.tr(app.COLUMN_SPECS[0][1])
+
+    window.apply_theme(app.THEME_LEDGER, persist=False)
+    tk_root.update_idletasks()
+    assert window._surface == app.SURFACE_TABLE
+    assert not isinstance(window.tree, app.CanvasTable)
+    assert len(window.tree.get_children()) == rows_before
+    window.root.destroy()
+
+
+def test_gui_photo_theme_lets_rows_show_through_the_wallpaper(tk_root, tmp_path):
+    """有壁纸时普通行不铺实色，但 0E 告警行与失败行仍要有一块实色底。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_PHOTO)
+    window.wallpaper_path = str(FIXTURES / "wallpaper_sample.png")
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    # 没跑过一次读取就没有行，先让 fixture provider 出三块盘
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    assert window._surface == app.SURFACE_CANVAS
+    photo = app.THEMES[app.THEME_PHOTO]
+    # 告警行不透明，否则"整行标红"在壁纸主题下会整片糊掉
+    assert window.tree.tag_configure(app.ROW_ALERT_TAG)["background"] == photo["alert_bg"]
+    assert window.tree.tag_configure(app.ROW_MUTED_TAG)["foreground"] == photo["muted_fg"]
+    # 斑马纹在壁纸主题下不铺实色块
+    assert window.tree.tag_configure(app.ROW_ZEBRA_TAG)["background"] is None
+    children = window.tree.get_children()
+    assert children
+    plain = [iid for iid in children
+             if app.ROW_ALERT_TAG not in window.tree.item(iid, "tags")
+             and app.ROW_MUTED_TAG not in window.tree.item(iid, "tags")]
+    assert plain, "fixtures 里应当至少有一块正常盘"
+    assert all(window.tree._row_style(iid, 1)[1] is None for iid in plain)
+    window.root.destroy()
+
+
+def _menu_labels_all(menu) -> list[str]:
+    """菜单里所有带 label 的项（含 command / cascade / radiobutton）。"""
+    labels: list[str] = []
+    for index in range(menu.index("end") + 1):
+        try:
+            label = menu.entrycget(index, "label")
+        except tkinter.TclError:      # 分隔线没有 label
+            continue
+        labels.append(str(label).split("\t")[0])
+    return labels
+
+
+def test_gui_wallpaper_menu_entries_and_alpha_levels(tk_root, tmp_path):
+    """背景图三项挂在「工具」菜单，绝不能混进「主题」菜单。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    tk_root.update_idletasks()
+    tools_labels = _menu_labels_all(window.tools_menu)
+    assert app.WALLPAPER_PICK_LABEL in tools_labels
+    assert app.WALLPAPER_CLEAR_LABEL in tools_labels
+    assert app.WALLPAPER_ALPHA_LABEL in tools_labels
+
+    theme_labels = _menu_labels_all(window.theme_menu)
+    assert len(theme_labels) == len(app.THEME_ORDER)
+    assert app.WALLPAPER_PICK_LABEL not in theme_labels
+
+    assert window.alpha_menu.index("end") + 1 == len(app.ALPHA_LEVELS)
+    values = [int(window.alpha_menu.entrycget(i, "value"))
+              for i in range(len(app.ALPHA_LEVELS))]
+    assert values == list(app.ALPHA_LEVELS)
+    window.alpha_menu.invoke(values.index(50))
+    assert window.panel_alpha == 50
+    assert app.SettingsStore(tmp_path).load()["panel_alpha"] == 50
+    window.root.destroy()
+
+
+def test_gui_wallpaper_choice_never_touches_history(tk_root, tmp_path):
+    """壁纸与透明度只写 settings.json，history.json 一个字节都不能变。"""
+    store = _gui_store(tmp_path)
+    history_path = store.path
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=store, autostart=False,
+                                settings=app.SettingsStore(tmp_path), theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    tk_root.update_idletasks()
+    # 快照要在跑完一次记录之后再取：那一次运行本来就要往 history.json 追加一条。
+    before = history_path.read_bytes()
+    image = str(FIXTURES / "wallpaper_sample.png")
+    window.set_panel_alpha(75)
+    assert window.panel_alpha == 75
+    window.wallpaper_path = image
+    window._save_setting("wallpaper", window.wallpaper_path)
+    saved = app.SettingsStore(tmp_path).load()
+    assert saved["panel_alpha"] == 75
+    assert saved["wallpaper"] == image
+
+    window.clear_wallpaper()
+    assert window.wallpaper_path == ""
+    assert app.SettingsStore(tmp_path).load()["wallpaper"] == ""
+    assert history_path.read_bytes() == before
+    window.root.destroy()
+
+
+def test_photo_theme_strings_are_translated():
+    """英文界面不能露出中文（菜单、状态提示、错误信息都要有词条）。"""
+    for text in ("图片背景", "选择背景图…", "清除背景图", "背景图透明度(A)",
+                 "不透明度 {value}%", "背景图已载入：{name}",
+                 "背景图读不出来，已退回纯色面板：{error}", "背景图已清除",
+                 "图片文件", "打开文件对话框失败：{error}"):
+        assert app.has_translation(text), text
+    assert app.tr("图片背景", app.LANG_EN) == "Photo Background"
+    assert app.tr("不透明度 {value}%", app.LANG_EN, value=50) == "Opacity 50%"
+
+
+def test_settings_store_persists_wallpaper_and_alpha(tmp_path):
+    store = app.SettingsStore(tmp_path)
+    store.save({"wallpaper": "  D:/pics/a.png  ", "panel_alpha": 50})
+    payload = json.loads((tmp_path / app.SETTINGS_FILENAME).read_text(encoding="utf-8"))
+    assert payload["wallpaper"] == "D:/pics/a.png"
+    assert payload["panel_alpha"] == 50
+    loaded = store.load()
+    assert loaded["wallpaper"] == "D:/pics/a.png"
+    assert loaded["panel_alpha"] == 50
+    # 手改出来的怪值一律收敛回默认档，不让界面出事
+    (tmp_path / app.SETTINGS_FILENAME).write_text(
+        json.dumps({"panel_alpha": "80%", "wallpaper": 123}), encoding="utf-8")
+    fallback = store.load()
+    assert fallback["panel_alpha"] == app.DEFAULT_ALPHA_LEVEL
+    assert fallback["wallpaper"] == ""
+
+def test_settings_store_merges_with_the_file_on_disk(tmp_path):
+    """只存一个键时，不能把别的键抹回默认值。
+
+    这是 v0.9.0 修掉的一个真 bug：SettingsStore.save 原先从 DEFAULT_SETTINGS
+    起步，而 GUI 每次只存自己动过的那一个键，于是「切主题 → 打开显示序列号」
+    会把主题打回跟随系统、把背景图路径清空。用户看到的是设置自己变回去了。
+    """
+    store = app.SettingsStore(tmp_path)
+    store.save({"theme": app.THEME_PHOTO})
+    store.save({"wallpaper": "D:/pics/b.png"})
+    store.save({"panel_alpha": 25})
+    store.save({"show_serial": True})
+    loaded = store.load()
+    assert loaded["theme"] == app.THEME_PHOTO
+    assert loaded["wallpaper"] == "D:/pics/b.png"
+    assert loaded["panel_alpha"] == 25
+    assert loaded["show_serial"] is True
+    # 一次存多个键同样只覆盖这几个
+    store.save({"view": app.VIEW_GRID, "lang": app.LANG_EN})
+    loaded = store.load()
+    assert loaded["view"] == app.VIEW_GRID
+    assert loaded["lang"] == app.LANG_EN
+    assert loaded["theme"] == app.THEME_PHOTO
+    assert loaded["panel_alpha"] == 25
+
+
+def test_gui_toggling_serial_keeps_the_photo_theme(tk_root, tmp_path):
+    """界面上「切到图片背景 → 打开显示序列号」，主题不能被顺手改回去。"""
+    settings = app.SettingsStore(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=settings, theme=app.THEME_LEDGER)
+    window.apply_theme(app.THEME_PHOTO)
+    assert settings.load()["theme"] == app.THEME_PHOTO
+    window.toggle_serial(True)
+    assert settings.load()["show_serial"] is True
+    # 关键断言：存 show_serial 不能把主题打回去
+    assert settings.load()["theme"] == app.THEME_PHOTO
+    assert window.theme_key == app.THEME_PHOTO
+    window.root.destroy()

@@ -23,9 +23,17 @@ THEME_DARK = "dark"
 THEME_GAUGE = "gauge"
 THEME_MINIMAL = "minimal"
 THEME_NATIVE = "native"
+THEME_PHOTO = "photo"
+
+# 数据区（表格/卡片画布）由谁绘制。前六套是 ttk.Treeview（实心底色、能按 Themeview
+# 样式表统一上色）；「图片背景」必须自己画在 Canvas 上，因为 Treeview 的行底色是
+# 不透明的，压在壁纸上会露出一个个方块。
+SURFACE_TABLE = "table"
+SURFACE_CANVAS = "canvas"
 
 THEME_ORDER: tuple[str, ...] = (THEME_SYSTEM, THEME_LEDGER, THEME_DARK,
-                                THEME_GAUGE, THEME_MINIMAL, THEME_NATIVE)
+                                THEME_GAUGE, THEME_MINIMAL, THEME_NATIVE,
+                                THEME_PHOTO)
 THEME_LABELS = {
     THEME_SYSTEM: "跟随系统",
     THEME_LEDGER: "数据台账",
@@ -33,6 +41,7 @@ THEME_LABELS = {
     THEME_GAUGE: "清爽仪表",
     THEME_MINIMAL: "极简留白",
     THEME_NATIVE: "原生默认",
+    THEME_PHOTO: "图片背景",
 }
 # 「跟随系统」解析到的具体主题
 THEME_SYSTEM_LIGHT = THEME_LEDGER
@@ -133,6 +142,29 @@ THEMES: dict[str, dict[str, Any]] = {
         "seg_hover_bg": "#F0F0F0", "seg_hover_fg": "#1A1A1A",
         "seg_border": "#E2E2E2",
     },
+    # 第 7 套：图片背景 + 分层半透明。数据区不再用 Treeview，改由 CanvasTable 自绘，
+    # 行底色留空（palette["bg"] = None）以便壁纸透出来；表头与告警行仍给实色块。
+    # 配色按「深色文字压在 55%~65% 浅色面板上」定：壁纸最亮处 p95=194 时正文对比度
+    # 仍有 6.04（WCAG AA 要 4.5），最暗处更高，所以正文用近黑而不是白。
+    THEME_PHOTO: {
+        "key": THEME_PHOTO, "label": "图片背景", "base": "clam",
+        "win_bg": "#EEF2F8", "tree_bg": "#F4F7FC", "tree_fg": "#0E1216",
+        "head_bg": "#2B333C", "head_fg": "#FFFFFF", "head_bold": True,
+        "zebra": None, "alert_bg": "#FFE0DD", "alert_fg": "#761410",
+        "muted_fg": "#6B7179",
+        "select_bg": "#3D7ECC", "select_fg": "#FFFFFF",
+        "rowheight": 34, "padx": 14, "pady": 12, "kpi": "cards",
+        "title_fg": "#0E1216", "title_pt": 15,
+        "hint_fg": "#8A5A00", "ok_fg": "#1B7F49", "note_fg": "#49525D",
+        "summary_fg": "#0E1216",
+        "card_bg": "#F6F8FB", "card_border": None, "card_val": "#0E1216",
+        "card_lbl": "#49525D", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#A9B6C6", "scroll_thumb_hover": "#8797AA",
+        "scroll_idle": "#DDE5EF",
+        "seg_sel_bg": "#2B333C", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#DCE4EF", "seg_hover_fg": "#0E1216",
+        "seg_border": "#C9D4E2",
+    },
 }
 
 
@@ -169,3 +201,13 @@ def resolve_theme(key: Any, dark_mode: bool | None = None) -> dict[str, Any]:
     if normalized == THEME_SYSTEM:
         return dict(THEMES[system_theme_name(dark_mode)])
     return dict(THEMES[normalized])
+
+
+def theme_surface(key: Any) -> str:
+    """主题 -> 数据区由谁绘制（SURFACE_TABLE=ttk.Treeview，SURFACE_CANVAS=自绘）。
+
+    只有「图片背景」走 Canvas：它的行底色必须留空让壁纸透出来，而 Treeview 的
+    行底色是实心的，压上去就是一块块白斑。其余主题继续用 Treeview。
+    """
+    table = resolve_theme(key)
+    return SURFACE_CANVAS if table.get("key") == THEME_PHOTO else SURFACE_TABLE
