@@ -52,13 +52,17 @@ from .prefs import DEFAULT_SETTINGS, SettingsStore
 from .providers import SmartctlProvider
 from .timefmt import format_stamp
 from .theme import (
+    SURFACE_CANVAS,
+    SURFACE_TABLE,
     THEMES,
     THEME_LABELS,
     THEME_LEDGER,
     THEME_ORDER,
+    THEME_PHOTO,
     THEME_SYSTEM,
     normalize_theme_key,
     resolve_theme,
+    theme_surface,
 )
 from .viewmodel import (
     CARD_METRICS,
@@ -86,6 +90,14 @@ try:                                   # 无 Tk 的环境也能 import 本模块
 except Exception:                       # pragma: no cover - 依赖系统 Tk
     _tk_for_scrollbar = None
 
+# 第 7 套「图片背景」主题的数据区控件与壁纸层。canvas_surface 依赖真实 Tk，
+# 没有 Tk 的环境（只跑逻辑层的测试）里退化成 None，表格回落到 Treeview。
+try:                                    # pragma: no cover - 依赖系统 Tk
+    from .canvas_surface import CanvasTable
+except Exception:
+    CanvasTable = None                  # type: ignore[assignment]
+from . import wallpaper as _wallpaper
+
 _SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
 _LABEL_BASE: Any = _tk_for_scrollbar.Label if _tk_for_scrollbar else object
 
@@ -98,6 +110,13 @@ SCROLL_GUTTER = 10
 CARD_RESIZE_DELAY_MS = 250
 # 卡片之间的水平间距（只在列与列之间留，最右一列贴边，才能和 KPI 行右缘对齐）
 CARD_GAP = 10
+
+# 第 7 套「图片背景」主题的三个菜单文案。入口放在「工具」菜单，
+# 绝不能进「主题」菜单——主题菜单必须严格等于 THEME_ORDER 那一串 radiobutton，
+# 测试是逐项全量比对的，多一项就整条用例失败。
+WALLPAPER_PICK_LABEL = "选择背景图…"
+WALLPAPER_CLEAR_LABEL = "清除背景图"
+WALLPAPER_ALPHA_LABEL = "背景图透明度(A)"
 
 
 class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
@@ -623,6 +642,17 @@ class DiskTrackerApp:
         # 界面语言必须先落到 i18n 的模块级状态，再建菜单与控件，
         # 否则首屏文案还是上一次（默认中文）的语言，切完语言才变。
         self.lang = set_language(saved.get("lang"))
+        # 第 7 套「图片背景」主题的两项偏好：壁纸路径与内容面板不透明度。
+        # 只影响观感，一个字节都不进 history.json；路径失效、格式不支持、
+        # GDI+ 不可用都只让主题退化成纯色面板，不弹错、不崩窗口。
+        self.wallpaper_path = str(saved.get("wallpaper") or "")
+        self.panel_alpha = _wallpaper.normalize_alpha(saved.get("panel_alpha"))
+        # 壁纸合成缓存：key = (路径, 量化后的宽高, 不透明度)，photo = (PhotoImage, w, h)。
+        # PhotoImage 必须由 app 持引用——交给 Canvas 之后本地变量一回收，
+        # 图上就只剩一块背景色（Tk 不会替你保住图片对象）。
+        self._wallpaper_cache: dict[str, Any] = {"key": None, "photo": None}
+        # 当前表格底座（Treeview / CanvasTable），由 _rebuild_table_surface 维护
+        self._surface = SURFACE_TABLE
         # 最近一次运行结果：切语言时用它重算表格文案（不读盘、不写历史）
         self.last_outcome: RunOutcome | None = None
         # 状态栏那几行的**原始值**（不带「数据源：」这类前缀）。
@@ -707,6 +737,22 @@ class DiskTrackerApp:
         self._gib_var = tk.BooleanVar(master=self.root, value=self.show_gib)
         tools_menu.add_checkbutton(label=tr("显示系统口径容量"), variable=self._gib_var,
                                    command=self.toggle_gib)
+        tools_menu.add_separator()
+        # 背景图入口只放在「工具」菜单：主题菜单必须严格等于 THEME_ORDER 那一串
+        # radiobutton（测试逐项全量比对），混进别的项会让「当前主题」的语义变形。
+        tools_menu.add_command(label=tr(WALLPAPER_PICK_LABEL), command=self.choose_wallpaper)
+        tools_menu.add_command(label=tr(WALLPAPER_CLEAR_LABEL), command=self.clear_wallpaper)
+        # 透明度做成子菜单而不是滑杆：滑杆每次拖动都会重算整屏像素，
+        # 五档离散值既省 CPU，也让「回到默认观感」有确定的落点。
+        alpha_menu = tk.Menu(tools_menu, tearoff=False)
+        self._alpha_var = tk.IntVar(master=self.root, value=self.panel_alpha)
+        for level in _wallpaper.ALPHA_LEVELS:
+            alpha_menu.add_radiobutton(
+                label=tr("不透明度 {value}%", value=level), value=level,
+                variable=self._alpha_var,
+                command=lambda v=level: self.set_panel_alpha(v))
+        tools_menu.add_cascade(label=tr(WALLPAPER_ALPHA_LABEL), menu=alpha_menu)
+        self.alpha_menu = alpha_menu
         self.sort_menu = sort_menu
 
         disk_menu = tk.Menu(menubar, tearoff=False)
@@ -853,27 +899,14 @@ class DiskTrackerApp:
         table_frame.pack(fill="both", expand=True)
         self.table_frame = table_frame
 
-        columns = [spec[0] for spec in COLUMN_SPECS]
-        # selectmode="extended" 是为了让表格能像资源管理器那样 Ctrl/Shift 多选：
-        # Treeview 本身没有「框选一段文字」的能力，但多选 + Ctrl+C / 右键菜单可以把
-        # 选中的行导成 TSV，粘进 Excel 就是表格，粘进记事本也是齐整的文本。
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
-        for key, title, width, _kind in COLUMN_SPECS:
-            self.tree.heading(key, text=tr(title), command=lambda c=key: self.sort_by(c))
-            self.tree.column(key, width=width, minwidth=60, anchor="w", stretch=(key == "status"))
-        # 细圆角滚动条（自绘，ttk.Scrollbar 做不出圆角），竖向常显、横向按需
-        self.yscroll = SlimScrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.xscroll = SlimScrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=self.yscroll.set, xscrollcommand=self.xscroll.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        self.yscroll.grid(row=0, column=1, sticky="ns")
-        self.xscroll.grid(row=1, column=0, sticky="ew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
-        # 表格的复制入口：Ctrl+C 复制选中行，右键菜单可复制单元格 / 全选 / 复制整表
-        self.tree.bind("<Control-c>", self.copy_selection_event)
-        self.tree.bind("<Button-3>", self._on_tree_context_menu)
+        # 表格底座按主题分流：普通 6 套主题用 ttk.Treeview（原生观感、Win 主题控件的
+        # 一切细节都别动），图片背景主题用 CanvasTable 自绘（Treeview 的底色不透明，
+        # 没法透出壁纸）。控件只在这里建一次，切主题时由 _ensure_table_surface 判断
+        # 是否需要换底座。
+        self._build_table_surface(table_frame)
         menu = self.tk.Menu(self.root, tearoff=False)
         # 菜单项一律按数字下标定位，不能按标签——「复制选中行」的标签会带上「N 行」，
         # 一旦改名就再也查不到原标签（TclError: bad menu entry index），第二次右键
@@ -958,6 +991,184 @@ class DiskTrackerApp:
         self.body.pack(fill="both", expand=True)
 
         self._refresh_admin_label()
+
+    # ---- 表格底座：Treeview（原生）/ CanvasTable（图片背景主题）------------------------
+
+    def _build_table_surface(self, container: Any) -> None:
+        """在 container 里建当前主题该用的表格底座与两条滚动条。
+
+        两套底座（ttk.Treeview / CanvasTable）对外暴露同一组接口，所以 gui 里所有
+        逻辑——渲染、排序、复制、右键菜单、切语言改表头——都只认 self.tree，
+        不关心底下到底是哪一个。
+        """
+        wanted = theme_surface(self.theme_key)
+        if wanted == SURFACE_CANVAS and CanvasTable is None:
+            # CanvasTable 导入失败（极老的 Tk）就退回 Treeview：宁可底色不透明，
+            # 也不能让整个窗口起不来。
+            wanted = SURFACE_TABLE
+        columns = [spec[0] for spec in COLUMN_SPECS]
+        if wanted == SURFACE_CANVAS:
+            tree: Any = CanvasTable(container, columns=columns, selectmode="extended",
+                                    rowheight=self.theme["rowheight"],
+                                    font_family=self.base_font[0], font_size=self.base_font[1])
+            # CanvasTable 自己接右键、自己记单元格，命中行后回调这里弹菜单
+            tree.context_menu = self._on_tree_context_menu
+            # 壁纸由 app 合成并缓存在 app 上：PhotoImage 必须有人持引用，
+            # 交给 Canvas 之后本地变量一回收，图上就只剩背景色。
+            tree.wallpaper_provider = self._wallpaper_layer
+            self._surface = SURFACE_CANVAS
+        else:
+            # selectmode="extended"：像资源管理器那样 Ctrl/Shift 多选，
+            # 再靠 Ctrl+C / 右键菜单把选中行导成 TSV（粘进 Excel 就是表格）。
+            tree = ttk.Treeview(container, columns=columns, show="headings",
+                                selectmode="extended")
+            tree.bind("<Button-3>", self._on_tree_context_menu)
+            self._surface = SURFACE_TABLE
+        self.tree = tree
+        for key, title, width, _kind in COLUMN_SPECS:
+            tree.heading(key, text=tr(title), command=lambda c=key: self.sort_by(c))
+            tree.column(key, width=width, minwidth=60, anchor="w", stretch=(key == "status"))
+        # 细圆角滚动条（自绘，ttk.Scrollbar 做不出圆角），竖向常显、横向按需
+        self.yscroll = SlimScrollbar(container, orient="vertical", command=tree.yview)
+        self.xscroll = SlimScrollbar(container, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=self.yscroll.set, xscrollcommand=self.xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        self.yscroll.grid(row=0, column=1, sticky="ns")
+        self.xscroll.grid(row=1, column=0, sticky="ew")
+        # 表格的复制入口：Ctrl+C 复制选中行，右键菜单可复制单元格 / 全选 / 复制整表
+        tree.bind("<Control-c>", self.copy_selection_event)
+
+    def _ensure_table_surface(self) -> None:
+        """主题换了底座类型才重建表格；类型没变就只改配色（不重建 = 保住选中行）。"""
+        wanted = theme_surface(self.theme_key)
+        if wanted == SURFACE_CANVAS and CanvasTable is None:
+            wanted = SURFACE_TABLE
+        if wanted == self._surface:
+            return
+        rows = list(getattr(self, "rows", []) or [])
+        for bar_name in ("yscroll", "xscroll"):
+            bar = getattr(self, bar_name, None)
+            if bar is not None:
+                try:
+                    bar.destroy()
+                except Exception:
+                    pass
+                setattr(self, bar_name, None)
+        old = getattr(self, "tree", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+        self._build_table_surface(self.table_frame)
+        self.render_rows(rows)
+
+    # ---- 第 7 套主题的壁纸层 ---------------------------------------------------------
+
+    def _invalidate_wallpaper(self) -> None:
+        """丢掉合成缓存（换图、改透明度、改窗口大小都要走这里）。"""
+        self._wallpaper_cache = {"key": None, "photo": None}
+
+    def _wallpaper_layer(self) -> Any:
+        """给 Canvas 表格合成一张「壁纸 + 半透明内容面板」的位图。
+
+        返回 (PhotoImage, 宽, 高)；没设背景图、读不到文件、GDI+ 不可用、
+        尺寸还没量出来，一律返回 None —— CanvasTable 会退回自己的纯色底。
+        这是唯一碰像素的地方，不涉及任何控件状态。
+        """
+        path = self.wallpaper_path
+        if not path or not _wallpaper.gdiplus_available():
+            return None
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return None
+        try:
+            width = max(1, int(tree.winfo_width()))
+            height = max(1, int(tree.winfo_height()))
+        except Exception:
+            return None
+        if width <= 4 or height <= 4:
+            return None
+        tree_bg = str(self.theme.get("tree_bg") or "#F4F7FC")
+        key = (path, width, height, int(self.panel_alpha), tree_bg)
+        cached = self._wallpaper_cache
+        if cached.get("key") == key and cached.get("photo"):
+            return cached["photo"]
+        _conv_alpha, panel_alpha = _wallpaper.alpha_pair(self.panel_alpha)
+        try:
+            ppm = _wallpaper.compose_ppm(
+                path, width, height, [(0, 0, width, height)],
+                panel_color=_wallpaper.hex_rgb(tree_bg),
+                panel_alpha=panel_alpha,
+            )
+        except Exception:
+            ppm = None
+        if not ppm:
+            return None
+        try:
+            photo = self.tk.PhotoImage(data=ppm.decode("latin-1"), format="ppm")
+        except Exception:
+            return None
+        layer = (photo, width, height)
+        self._wallpaper_cache = {"key": key, "photo": layer}
+        return layer
+
+    def _refresh_wallpaper(self) -> None:
+        """缓存作废后让自绘表格重画一次（Treeview 下是空操作）。"""
+        self._invalidate_wallpaper()
+        painter = getattr(self.tree, "redraw", None)
+        if callable(painter):
+            try:
+                painter()
+            except Exception:
+                pass
+
+    def choose_wallpaper(self) -> str:
+        """选一张图片当背景，选完直接切到图片背景主题。返回新路径（取消则原样返回）。"""
+        try:
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                parent=self.root,
+                title=tr(WALLPAPER_PICK_LABEL),
+                filetypes=[
+                    (tr("图片文件"), "*.png *.jpg *.jpeg *.bmp *.gif *.webp"),
+                    ("*", "*.*"),
+                ],
+            )
+        except Exception as exc:
+            self._set_error(tr("打开文件对话框失败：{error}", error=exc))
+            return self.wallpaper_path
+        if not path:
+            return self.wallpaper_path
+        self.wallpaper_path = str(path)
+        self._save_setting("wallpaper", self.wallpaper_path)
+        self._refresh_wallpaper()
+        if self.theme_key != THEME_PHOTO:
+            self.apply_theme(THEME_PHOTO)
+        self._set_action(tr("背景图已载入：{name}", name=Path(self.wallpaper_path).name))
+        return self.wallpaper_path
+
+    def clear_wallpaper(self) -> str:
+        """清除背景图设置：路径记为空，主题本身不变（仍然是一套可选的主题）。"""
+        self.wallpaper_path = ""
+        self._save_setting("wallpaper", "")
+        self._refresh_wallpaper()
+        self._set_action(tr("背景图已清除"))
+        return self.wallpaper_path
+
+    def set_panel_alpha(self, level: Any) -> int:
+        """设定内容面板不透明度（0~100）。只影响观感，不进 history.json。"""
+        self.panel_alpha = _wallpaper.normalize_alpha(level)
+        self._save_setting("panel_alpha", self.panel_alpha)
+        alpha_var = getattr(self, "_alpha_var", None)
+        if alpha_var is not None:
+            try:
+                alpha_var.set(self.panel_alpha)
+            except Exception:
+                pass
+        self._refresh_wallpaper()
+        self._set_action(tr("不透明度 {value}%", value=self.panel_alpha))
+        return self.panel_alpha
 
     @staticmethod
     def _history_size_text(path: Any) -> str:
@@ -1184,6 +1395,11 @@ class DiskTrackerApp:
         except Exception:
             pass
 
+        # 底座类型可能随主题变化：Treeview ↔ CanvasTable 只在跨越这里时重建一次。
+        # 必须排在「滚动条换色」之前——重建会连两条滚动条一起换掉，先换色的话
+        # 新建出来的那条会顶着默认白底，跟新主题对不上。
+        self._ensure_table_surface()
+
         # 细滚动条跟着主题换色（不重建控件）
         for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
                     getattr(self, "cards_scroll", None)):
@@ -1193,6 +1409,28 @@ class DiskTrackerApp:
         if hasattr(self, "cards_canvas"):
             self.cards_canvas.configure(bg=theme["win_bg"])
             self.cards_inner.configure(bg=theme["win_bg"])
+        # 图片背景主题走自绘表格时，底色交给壁纸层合成的那张图，palette 的 bg 置空
+        # 才不会每行盖一块实色矩形把壁纸糊掉；没选图时仍给实色，免得透出白底。
+        on_canvas = self._surface == SURFACE_CANVAS
+        canvas_bg: str | None = theme["tree_bg"]
+        if on_canvas:
+            canvas_bg = None if self.wallpaper_path else theme["tree_bg"]
+            try:
+                self.tree.set_palette({
+                    "bg": canvas_bg,
+                    "fg": theme["tree_fg"],
+                    "line": theme["head_bg"] or theme["tree_bg"],
+                    "head_bg": theme["head_bg"],
+                    "head_fg": theme["head_fg"],
+                    "sel_bg": theme["select_bg"],
+                    "sel_fg": theme["select_fg"],
+                    "zebra": theme["zebra"],
+                })
+                self.tree.set_row_height(theme["rowheight"])
+                self.tree.set_fonts(family, size)
+                self.tree.set_sort_indicator(self._sort_column, self._sort_reverse)
+            except Exception:
+                pass
 
         zebra_bg = theme["zebra"] or theme["tree_bg"]
         self.tree.tag_configure(ROW_ALERT_TAG,
@@ -1201,7 +1439,14 @@ class DiskTrackerApp:
         self.tree.tag_configure(ROW_MUTED_TAG,
                                 foreground=theme["muted_fg"],
                                 background=theme["tree_bg"])
-        self.tree.tag_configure(ROW_ZEBRA_TAG, background=zebra_bg)
+        if on_canvas and canvas_bg is None:
+            # 自绘表格 + 有壁纸：斑马纹不画实色块，否则等于给每行铺一张不透明纸条
+            self.tree.tag_configure(ROW_ZEBRA_TAG, background=None)
+        else:
+            self.tree.tag_configure(ROW_ZEBRA_TAG, background=zebra_bg)
+
+        # 图变了、透明度变了，之前的合成缓存一律作废，下次重画时重新贴
+        self._invalidate_wallpaper()
 
         self._set_kpi_visible(theme["kpi"] is not None)
         if hasattr(self, "_theme_var"):
@@ -1377,12 +1622,24 @@ class DiskTrackerApp:
         else:
             self._sort_column = column
             self._sort_reverse = False
+        self._sync_sort_indicator()
         self.render_rows(self.rows)
 
     def reset_sort(self) -> None:
         self._sort_column = None
         self._sort_reverse = False
+        self._sync_sort_indicator()
         self.render_rows(self.rows)
+
+    def _sync_sort_indicator(self) -> None:
+        """把排序方向告诉自绘表头（Treeview 的箭头由 style 自己管，这里是空操作）。"""
+        setter = getattr(self.tree, "set_sort_indicator", None)
+        if not callable(setter):
+            return
+        try:
+            setter(self._sort_column or "", self._sort_reverse)
+        except Exception:
+            pass
 
     def row_tags(self) -> list[tuple[str, ...]]:
         return [tuple(self.tree.item(iid, "tags")) for iid in self.tree.get_children()]

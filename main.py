@@ -138,9 +138,20 @@ from diskflow.platformhelp import (  # noqa: F401
 
 from diskflow.theme import (  # noqa: F401
     THEME_SYSTEM, THEME_LEDGER, THEME_DARK, THEME_GAUGE, THEME_MINIMAL, THEME_NATIVE,
+    THEME_PHOTO, SURFACE_TABLE, SURFACE_CANVAS,
     THEME_ORDER, THEME_LABELS, THEME_SYSTEM_LIGHT, THEME_SYSTEM_DARK, REG_PERSONALIZE,
     REG_LIGHT_VALUE, THEMES, detect_system_dark_mode, normalize_theme_key,
-    system_theme_name, resolve_theme,
+    system_theme_name, resolve_theme, theme_surface,
+)
+
+from diskflow.canvas_surface import (  # noqa: F401
+    CanvasTable, CharRun, fit_text, DEFAULT_PALETTE, PALETTE_KEYS,
+)
+
+from diskflow.wallpaper import (  # noqa: F401
+    ALPHA_LEVELS, DEFAULT_ALPHA_LEVEL, CONVERSATION_RGB, CONVERSATION_ALPHA,
+    CONTROL_RGB, CONTROL_ALPHA, normalize_alpha, alpha_pair, hex_rgb, merge_layers,
+    cover_geometry, ppm_bytes, compose_ppm, compose_png_fallback, gdiplus_available,
 )
 
 from diskflow.viewmodel import (  # noqa: F401
@@ -161,6 +172,7 @@ from diskflow.gui import (  # noqa: F401
     STATUS_TEXT_LIMIT, _truncate, PAIR_SEPARATOR, TSV_PAIR_SEPARATOR, _pair,
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
     SERIAL_MASK_CHARS, SERIAL_MASK_VISIBLE_PREFIX, SERIAL_EMPTY_TEXT,
+    WALLPAPER_PICK_LABEL, WALLPAPER_CLEAR_LABEL, WALLPAPER_ALPHA_LABEL,
     _mask_serial, _short_serial, _serial_line, _row_values, _row_sort_value,
     DiskTrackerApp,
 )
@@ -209,10 +221,16 @@ __all__ = [
     "is_admin", "MSC_DISK_MANAGEMENT", "MSC_DEVICE_MANAGER", "MSC_FILENAMES",
     "open_management_console", "system32_msc_path", "TOOL_SHORTCUTS",
     "THEME_SYSTEM", "THEME_LEDGER", "THEME_DARK", "THEME_GAUGE",
-    "THEME_MINIMAL", "THEME_NATIVE", "THEME_ORDER", "THEME_LABELS", "THEME_SYSTEM_LIGHT",
+    "THEME_MINIMAL", "THEME_NATIVE", "THEME_PHOTO", "SURFACE_TABLE", "SURFACE_CANVAS",
+    "THEME_ORDER", "THEME_LABELS", "THEME_SYSTEM_LIGHT",
     "THEME_SYSTEM_DARK", "REG_PERSONALIZE", "REG_LIGHT_VALUE", "THEMES",
     "detect_system_dark_mode", "normalize_theme_key", "system_theme_name",
-    "resolve_theme", "VIEW_TABLE", "VIEW_CARDS", "VIEW_GRID", "VIEW_ORDER",
+    "resolve_theme", "theme_surface", "CanvasTable", "CharRun", "fit_text",
+    "DEFAULT_PALETTE", "PALETTE_KEYS", "ALPHA_LEVELS", "DEFAULT_ALPHA_LEVEL",
+    "CONVERSATION_RGB", "CONVERSATION_ALPHA", "CONTROL_RGB", "CONTROL_ALPHA",
+    "normalize_alpha", "alpha_pair", "hex_rgb", "merge_layers", "cover_geometry",
+    "ppm_bytes", "compose_ppm", "compose_png_fallback", "gdiplus_available",
+    "VIEW_TABLE", "VIEW_CARDS", "VIEW_GRID", "VIEW_ORDER",
     "VIEW_LABELS", "DEFAULT_VIEW", "CARD_METRICS", "CARD_METRICS_GRID",
     "CARD_METRIC_COLUMNS", "CARD_METRIC_COLUMNS_GRID", "normalize_view_key",
     "SETTINGS_FILENAME",
@@ -222,7 +240,7 @@ __all__ = [
     "ALERT_COLOR", "MUTED_COLOR", "BASE_FONT", "SMARTCTL_INSTALL_HINT", "KPI_SPECS",
     "fmt_delta_compact", "STATUS_TEXT_LIMIT", "PAIR_SEPARATOR", "TSV_PAIR_SEPARATOR",
     "SERIAL_MASK_CHARS", "SERIAL_MASK_VISIBLE_PREFIX", "SERIAL_EMPTY_TEXT", "_mask_serial",
-    "_serial_line",
+    "_serial_line", "WALLPAPER_PICK_LABEL", "WALLPAPER_CLEAR_LABEL", "WALLPAPER_ALPHA_LABEL",
     "TREE_MENU_COPY_ROWS", "TREE_MENU_COPY_CELL", "TREE_MENU_SELECT_ALL", "TREE_MENU_COPY_TABLE",
     "DiskTrackerApp", "apply_window_icon", "create_app", "main",
 ]

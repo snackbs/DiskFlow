@@ -12,6 +12,7 @@ from .history import default_storage_dir
 from .i18n import DEFAULT_LANG, normalize_lang
 from .theme import THEME_SYSTEM, normalize_theme_key
 from .viewmodel import DEFAULT_VIEW, normalize_view_key
+from .wallpaper import DEFAULT_ALPHA_LEVEL, normalize_alpha
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +32,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "show_gib": False,
     # 界面语言：zh-CN / en。语言只影响界面文案，history.json 的 schema 与内容一个字节都不变。
     "lang": DEFAULT_LANG,
+    # 第 7 套「图片背景」主题用的壁纸路径（绝对路径，空串表示没选）。
+    # 只影响观感：读不到文件、路径失效、解码失败都只让主题退化成纯色面板，不报错。
+    "wallpaper": "",
+    # 内容面板的不透明度（0~100）。65 是实测调好的那档（对话层 55% / 控件层 65%），
+    # 菜单里给的是 0/25/50/75/100 五档，默认值刻意不落在档位上。
+    "panel_alpha": DEFAULT_ALPHA_LEVEL,
 }
 
 
@@ -80,10 +87,22 @@ class SettingsStore:
         lang = payload.get("lang")
         if isinstance(lang, str):
             data["lang"] = normalize_lang(lang)
+        # 壁纸：只认非空字符串；路径是否存在这里不校验——用户可能把图放在
+        # 移动硬盘/网络盘上，开机时不在就退化成纯色，插回去下次就有了。
+        wallpaper = payload.get("wallpaper")
+        if isinstance(wallpaper, str):
+            data["wallpaper"] = wallpaper.strip()
+        # 不透明度：手改 settings.json 写成 "80%"、null、-5 都不该让界面出事，
+        # normalize_alpha 把一切非法输入收敛回默认档。
+        data["panel_alpha"] = normalize_alpha(payload.get("panel_alpha", DEFAULT_ALPHA_LEVEL))
         return data
 
     def save(self, data: dict[str, Any]) -> Path:
-        merged = dict(DEFAULT_SETTINGS)
+        # 从磁盘上的现状起步，不能从 DEFAULT_SETTINGS 起步：
+        # GUI 每次只保存自己动过的那一个键（_save_setting("theme", ...) 这类），
+        # 若从默认值起步，存「显示序列号」就会把用户之前选的主题、背景图、
+        # 不透明度一起抹回默认——用户看到的是「设置自己变回去了」。
+        merged = self.load()
         for key, value in (data or {}).items():
             if isinstance(key, str):
                 merged[key] = value
@@ -92,6 +111,9 @@ class SettingsStore:
         merged["show_serial"] = merged.get("show_serial") is True
         merged["show_gib"] = merged.get("show_gib") is True
         merged["lang"] = normalize_lang(merged.get("lang"))
+        wallpaper = merged.get("wallpaper")
+        merged["wallpaper"] = wallpaper.strip() if isinstance(wallpaper, str) else ""
+        merged["panel_alpha"] = normalize_alpha(merged.get("panel_alpha", DEFAULT_ALPHA_LEVEL))
         self.directory.mkdir(parents=True, exist_ok=True)
         text = json.dumps(merged, ensure_ascii=False, indent=2)
         tmp = self.path.with_name(self.path.name + ".tmp")
