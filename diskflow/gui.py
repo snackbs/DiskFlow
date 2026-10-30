@@ -1001,6 +1001,10 @@ class DiskTrackerApp:
         逻辑——渲染、排序、复制、右键菜单、切语言改表头——都只认 self.tree，
         不关心底下到底是哪一个。
         """
+        # ttk 是 __init__ 里的局部导入（self.ttk），这个方法单独调用时必须自己取一次，
+        # 否则建 Treeview 那一行会 NameError —— 而它正好只在非图片主题下执行，
+        # 只在真实 runner 上第一次建窗口时才会炸。
+        ttk = self.ttk
         wanted = theme_surface(self.theme_key)
         if wanted == SURFACE_CANVAS and CanvasTable is None:
             # CanvasTable 导入失败（极老的 Tk）就退回 Treeview：宁可底色不透明，
