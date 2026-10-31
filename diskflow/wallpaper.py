@@ -25,22 +25,35 @@ from typing import Any, Iterable, Sequence
 # ---------------------------------------------------------------------------
 # 混色参数（第 7 套主题的观感全由这几个数决定）
 #
-# 用户选的是「V3 档」：对话层不透 55%，控件层不透 65%。
-# 两层叠加后等效于单一 alpha = 1 - (1-0.55)*(1-0.65) = 0.8425。
-# 这个档位下深色文字（#15191F）对壁纸最暗处的对比度仍有 6.04，
-# 高于 WCAG AA 正文要求的 4.5，所以文字不会糊。
+# 下面这组数字是从用户最终拍板的那张并排参照图左半（卡片视图）里逐像素回归
+# 出来的。做法：取整图里 10x10 邻域标准差 <1.2 的「平坦色块」（避开文字与描边），
+# 按 obs = (1-a)·wall + a·P 对同一张壁纸（bg.png，1244x699，视口对齐）逐通道
+# 做最小二乘，得到三类区域三通道一致的解：
+#   对话区（没有控件的大块留白/标题）  α≈0.55，面板本色近白 #EEF2FA
+#   卡片区（KPI 卡、卡片视图底）      α≈0.65
+#   表格/控件区（带控件的行、输入框） α≈0.73，面板本色 #E6E9F0
+# 也就是说：这是「浅色薄罩」——面板是近白的，壁纸在后面透出约 28%~45%，
+# 越靠控件越实一点点。方向与「深藏青 α0.81」恰好相反：深色版只透 19%，
+# 实机就是壁纸被压死；浅色版才是参照图那种「薄薄一层奶白」的观感。
+# 浅底深字：tree_fg #1F2933 对 α0.72 的 #F2F5FA 面板约 12:1（WCAG AA 要 4.5），
+# 就算壁纸是最暗的纯黑，正文对比度仍在 7:1 以上。
 # ---------------------------------------------------------------------------
 
-CONVERSATION_RGB: tuple[int, int, int] = (238, 242, 248)
+CONVERSATION_RGB: tuple[int, int, int] = (238, 242, 250)   # #EEF2FA
 CONVERSATION_ALPHA = 0.55
-CONTROL_RGB: tuple[int, int, int] = (250, 251, 253)
-CONTROL_ALPHA = 0.65
+CONTROL_RGB: tuple[int, int, int] = (230, 233, 240)        # #E6E9F0
+CONTROL_ALPHA = 0.73
 
-# 「工具 → 背景图透明度」给出的五档（百分比）。65% 就是上面那组实测档位
-# （对话层 55% / 控件层 65%），所以默认值取 65 而不是菜单里的某一档：
+# 「工具 → 背景图透明度」给出的五档（百分比）。73% 就是上面那组实测档位
+# （对话层 55% / 控件层 73%），所以默认值取 73 而不是菜单里的某一档：
 # 用户不动菜单时看到的就是调好的样子，动了之后才落到 0/25/50/75/100。
+#
+# 卡片视图的薄罩不在这里：卡片底座要「透」，靠的是每张卡片（photo_card.PhotoCard）
+# 自己叠一层近白 RGBA —— Tk 8.6 会对 RGBA PNG 做真正的 alpha 合成（已实测逐通道
+# 吻合），而 Canvas 矩形只能是不透明色。卡片内部全部画在画布上，没有一处分色底，
+# 所以薄罩之下就是壁纸本身，不会出现一块块平色补丁。
 ALPHA_LEVELS: tuple[int, ...] = (0, 25, 50, 75, 100)
-DEFAULT_ALPHA_LEVEL = 65
+DEFAULT_ALPHA_LEVEL = 73
 
 
 def normalize_alpha(value: object) -> int:
@@ -60,8 +73,9 @@ def normalize_alpha(value: object) -> int:
 def alpha_pair(level: int) -> tuple[float, float]:
     """把「不透明度百分比」换算成 (对话层 alpha, 控件层 alpha)。
 
-    65% 时正好还原 CONVERSATION_ALPHA / CONTROL_ALPHA，其余档位按同一比例缩放：
-    0% 完全透出壁纸，100% 控件层完全不透。超出 0~100 的输入按边界截断。
+    默认档（DEFAULT_ALPHA_LEVEL = 73）时控件层正好落在实测的 CONTROL_ALPHA，
+    对话层按固定比例（0.55/0.73）跟随；其余档位按同一比例缩放：0% 完全透出
+    壁纸，100% 控件层完全不透。超出 0~100 的输入按边界截断。
     """
     percent = max(0, min(100, int(level)))
     panel = percent / 100.0
@@ -69,8 +83,13 @@ def alpha_pair(level: int) -> tuple[float, float]:
     return min(1.0, panel * ratio), panel
 
 
-def hex_rgb(text: Any, default: tuple[int, int, int] = (247, 249, 252)) -> tuple[int, int, int]:
-    """'#EEF2F8' -> (238, 242, 248)；解析不了就返回 default（纯色兜底用）。"""
+def hex_rgb(text: Any,
+            default: tuple[int, int, int] = CONVERSATION_RGB) -> tuple[int, int, int]:
+    """'#F2F5FA' -> (242, 245, 250)；解析不了就返回 default（纯色兜底用）。
+
+    兜底色跟着 CONVERSATION_RGB 走：浅色薄罩体系下必须回落成同样偏浅的面板
+    本色，若回落成深色，一旦主题色读坏，界面上会突然出现一块墨斑。
+    """
     if not isinstance(text, str):
         return default
     value = text.strip().lstrip("#")
@@ -106,6 +125,22 @@ def merge_layers(c1: Sequence[int], a1: float,
         return (0, 0, 0), 0.0
     color = [int(round((a2 * c2[k] + (1.0 - a2) * a1 * c1[k]) / a)) for k in range(3)]
     return (color[0], color[1], color[2]), a
+
+
+def panel_coat(conv_alpha: float, panel_alpha: float) -> float:
+    """把「面板区最终要不透明的比例」换算成第二遍混色要用的那层不透明度。
+
+    panel_alpha 说的是「面板区一共遮住多少」（实测 0.73），而它是在对话层
+    （0.55）之上再盖一层得到的，所以要解 1-(1-conv)(1-coat) = panel：
+        coat = 1 - (1-panel) / (1-conv)
+    conv 已经接近 1（或用户把档位拉到 100%）时直接返回 panel，
+    避免除零，也让「100% 完全不透」这一端仍然成立。
+    """
+    panel = min(1.0, max(0.0, float(panel_alpha)))
+    conv = min(1.0, max(0.0, float(conv_alpha)))
+    if conv >= 1.0 or panel <= conv:
+        return panel
+    return max(0.0, min(1.0, 1.0 - (1.0 - panel) / (1.0 - conv)))
 
 
 def alpha_lut(color: int, alpha: float) -> bytes:
@@ -171,20 +206,20 @@ def assemble(width: int, height: int,
 
     for y in range(height):
         base = y * span
-        start = y * width
-        end = start + width
+        start_x = y * width
+        end_x = start_x + width
         segs = rows.get(y)
         if not segs:
-            out[base:base + span:3] = conv_r[start:end]
-            out[base + 1:base + span:3] = conv_g[start:end]
-            out[base + 2:base + span:3] = conv_b[start:end]
+            out[base:base + span:3] = conv_r[start_x:end_x]
+            out[base + 1:base + span:3] = conv_g[start_x:end_x]
+            out[base + 2:base + span:3] = conv_b[start_x:end_x]
             continue
         for channel, conv_plane, panel_plane in ((0, conv_r, panel_r),
                                                  (1, conv_g, panel_g),
                                                  (2, conv_b, panel_b)):
-            line = bytearray(conv_plane[start:end])
+            line = bytearray(conv_plane[start_x:end_x])
             for left, right in segs:
-                line[left:right] = panel_plane[start + left:start + right]
+                line[left:right] = panel_plane[start_x + left:start_x + right]
             out[base + channel:base + span:3] = line
     return out
 
@@ -388,15 +423,16 @@ def compose_ppm(path: str | Any, width: int, height: int,
     if rgb is None:
         return None
     conv_planes = tint_planes(rgb, conv_color, conv_alpha)
+    coat = panel_coat(conv_alpha, panel_alpha)
     merged_color, merged_alpha = merge_layers(conv_color, conv_alpha,
-                                              panel_color, panel_alpha)
+                                              panel_color, coat)
     panel_planes = tint_planes(rgb, merged_color, merged_alpha)
     out = assemble(width, height, conv_planes, panel_planes, regions)
     return ppm_bytes(width, height, out)
 
 
 def compose_png_fallback(width: int, height: int,
-                         color: Sequence[int] = (247, 249, 252),
+                         color: Sequence[int] = CONVERSATION_RGB,
                          regions: Iterable[tuple[int, int, int, int]] = ()) -> bytes:
     """纯色退化背景（壁纸不可用时）。返回同样格式的 PPM 字节串。"""
     base = bytes(int(max(0, min(255, c))) for c in color) * (int(width) * int(height))

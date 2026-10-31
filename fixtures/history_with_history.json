@@ -4,7 +4,7 @@
   "app": "DiskUsageTracker",
   "records": [{
       "timestamp": "2026-04-01T09:00:00+08:00",
-      "key": "Sample NVMe SSD 1TB|N1SAMPLE0001",
+      "key": "SAMPLE NVME SSD 1TB|N1SAMPLE0001",
       "model": "Sample NVMe SSD 1TB",
       "serial": "N1SAMPLE0001",
       "protocol": "NVMe",
@@ -15,7 +15,7 @@
     },
     {
       "timestamp": "2026-04-30T08:00:00+08:00",
-      "key": "Sample NVMe SSD 1TB|N1SAMPLE0001",
+      "key": "SAMPLE NVME SSD 1TB|N1SAMPLE0001",
       "model": "Sample NVMe SSD 1TB",
       "serial": "N1SAMPLE0001",
       "protocol": "NVMe",
@@ -26,7 +26,7 @@
     },
     {
       "timestamp": "2026-04-30T08:00:00+08:00",
-      "key": "Sample SATA SSD 1TB|S5SAMPLE0002",
+      "key": "SAMPLE SATA SSD 1TB|S5SAMPLE0002",
       "model": "Sample SATA SSD 1TB",
       "serial": "S5SAMPLE0002",
       "protocol": "SATA",

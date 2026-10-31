@@ -98,6 +98,48 @@ except Exception:
     CanvasTable = None                  # type: ignore[assignment]
 from . import wallpaper as _wallpaper
 
+# 第 7 套主题的外壳层：容器本身不动，只往里垫一层「背景切片」Canvas，
+# 再把外壳上的 ttk.Label 换成 CanvasLabel（ttk 控件的底色是实色，没法透出壁纸）。
+try:                                    # pragma: no cover - 依赖系统 Tk
+    from .shell_canvas import (CanvasLabel, CardCanvas, ShellSurface,
+                               attach_backdrop)
+except Exception:
+    CanvasLabel = None                  # type: ignore[assignment]
+    CardCanvas = None                   # type: ignore[assignment]
+    ShellSurface = None                 # type: ignore[assignment]
+    attach_backdrop = None              # type: ignore[assignment]
+
+# 第 7 套主题的卡片：卡内文字全部画在画布上。tk.Entry 的底色只能是平色，压在
+# 壁纸亮斑处会露出一个个矩形补丁（实测同一格内与壁纸相差 60~86 个通道），所以
+# 这一套主题不用 Entry，改用 photo_card。PhotoCard 与外壳层同生共死：没有 Tk 时
+# 一起退化成 None，卡片回落到普通 Frame 版本。
+try:                                    # pragma: no cover - 依赖系统 Tk
+    from . import photo_card as _photo_card
+    from .photo_card import PhotoCard
+except Exception:
+    _photo_card = None                  # type: ignore[assignment]
+    PhotoCard = None                    # type: ignore[assignment]
+
+# 外壳文字的样式表：(取哪个配色键, 是否加粗, 字号来源)。apply_theme 时按这张表
+# 重新刷一遍配色——CanvasLabel 不认识 ttk 的 style，颜色必须自己喂。
+# 键必须与 apply_theme 里 style.configure 的那批名字一致，否则切主题后字色不跟。
+_SHELL_LABEL_STYLES: dict[str, tuple[str, bool, str]] = {
+    "App.TLabel": ("tree_fg", False, "base"),
+    "Title.TLabel": ("title_fg", True, "title"),
+    "Hint.TLabel": ("hint_fg", False, "base"),
+    "Ok.TLabel": ("ok_fg", True, "base"),
+    "Muted.TLabel": ("muted_fg", False, "base"),
+    "Action.TLabel": ("ok_fg", True, "base"),
+    "Error.TLabel": ("alert_fg", True, "base"),
+    "Note.TLabel": ("note_fg", False, "base"),
+    "Summary.TLabel": ("summary_fg", False, "base"),
+    "Alert.TLabel": ("alert_fg", True, "base"),
+    # KPI 卡里的两行字：数值用等宽字体加粗（字号取 card_pt），说明用正文字号减一。
+    # 配色分别对应原来 CardValue.TLabel / CardLabel.TLabel 的前景色。
+    "CardValue.TLabel": ("card_val", True, "card"),
+    "CardLabel.TLabel": ("card_lbl", False, "small"),
+}
+
 _SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
 _LABEL_BASE: Any = _tk_for_scrollbar.Label if _tk_for_scrollbar else object
 
@@ -500,7 +542,7 @@ SERIAL_EMPTY_TEXT = "—"        # 读不到序列号时不伪造遮盖串，仍
 
 
 def _mask_serial(serial: str) -> str:
-    """把序列号遮成「前两位 + 8 个星号」，如 ZK7Y4B2K91XD -> 20********。
+    """把序列号遮成「前两位 + 8 个星号」，如 ZK7Y4B2K91XD -> ZK********。
 
     星号数量固定而非按位 1:1，避免从长度反推原序列号；不足两位时整个遮掉，
     一位都不露（宁可多遮，也不能靠「只剩一位」猜出型号批次）。
@@ -667,6 +709,20 @@ class DiskTrackerApp:
         self._cards_resize_id: str | None = None  # 待执行的宽度下发（去抖用）
         self._cards_bbox: tuple[int, ...] | None = None
         self._scroll_sync_id: str | None = None   # 待执行的滚动区域同步（去抖用）
+        # 第 7 套主题的整窗外壳层：所有外壳 Canvas 共享一张「整窗合成图」，
+        # 各自贴自己矩形内的那一块，于是顶栏/提示行/KPI/底栏一起透出同一张壁纸。
+        # 只有图片背景主题 + 真设了背景图时才启用，其余主题/没选图时保持原样。
+        self._shell: Any = None
+        self._shell_backdrops: dict[str, Any] = {}
+        self._shell_labels: list[Any] = []
+        self._shell_refresh_id: Any = None
+        self._wallpaper_size: tuple[int, int] = (0, 0)
+        # KPI 卡的画布底座（CardCanvas）；卡片里的两行字也是外壳文字控件的同类。
+        self._card_shells: list[Any] = []
+        self._card_labels: list[Any] = []
+        # 第 7 套主题的自绘卡片（PhotoCard）。与 _card_shells 分开存：那些是常驻
+        # 的 KPI 卡底座，这些是每轮 render_cards 重建、随时会被销毁的。
+        self._photo_cards: list[Any] = []
 
         self._build_menubar()
         self._build_widgets()
@@ -794,6 +850,94 @@ class DiskTrackerApp:
         self.root.bind("<Control-r>", lambda _event: self.refresh_async())
         self.root.bind("<Control-q>", lambda _event: self.close())
 
+    # ---------- 外壳控件工厂 ----------
+    def _shell_label(self, parent: Any, *, text: str = "",
+                     style: str = "App.TLabel") -> Any:
+        """建一个外壳文字控件：优先 CanvasLabel（能透壁纸），否则退回 ttk.Label。
+
+        为什么外壳必须自绘：ttk.Label 的底色是实色、没有 alpha 通道，只要外壳
+        还是 ttk，壁纸就永远不可能从顶栏、提示行、时间行、底栏这些地方透出来，
+        用户看到的「整窗透图」就只剩中间那块数据区。
+
+        CanvasLabel 只在有壁纸时才贴图，没壁纸时画纯色底，观感与 ttk.Label 一致，
+        所以这里**无条件**用它（避免切主题时重建控件——重建会丢 pack 顺序、
+        丢事件绑定，还会让测试里那些 cget("text") 拿到旧对象）。
+        """
+        widget: Any
+        if CanvasLabel is not None:
+            widget = CanvasLabel(parent, text=text, style=style, anchor="w",
+                                 foreground=str(self.theme.get("tree_fg") or "#1F2933"),
+                                 background=str(self.theme.get("win_bg") or "#FFFFFF"))
+            self._shell_labels.append(widget)
+        else:                               # pragma: no cover - 依赖系统 Tk
+            widget = self.ttk.Label(parent, text=text, style=style, anchor="w")
+        return widget
+
+    def _shell_font(self, style: str) -> tuple[str, int, str] | tuple[str, int]:
+        """外壳文字的字号：标题用 title_pt 加粗，其余跟正文。"""
+        family, size = self.base_font
+        entry = _SHELL_LABEL_STYLES.get(style)
+        if entry is None:
+            return (family, size)
+        color_key, bold, source = entry
+        if source == "title":
+            return (family, int(self.theme.get("title_pt") or size + 3), "bold")
+        if source == "card":
+            # KPI 数值原来用 CardValue.TLabel：等宽字体 + card_pt 字号 + 加粗
+            num_family = str(self.theme.get("num_family") or "Consolas")
+            return (num_family, int(self.theme.get("card_pt") or 12), "bold")
+        if source == "small":
+            # KPI 说明文字原来用 CardLabel.TLabel：正文字号减一、不加粗
+            return (family, max(7, size - 1))
+        return (family, size, "bold") if bold else (family, size)
+
+    def _card_label(self, parent: Any, *, text: str = "",
+                    style: str = "CardValue.TLabel") -> Any:
+        """建一张 KPI 卡里的文字控件（同样是能透壁纸的 CanvasLabel）。
+
+        卡片底座换成 CardCanvas 之后，卡里的字如果还是 ttk.Label，就会在透出壁纸的
+        卡片上留下两块实色白条——必须一起自绘。
+        """
+        if CanvasLabel is None:             # pragma: no cover - 依赖系统 Tk
+            return self.ttk.Label(parent, text=text, style=style, anchor="w")
+        entry = _SHELL_LABEL_STYLES.get(style, ("card_val", False, "base"))
+        widget = CanvasLabel(parent, text=text, style=style, anchor="w",
+                             foreground=str(self.theme.get(entry[0])
+                                            or self.theme.get("tree_fg") or "#1F2933"),
+                             background=str(self.theme.get("card_bg") or "#FFFFFF"))
+        self._card_labels.append(widget)
+        return widget
+
+    def _all_shell_labels(self) -> list[Any]:
+        """全部自绘文字控件：13 个窗体外壳 + KPI 卡里那两行字。"""
+        return list(self._shell_labels) + list(self._card_labels)
+
+    def _apply_shell_theme(self) -> None:
+        """把当前主题的配色刷到外壳 CanvasLabel 上（CanvasLabel 不认识 ttk style）。"""
+        win_bg = str(self.theme.get("win_bg") or "#FFFFFF")
+        card_bg = str(self.theme.get("card_bg") or win_bg)
+        groups = ((self._shell_labels, win_bg), (self._card_labels, card_bg))
+        for widgets, background in groups:
+            for widget in widgets:
+                if CanvasLabel is None or not isinstance(widget, CanvasLabel):
+                    continue
+                style = str(widget.cget("style") or "App.TLabel")
+                entry = _SHELL_LABEL_STYLES.get(style, ("tree_fg", False, "base"))
+                color = str(self.theme.get(entry[0])
+                            or self.theme.get("tree_fg") or "#1F2933")
+                try:
+                    widget.apply_palette(foreground=color, font=self._shell_font(style),
+                                         background=background, padx=0, pady=0)
+                except Exception:           # pragma: no cover - 控件已销毁
+                    pass
+        # KPI 卡的底座是 CardCanvas：底色 + 可选描边也要跟着主题走
+        border = self.theme.get("card_border")
+        for card in self._card_shells:
+            try:
+                card.set_colors(background=card_bg, border=border)
+            except Exception:               # pragma: no cover - 控件已销毁
+                pass
+
     # ---------- 控件 ----------
     def _build_widgets(self) -> None:
         ttk = self.ttk
@@ -805,7 +949,8 @@ class DiskTrackerApp:
         # 右侧数据视图分段切换（表格 / 卡片 / 双列），切换不重建窗口。
         head = ttk.Frame(outer, style="App.TFrame")
         head.pack(fill="x")
-        self.title_label = ttk.Label(head, text=window_title(), style="Title.TLabel", anchor="w")
+        self.head = head
+        self.title_label = self._shell_label(head, text=window_title(), style="Title.TLabel")
         self.title_label.pack(side="left")
 
         self._view_var = self.tk.StringVar(master=self.root, value=self.view_key)
@@ -824,40 +969,40 @@ class DiskTrackerApp:
         self.status_bar = ttk.Frame(outer, style="App.TFrame")
         self.status_bar.pack(fill="x")
         self.ok_parts: list[str] = []
-        self.ok_label = ttk.Label(self.status_bar, text="", style="Ok.TLabel", anchor="w")
+        self.ok_label = self._shell_label(self.status_bar, text="", style="Ok.TLabel")
         self.ok_label.pack(side="left", padx=(0, 8))
         # 失败数单独一个灰 Label：绿色只表达「成功」，失败用灰（与表格灰色行同色），
         # 免得一句全绿的话里夹着「1 块读取失败」，颜色语义自相矛盾。
-        self.fail_label = ttk.Label(self.status_bar, text="", style="Muted.TLabel", anchor="w")
+        self.fail_label = self._shell_label(self.status_bar, text="", style="Muted.TLabel")
         self.fail_label.pack(side="left", padx=(0, 12))
         self.hint_parts: list[str] = []
-        self.hint_label = ttk.Label(self.status_bar, text="", style="Hint.TLabel", anchor="w")
+        self.hint_label = self._shell_label(self.status_bar, text="", style="Hint.TLabel")
         self.hint_label.pack(side="left")
         # 操作失败（复制到剪贴板失败、打开目录失败、请先用右键……）接在黄字后面，
         # 但必须是红字：ttk.Label 一个控件只能有一种前景色，所以另起一个 Label 紧跟其后。
         # 它只保留最新一条，且与下面的绿色反馈共用同一个槽位（见 _set_error / _set_action）。
         self.error_parts: list[str] = []
-        self.error_label = ttk.Label(self.status_bar, text="", style="Error.TLabel", anchor="w")
+        self.error_label = self._shell_label(self.status_bar, text="", style="Error.TLabel")
         self.error_label.pack(side="left", fill="x")
 
         # 绿色操作反馈单独占一行（在提示栏下面、时间行上面），有内容才出现，没有就整行收起。
         # 它取代旧版把「已复制……」塞进黄字提示栏的做法：那些提示带行数/数值，
         # 每一条都不一样，去重拦不住，于是一行行往上堆（用户反馈的「复制提示会堆积」）。
         self.action_parts: list[str] = []
-        self.action_label = ttk.Label(outer, text="", style="Action.TLabel", anchor="w")
+        self.action_label = self._shell_label(outer, text="", style="Action.TLabel")
         self.action_visible = False
 
         top = ttk.Frame(outer, style="App.TFrame")
         top.pack(fill="x", pady=(2, 6))
         self.top_row = top
-        self.prev_label = ttk.Label(top, text=tr("上次记录：—"), style="App.TLabel", anchor="w")
+        self.prev_label = self._shell_label(top, text=tr("上次记录：—"), style="App.TLabel")
         self.prev_label.pack(side="left", padx=(0, 16))
-        self.cur_label = ttk.Label(top, text=tr("本次记录：—"), style="App.TLabel", anchor="w")
+        self.cur_label = self._shell_label(top, text=tr("本次记录：—"), style="App.TLabel")
         self.cur_label.pack(side="left", padx=(0, 16))
-        self.smartctl_label = ttk.Label(
-            top, text=self._source_label_text(), style="App.TLabel", anchor="w")
+        self.smartctl_label = self._shell_label(
+            top, text=self._source_label_text(), style="App.TLabel")
         self.smartctl_label.pack(side="left", padx=(0, 16))
-        self.admin_label = ttk.Label(top, text=tr("权限：检测中"), style="App.TLabel", anchor="w")
+        self.admin_label = self._shell_label(top, text=tr("权限：检测中"), style="App.TLabel")
         self.admin_label.pack(side="left")
 
         # 指标卡（B/C/D 主题显示，A/E 主题隐藏；控件只建一次，切换主题时 pack/pack_forget）
@@ -872,19 +1017,36 @@ class DiskTrackerApp:
         kpi_half_gap = CARD_GAP // 2
         kpi_count = len(KPI_SPECS)
         for index, (key, caption) in enumerate(KPI_SPECS):
-            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(12, 8))
             if index == 0:
                 kpi_padx = (0, kpi_half_gap)
             elif index == kpi_count - 1:
                 kpi_padx = (kpi_half_gap, 0)
             else:
                 kpi_padx = (kpi_half_gap, kpi_half_gap)
+            if CardCanvas is not None:
+                # 卡片自己也是一块画布：图片背景主题里它去合成图上取自己那一块，
+                # 四张卡才不会在壁纸中间戳出四块白板。原来 padding=(12,8) 的内边距
+                # 改成挂在两个子标签上——画布没有内边距选项，而它自己的请求尺寸
+                # 正是由子控件的 pack 几何决定的（实测与 ttk.Frame 一致）。
+                card = CardCanvas(
+                    self.kpi_frame,
+                    background=str(self.theme.get("card_bg") or "#FFFFFF"),
+                    border=self.theme.get("card_border"),
+                )
+                self._card_shells.append(card)
+                value = self._card_label(card, text="—", style="CardValue.TLabel")
+                value.pack(fill="x", padx=12, pady=(8, 0))
+                label = self._card_label(card, text=tr(caption), style="CardLabel.TLabel")
+                label.pack(fill="x", padx=12, pady=(0, 8))
+            else:                           # pragma: no cover - 依赖系统 Tk
+                card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(12, 8))
+                value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
+                value.pack(fill="x")
+                label = ttk.Label(card, text=tr(caption), style="CardLabel.TLabel",
+                                  anchor="w")
+                label.pack(fill="x")
             card.grid(row=0, column=index, sticky="ew", padx=kpi_padx)
             self.kpi_frame.columnconfigure(index, weight=1, uniform="kpi")
-            value = ttk.Label(card, text="—", style="CardValue.TLabel", anchor="w")
-            value.pack(fill="x")
-            label = ttk.Label(card, text=tr(caption), style="CardLabel.TLabel", anchor="w")
-            label.pack(fill="x")
             self.kpi_values[key] = value
             self._kpi_labels[key] = label
         self.kpi_visible = False
@@ -960,17 +1122,18 @@ class DiskTrackerApp:
 
         # 底部条与注释行先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
         # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉
-        note = ttk.Label(outer,
-                         text=self._history_note_text(self.store.path, baseline=False),
-                         style="Note.TLabel", anchor="w")
+        note = self._shell_label(
+            outer, text=self._history_note_text(self.store.path, baseline=False),
+            style="Note.TLabel")
         note.pack(side="bottom", fill="x", pady=(4, 0))
         self.note_label = note
 
         bottom = ttk.Frame(outer, style="App.TFrame")
         bottom.pack(side="bottom", fill="x", pady=(8, 0))
-        self.summary_label = ttk.Label(bottom, text=tr("尚无记录"), style="Summary.TLabel", anchor="w")
+        self.bottom = bottom
+        self.summary_label = self._shell_label(bottom, text=tr("尚无记录"), style="Summary.TLabel")
         self.summary_label.pack(side="left")
-        self.alert_label = ttk.Label(bottom, text="", style="Alert.TLabel", anchor="w")
+        self.alert_label = self._shell_label(bottom, text="", style="Alert.TLabel")
         self.alert_label.pack(side="left", padx=(12, 0))
 
         # width=0：按文字自身宽度排，不走 ttk 的 width=-11（按字符数算最小宽，
@@ -1073,39 +1236,101 @@ class DiskTrackerApp:
         """丢掉合成缓存（换图、改透明度、改窗口大小都要走这里）。"""
         self._wallpaper_cache = {"key": None, "photo": None}
 
-    def _wallpaper_layer(self) -> Any:
-        """给 Canvas 表格合成一张「壁纸 + 半透明内容面板」的位图。
+    # 参与整窗透图的外壳容器（都是 __init__ / _build_widgets 里存下来的属性名）。
+    # 每个容器里都 place 一层铺满的切片 Canvas，各自贴同一张合成图的一小块，
+    # 于是相邻容器的接缝处是同一张图的连续像素，拼起来就是一整张壁纸。
+    #
+    # 只收「底色真正露在外面」的容器：body 被自绘表格（自己铺壁纸）或 cards_canvas
+    # 完全盖住，table_frame / cards_frame 同理，垫了也看不见；kpi_frame 里的 KPI 卡
+    # 是实色 Card.TFrame，垫一层只会让卡缝透出壁纸、显得斑驳，而且测试要数它的子控件。
+    _SHELL_TARGETS = ("outer", "head", "seg_frame", "status_bar", "top_row", "bottom")
 
-        返回 (PhotoImage, 宽, 高)；没设背景图、读不到文件、GDI+ 不可用、
-        尺寸还没量出来，一律返回 None —— CanvasTable 会退回自己的纯色底。
-        这是唯一碰像素的地方，不涉及任何控件状态。
+    def _shell_containers(self) -> list[tuple[str, Any]]:
+        """(键, 容器) 列表，顺序无关，只用于去重与排查。
+
+        不垫 root：outer 是 fill=both+expand 的实色 ttk.Frame，整块盖住客户区，
+        垫在 root 上的切片一个像素都露不出来，白占一张整窗大小的画布。
+        outer 自己那圈 (10,8) 内边距仍是 win_bg（place 只能铺到内边距以内），
+        在浅色薄罩下就是一圈同色调的浅边，观感上无碍。
+        """
+        found: list[tuple[str, Any]] = []
+        for name in self._SHELL_TARGETS:
+            container = getattr(self, name, None)
+            if container is not None:
+                found.append((name, container))
+        return found
+
+    def _client_rect(self, widget: Any) -> tuple[int, int, int, int] | None:
+        """控件相对窗口客户区的矩形 (x, y, w, h)；量不出来返回 None。"""
+        if widget is None:
+            return None
+        try:
+            x = int(widget.winfo_rootx()) - int(self.root.winfo_rootx())
+            y = int(widget.winfo_rooty()) - int(self.root.winfo_rooty())
+            width = int(widget.winfo_width())
+            height = int(widget.winfo_height())
+        except Exception:                   # pragma: no cover - 控件已销毁
+            return None
+        if width <= 1 or height <= 1:
+            return None
+        return (x, y, width, height)
+
+    def _panel_regions(self, width: int, height: int) -> list[tuple[int, int, int, int]]:
+        """哪些矩形用「更实」的控件层，其余用较透的对话层。
+
+        控件层 = 数据区、KPI 卡、底栏、提示栏：这些地方压着文字和按钮，底色实一点
+        才看得清；窗口里剩下的留白用对话层，壁纸透得更彻底。两层之差只有十几个
+        百分点（0.73 / 0.55），观感上是同一块薄罩的深浅，不是两种风格。
+        """
+        regions: list[tuple[int, int, int, int]] = []
+        for name in ("table_frame", "kpi_frame", "bottom", "status_bar"):
+            rect = self._client_rect(getattr(self, name, None))
+            if rect is not None:
+                # _client_rect 给的是 (x, y, w, h)，而 assemble 要的是半开区间
+                # (x0, y0, x1, y1)。直接把 w/h 当 x1/y1 传进去，蒙层只会铺到
+                # 矩形的左上角去——数据区高 479 却只有前 479 行是实层，下面
+                # 一大片会突然回落到更透的对话层，观感上就是上下两截。
+                x, y, rect_w, rect_h = rect
+                regions.append((x, y, x + rect_w, y + rect_h))
+        if not regions:
+            regions.append((0, 0, width, height))
+        return regions
+
+    def _window_layer(self, width: int | None = None,
+                      height: int | None = None) -> Any:
+        """整窗合成图（壁纸 + 薄罩）。外壳切片与数据区共用这一张。
+
+        返回 PhotoImage；没设背景图、读不到文件、GDI+ 不可用、尺寸还没量出来，
+        一律返回 None，所有控件退回各自的纯色底。
         """
         path = self.wallpaper_path
         if not path or not _wallpaper.gdiplus_available():
             return None
-        tree = getattr(self, "tree", None)
-        if tree is None:
-            return None
-        try:
-            width = max(1, int(tree.winfo_width()))
-            height = max(1, int(tree.winfo_height()))
-        except Exception:
-            return None
+        if not width or not height:
+            try:
+                width = int(self.root.winfo_width())
+                height = int(self.root.winfo_height())
+            except Exception:               # pragma: no cover
+                return None
+        width, height = int(width), int(height)
         if width <= 4 or height <= 4:
             return None
-        tree_bg = str(self.theme.get("tree_bg") or "#F4F7FC")
-        key = (path, width, height, int(self.panel_alpha), tree_bg)
+        tree_bg = str(self.theme.get("tree_bg") or "#E6E9F0")
+        regions = self._panel_regions(width, height)
+        key = (path, width, height, int(self.panel_alpha), tree_bg, tuple(regions))
         cached = self._wallpaper_cache
         if cached.get("key") == key and cached.get("photo"):
-            return cached["photo"]
+            layer = cached["photo"]
+            self._wallpaper_size = (int(layer[1]), int(layer[2]))
+            return layer[0]
         _conv_alpha, panel_alpha = _wallpaper.alpha_pair(self.panel_alpha)
         try:
             ppm = _wallpaper.compose_ppm(
-                path, width, height, [(0, 0, width, height)],
+                path, width, height, regions,
                 panel_color=_wallpaper.hex_rgb(tree_bg),
                 panel_alpha=panel_alpha,
             )
-        except Exception:
+        except Exception:                   # noqa: BLE001 - 壁纸出问题只该退化成纯色
             ppm = None
         if not ppm:
             return None
@@ -1113,18 +1338,191 @@ class DiskTrackerApp:
             photo = self.tk.PhotoImage(data=ppm.decode("latin-1"), format="ppm")
         except Exception:
             return None
-        layer = (photo, width, height)
-        self._wallpaper_cache = {"key": key, "photo": layer}
-        return layer
+        self._wallpaper_cache = {"key": key, "photo": (photo, width, height)}
+        self._wallpaper_size = (width, height)
+        return photo
+
+    def _wallpaper_layer(self) -> Any:
+        """CanvasTable 的壁纸钩子：返回 (整窗合成图, 宽, 高)。
+
+        表格只该露出自己那一块，于是把整窗图按它在客户区里的偏移往左上推，
+        相邻控件贴的是同一张图的连续区域，接缝处像素天然对齐。
+        """
+        tree = getattr(self, "tree", None)
+        if tree is None:
+            return None
+        photo = self._window_layer()
+        if photo is None:
+            return None
+        rect = self._client_rect(tree)
+        try:
+            tree.wallpaper_offset = (rect[0], rect[1]) if rect is not None else (0, 0)
+        except Exception:                   # pragma: no cover - 控件已销毁
+            pass
+        width, height = getattr(self, "_wallpaper_size", (0, 0))
+        return (photo, int(width), int(height))
+
+    # ---- 外壳切片层 -----------------------------------------------------------
+
+    def _shell_wanted(self) -> bool:
+        """当前是否该启用整窗外壳透图。"""
+        return (ShellSurface is not None
+                and self.theme_key == THEME_PHOTO
+                and bool(self.wallpaper_path)
+                and _wallpaper.gdiplus_available())
+
+    def _sync_shell_surface(self) -> None:
+        """按当前主题/壁纸，挂上或撤下外壳切片层。不重建任何控件。"""
+        win_bg = str(self.theme.get("win_bg") or "#FFFFFF")
+        if not self._shell_wanted():
+            if self._shell is not None:
+                try:
+                    self._shell.set_provider(None)
+                    self._shell.invalidate()
+                except Exception:           # pragma: no cover
+                    pass
+            # 切片要从合成层上摘掉，只换底色是不够的：留在 _clients 里的话，
+            # 之后任何一次 invalidate 都还会去 repaint 一个已经不属于当前主题的控件。
+            for canvas in self._shell_backdrops.values():
+                try:
+                    canvas.set_surface(None)
+                    canvas.set_background(win_bg)
+                except Exception:           # pragma: no cover
+                    pass
+            # 文字控件也要摘掉切片：留着会继续贴旧图的碎片，切回浅色主题就花了
+            for widget in self._all_shell_labels():
+                try:
+                    if isinstance(widget, CanvasLabel):
+                        widget.set_surface(None)
+                        widget.set_background(win_bg)
+                except Exception:           # pragma: no cover
+                    pass
+            # KPI 卡的画布底座同理：摘掉后回落到 card_bg 纯色，与其余主题一致
+            for card in self._card_shells:
+                try:
+                    card.set_surface(None)
+                except Exception:           # pragma: no cover
+                    pass
+            # 自绘卡片同样要摘：它们也是合成层的客户端，留着会继续贴旧图碎片
+            for card in self._photo_cards:
+                try:
+                    card.set_surface(None)
+                except Exception:           # pragma: no cover - 控件已销毁
+                    pass
+            return
+        if self._shell is None:
+            self._shell = ShellSurface(self.root)
+        try:
+            self._shell.set_provider(self._window_layer)
+        except Exception:                   # pragma: no cover
+            pass
+        for name, container in self._shell_containers():
+            canvas = self._shell_backdrops.get(name)
+            if canvas is None:
+                canvas = attach_backdrop(container, self._shell, background=win_bg)
+                if canvas is None:
+                    continue
+                self._shell_backdrops[name] = canvas
+            else:
+                # 切走过一次再切回来：控件还在原处，但已经从合成层摘掉了，
+                # 必须重新挂上，否则这六块会一直停在纯色底上。
+                try:
+                    canvas.set_surface(self._shell)
+                except Exception:           # pragma: no cover
+                    pass
+            try:
+                canvas.set_background(win_bg)
+            except Exception:               # pragma: no cover
+                pass
+        # 13 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
+        # 否则它们会在切片层上面留下一小块一小块的实色补丁。
+        # KPI 卡里的两行字同理，底色用卡片色而不是窗口色。
+        card_bg = str(self.theme.get("card_bg") or win_bg)
+        for widget, background in [(w, win_bg) for w in self._shell_labels] +                                   [(w, card_bg) for w in self._card_labels]:
+            try:
+                if isinstance(widget, CanvasLabel):
+                    widget.set_background(background)
+                    widget.set_surface(self._shell)
+            except Exception:               # pragma: no cover - 控件已销毁
+                pass
+        # KPI 卡底座：图表也要透，否则四张卡还是四块实色
+        for card in self._card_shells:
+            try:
+                card.set_surface(self._shell)
+            except Exception:               # pragma: no cover - 控件已销毁
+                pass
+        # 自绘卡片：构造时就带上了 self._shell，但那时可能还没有壁纸，
+        # 选图/改透明度走到这里要重新挂一遍才会重画。
+        for card in self._photo_cards:
+            try:
+                card.set_surface(self._shell)
+            except Exception:               # pragma: no cover - 控件已销毁
+                pass
+        try:
+            self._shell.invalidate()
+        except Exception:                   # pragma: no cover
+            pass
+
+    def _schedule_shell_refresh(self, delay: int = 120) -> None:
+        """布局稳定后再重算一次控件层矩形。
+
+        KPI 卡出现/消失、切换视图都会挪动 body 的上下边界，而合成图是按这些
+        矩形切出「控件层 / 对话层」的。apply_theme 里那一刻 pack 还没走完，
+        winfo_rooty 拿到的还是旧值，所以延后一帧再量，量完只重合成、不动控件。
+        """
+        if self._shell is None:
+            return
+        pending = getattr(self, "_shell_refresh_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:               # pragma: no cover - 已执行过
+                pass
+            self._shell_refresh_id = None
+        try:
+            self._shell_refresh_id = self.root.after(delay, self._run_shell_refresh)
+        except Exception:                   # pragma: no cover - 窗口已销毁
+            self._shell_refresh_id = None
+
+    def _run_shell_refresh(self) -> None:
+        """重算控件层矩形，并让外壳切片与自绘表格各贴一次新图。"""
+        self._shell_refresh_id = None
+        if self._shell is None:
+            return
+        self._invalidate_wallpaper()
+        try:
+            self._shell.invalidate()
+        except Exception:                   # pragma: no cover
+            pass
+        painter = getattr(self.tree, "redraw", None)
+        if callable(painter):
+            try:
+                painter()
+            except Exception:               # pragma: no cover - 控件已销毁
+                pass
 
     def _refresh_wallpaper(self) -> None:
-        """缓存作废后让自绘表格重画一次（Treeview 下是空操作）。"""
+        """缓存作废后让自绘表格与外壳切片都重画一次（Treeview 下只重画外壳）。
+
+        这里必须再跑一次 _sync_shell_surface：换图/清除/改不透明度都可能让
+        「该不该有外壳切片」翻面（原来是空路径、现在有图了 → 要现挂一层），
+        只对已存在的 _shell 调 invalidate 是不够的。
+        """
         self._invalidate_wallpaper()
+        try:
+            self._sync_shell_surface()
+        except Exception:                   # pragma: no cover - 合成层绝不该拖垮界面
+            pass
         painter = getattr(self.tree, "redraw", None)
         if callable(painter):
             try:
                 painter()
             except Exception:
+                pass
+        if self._shell is not None:
+            try:
+                self._shell.invalidate()
+            except Exception:               # pragma: no cover
                 pass
 
     def choose_wallpaper(self) -> str:
@@ -1232,9 +1630,11 @@ class DiskTrackerApp:
             # 插在时间行之前：反馈属于「刚发生了什么」，时间与状态是背景信息，排在它后面
             self.action_label.pack(fill="x", before=self.top_row)
             self.action_visible = True
+            self._schedule_shell_refresh()
         elif not text and self.action_visible:
             self.action_label.pack_forget()
             self.action_visible = False
+            self._schedule_shell_refresh()
 
     def _set_error(self, text: str) -> None:
         """设置红色操作失败提示：只留最新一条，且顶掉上一条绿色反馈。
@@ -1452,7 +1852,14 @@ class DiskTrackerApp:
         # 图变了、透明度变了，之前的合成缓存一律作废，下次重画时重新贴
         self._invalidate_wallpaper()
 
+        # 外壳：先把配色刷到 CanvasLabel（它们不认 ttk style），再决定挂不挂切片层。
+        # 顺序不能反——_sync_shell_surface 会拿 theme 里的 win_bg 当兜底色。
+        self._apply_shell_theme()
+        self._sync_shell_surface()
+
         self._set_kpi_visible(theme["kpi"] is not None)
+        # KPI 卡的显隐会挪动 body 的位置，控件层矩形要等布局稳定后重算一次
+        self._schedule_shell_refresh()
         if hasattr(self, "_theme_var"):
             self._theme_var.set(self.theme_key)
         # 卡片视图的颜色是直接画在 tk 控件上的，主题切换后必须重画
@@ -1672,6 +2079,8 @@ class DiskTrackerApp:
             self.flush_card_layout()
         if persist:
             self._save_setting("view", key)
+        # 表格区与卡片区的矩形变了，外壳切片要重新切
+        self._schedule_shell_refresh()
         return key
 
     def _save_setting(self, name: str, value: Any) -> None:
@@ -1824,6 +2233,7 @@ class DiskTrackerApp:
         theme = self.theme
         for child in self.cards_inner.winfo_children():
             child.destroy()
+        self._photo_cards = []
         # 先把上一种视图留下的列配置清干净：双列给每列配了 weight/uniform，
         # 切回单列时若不清，卡片只会占一半宽度（看起来仍像双列）。
         widest = max(columns, getattr(self, "_card_columns", 0))
@@ -1835,7 +2245,10 @@ class DiskTrackerApp:
         # 左列卡片就比右列窄 CARD_GAP 像素（实测 567 vs 577），双列看着就是歪的。
         half_gap = CARD_GAP // 2
         for index, row in enumerate(self._card_rows):
-            card = self._build_card(row, theme)
+            if self._use_photo_cards():
+                card = self._build_photo_card(row, theme)
+            else:
+                card = self._build_card(row, theme)
             column = index % columns
             if columns == 1:
                 padx = (0, 0)                       # 单列：卡片贴满整行，右缘与 KPI 行对齐
@@ -1921,6 +2334,116 @@ class DiskTrackerApp:
         entry.configure(state="readonly")
         entry.configure(justify=anchor if anchor in ("left", "right", "center") else "left")
         return entry
+
+    def _use_photo_cards(self) -> bool:
+        """第 7 套主题才用自绘卡片：只有这套主题整窗透壁纸。
+
+        其它主题维持 Frame + 只读 Entry 的老结构——卡片里的文字靠 Entry 提供
+        原生拖选与 Ctrl+C，而这套主题的卡内文字改由 PhotoCard 自己画。
+        """
+        return PhotoCard is not None and self.theme_key == THEME_PHOTO
+
+    def _card_metric_items(self, row: DiskRow,
+                           theme: dict[str, Any]) -> list[tuple[str, str, str, bool]]:
+        """把 CARD_METRICS 翻成 (标题, 文本, 颜色, 是否等宽) 四元组。
+
+        与 _build_card 里的取值规则保持一致：容量用 fmt_size_short、四个增量
+        带 GB 单位、时长与 0E 用界面字体（中英混排塞进 Consolas 会很别扭）。
+        """
+        alert = row.alert
+        foreground = (theme["alert_fg"] if alert
+                      else (theme["muted_fg"] if (row.failed or row.vanished)
+                            else theme["tree_fg"]))
+        if self.view_key == VIEW_GRID:
+            metrics = CARD_METRICS_GRID
+        else:
+            metrics = CARD_METRICS
+        items: list[tuple[str, str, str, bool]] = []
+        for caption, field in metrics:
+            value = getattr(row, field, None)
+            if field == "read_gb":
+                text = fmt_size_short(row.read_gb)
+            elif field == "write_gb":
+                text = fmt_size_short(row.write_gb)
+            elif field in ("read_delta_gb", "write_delta_gb",
+                           "hist_read_delta_gb", "hist_write_delta_gb"):
+                text = fmt_delta_gb(value)
+            elif field == "interval_text":
+                text = row.interval_text
+            else:
+                text = str(value if value is not None else "—")
+            color = foreground
+            if alert and field == "media_text":
+                color = theme["alert_fg"]
+            numeric = field not in ("interval_text", "media_text")
+            items.append((tr(caption), text, color, numeric))
+        return items
+
+    def _photo_card_palette(self, theme: dict[str, Any]) -> dict[str, Any]:
+        """PhotoCard 只认这几个颜色键，缺的色调各自兜底。"""
+        return {
+            "fg": theme["tree_fg"],
+            "note_fg": theme["note_fg"],
+            "card_lbl": theme["card_lbl"],
+            "head_bg": theme["head_bg"],
+            "head_fg": theme["head_fg"],
+            "seg_border": theme["seg_border"],
+            "sel_bg": theme["select_bg"],
+            "sel_fg": theme["select_fg"],
+        }
+
+    def _build_photo_card(self, row: DiskRow, theme: dict[str, Any]) -> Any:
+        """第 7 套主题的卡片：壁纸切片 + 近白薄罩 + 画布上的文字。
+
+        为什么不用 _build_card：tk.Entry 的 readonlybackground 只能是一种平色，
+        压到壁纸亮斑处与周围差 60~86 个通道，一张卡上会浮出十几个矩形补丁。
+        自绘之后卡面与壁纸连续，拖选与 Ctrl+C 由 PhotoCard 自己实现。
+        """
+        alert = row.alert
+        muted = row.failed or row.vanished
+        background = (theme["alert_bg"] if alert and theme["alert_bg"]
+                      else theme["card_bg"])
+        foreground = (theme["alert_fg"] if alert
+                      else (theme["muted_fg"] if muted else theme["tree_fg"]))
+        border = theme["alert_fg"] if alert else theme["card_border"]
+        if self.view_key == VIEW_GRID:
+            columns = CARD_METRIC_COLUMNS_GRID
+        else:
+            columns = CARD_METRIC_COLUMNS
+        spec = {
+            "status": _truncate(row.status_text, 30),
+            "status_fg": theme["alert_fg"] if alert else theme["note_fg"],
+            "model": row.model,
+            "foreground": foreground,
+            "protocol": row.protocol,
+            "drive": row.drives or "",
+            "subtitle": (f"{_serial_line(row, self.show_serial, self.show_gib)}"
+                         f"  ·  {row.device_path}"),
+            "metrics": self._card_metric_items(row, theme),
+            "columns": columns,
+            "border": border,
+        }
+        if alert:
+            spec["veil_rgb"] = _photo_card.ALERT_VEIL_RGB
+            spec["veil_alpha"] = _photo_card.ALERT_VEIL_ALPHA
+        else:
+            spec["veil_rgb"] = _photo_card.VEIL_RGB
+            spec["veil_alpha"] = _photo_card.VEIL_ALPHA
+        card = PhotoCard(self.cards_inner, self._shell, spec=spec,
+                         palette=self._photo_card_palette(theme),
+                         font_family=self.base_font[0],
+                         font_size=self.base_font[1],
+                         num_family=str(theme.get("num_family") or "Consolas"),
+                         background=background,
+                         on_copy=self._copy_card_text)
+        self._photo_cards.append(card)
+        return card
+
+    def _copy_card_text(self, text: str) -> None:
+        """自绘卡片里的 Ctrl+C：与表格走同一条剪贴板出口。"""
+        if not text:
+            return
+        self._copy_text(text, tr("已复制：{value}", value=text))
 
     def _build_card(self, row: DiskRow, theme: dict[str, Any]) -> Any:
         """一块盘一张卡片：标题行（型号 + 协议 + 状态）+ 序列号行 + 指标格。"""

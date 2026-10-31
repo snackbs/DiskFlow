@@ -22,8 +22,8 @@ import main as app
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TZ8 = timezone(timedelta(hours=8))
 
-NVME_KEY = "Sample NVMe SSD 1TB|N1SAMPLE0001"
-SATA_KEY = "Sample SATA SSD 1TB|S5SAMPLE0002"
+NVME_KEY = "SAMPLE NVME SSD 1TB|N1SAMPLE0001"
+SATA_KEY = "SAMPLE SATA SSD 1TB|S5SAMPLE0002"
 
 # fixtures 样本的精确换算值（供断言使用）
 NVME_READ_GB = 13314398 * 512000 / 1024 ** 3      # 6348.799705505371
@@ -416,10 +416,10 @@ def test_serial_line_appends_capacity_only_when_known():
         protocol="NVMe", device_path="/dev/sda", capacity_bytes=256060514304,
         read_gb=100.0, write_gb=50.0,
     )
-    assert app._serial_line(with_capacity, show_serial=False) == "20********  ·  256 GB (238.47 GiB)"
+    assert app._serial_line(with_capacity, show_serial=False) == "ZK********  ·  256 GB (238.47 GiB)"
     assert app._serial_line(with_capacity, show_serial=True) == "ZK7Y4B2K91XD  ·  256 GB (238.47 GiB)"
     assert app._row_values(with_capacity, show_serial=False)[0] == (
-        "Test NVMe\n20********  ·  256 GB (238.47 GiB)")
+        "Test NVMe\nZK********  ·  256 GB (238.47 GiB)")
 
     without = app.DiskRow(
         key="Test NVMe|SN1", model="Test NVMe", serial="SN1",
@@ -431,11 +431,11 @@ def test_serial_line_appends_capacity_only_when_known():
 
     # 关掉系统口径：只剩厂商标称值，序列号与分隔符都不变
     assert app._serial_line(with_capacity, show_serial=False,
-                            show_gib=False) == "20********  ·  256 GB"
+                            show_gib=False) == "ZK********  ·  256 GB"
     assert app._serial_line(with_capacity, show_serial=True,
                             show_gib=False) == "ZK7Y4B2K91XD  ·  256 GB"
     assert app._row_values(with_capacity, show_serial=False, show_gib=False)[0] == (
-        "Test NVMe\n20********  ·  256 GB")
+        "Test NVMe\nZK********  ·  256 GB")
     # 容量未知时开关怎么设都只留序列号
     assert app._serial_line(without, show_serial=True, show_gib=False) == "SN1"
 
@@ -1022,7 +1022,7 @@ def test_end_to_end_new_disk_and_vanished_disk(tmp_path):
     rows = {r.key: r for r in outcome.rows}
     assert rows[NVME_KEY].read_delta_gb is not None
     assert rows[SATA_KEY].read_delta_gb is not None
-    vanished = rows["WDC Sample Archive HDD 4TB|WD-H4SAMPLE0004"]
+    vanished = rows["SAMPLE ARCHIVE HDD 4TB|H4SAMPLE0004"]
     assert vanished.vanished is True
 
     store2 = _prepare_store(tmp_path / "second", "history_with_new_disk.json")
@@ -3650,12 +3650,12 @@ def test_serial_masked_as_prefix_plus_fixed_stars():
     assert app.SERIAL_MASK_CHARS == 8 and app.SERIAL_MASK_VISIBLE_PREFIX == 2
 
     # 真实盘两种典型序列号：只露前两位
-    assert app._mask_serial("ZK7Y4B2K91XD") == "20********"
-    assert app._mask_serial("QN2W8N5T63VKM") == "S7********"
+    assert app._mask_serial("ZK7Y4B2K91XD") == "ZK********"
+    assert app._mask_serial("QN2W8N5T63VKM") == "QN********"
 
     # 长短不同的序列号遮盖串长度一致——长度本身也是信息，不能泄露
     masks = {app._mask_serial(value) for value in ("SN1", "ZK7Y4B2K91XD", "X" * 40)}
-    assert masks == {"SN********", "20********", "X" * 2 + "********"}
+    assert masks == {"SN********", "ZK********", "X" * 2 + "********"}
     assert len({len(mask) for mask in masks}) == 1
 
     # 不足两位：一位都不露，整个遮掉
@@ -3668,7 +3668,7 @@ def test_serial_masked_as_prefix_plus_fixed_stars():
     assert app._mask_serial(None) == "—"
 
     # 前后空白不影响取哪两位
-    assert app._mask_serial("  ZK7Y4B2K91XD  ") == "20********"
+    assert app._mask_serial("  ZK7Y4B2K91XD  ") == "ZK********"
 
 
 def test_serial_hidden_by_default_in_row_values_and_short_serial():
@@ -3678,13 +3678,13 @@ def test_serial_hidden_by_default_in_row_values_and_short_serial():
         protocol="NVMe", device_path="/dev/sda",
         read_gb=100.0, write_gb=50.0,
     )
-    assert app._short_serial("ZK7Y4B2K91XD", show=False) == "20********"
+    assert app._short_serial("ZK7Y4B2K91XD", show=False) == "ZK********"
     assert app._short_serial("ZK7Y4B2K91XD", show=True) == "ZK7Y4B2K91XD"
     assert app._short_serial("", show=True) == "—"
     assert app._short_serial("  ", show=False) == "—"
 
     hidden = app._row_values(row, show_serial=False)
-    assert hidden[0] == "Test NVMe\n20********"
+    assert hidden[0] == "Test NVMe\nZK********"
     assert "ZK7Y4B2K91XD" not in "".join(hidden)
 
     shown = app._row_values(row, show_serial=True)
@@ -4313,7 +4313,7 @@ def test_normalize_alpha_clamps_and_rejects_junk():
 
 
 def test_alpha_pair_restores_the_calibrated_layers():
-    """默认档必须精确还原实测那组 55% / 65%，其余档位按同一比例缩放。"""
+    """默认档必须精确还原实测那组 55% / 73%（浅色薄罩），其余档位按同一比例缩放。"""
     conv, panel = app.alpha_pair(app.DEFAULT_ALPHA_LEVEL)
     assert panel == pytest.approx(app.DEFAULT_ALPHA_LEVEL / 100)
     assert conv == pytest.approx(app.CONVERSATION_ALPHA)
@@ -4327,11 +4327,14 @@ def test_alpha_pair_restores_the_calibrated_layers():
 
 def test_hex_rgb_parses_theme_colors():
     assert app.hex_rgb("#FFE0DD") == (255, 224, 221)
-    assert app.hex_rgb("EEF2F8") == (238, 242, 248)
-    assert app.hex_rgb("#EEF2F8") == app.CONVERSATION_RGB
+    assert app.hex_rgb("2D3241") == (45, 50, 65)
+    assert app.hex_rgb("#EEF2FA") == app.CONVERSATION_RGB
     assert app.hex_rgb("#EBF") == (238, 187, 255)
-    assert app.hex_rgb("nope") == (247, 249, 252)
-    assert app.hex_rgb(None) == (247, 249, 252)
+    # 解析不了的输入回落到面板本色（浅色薄罩的近白），不能回落成深色：
+    # 那样一旦主题色读坏，浅色面板上会突然冒出一块墨斑。
+    assert app.hex_rgb("nope") == (238, 242, 250)
+    assert app.hex_rgb(None) == (238, 242, 250)
+    assert app.hex_rgb("#12345") == app.CONVERSATION_RGB
 
 
 def test_merge_layers_combines_two_translucent_coats():
@@ -4341,7 +4344,25 @@ def test_merge_layers_combines_two_translucent_coats():
     assert color == (170, 170, 170)
     _color, merged = app.merge_layers(app.CONVERSATION_RGB, app.CONVERSATION_ALPHA,
                                       app.CONTROL_RGB, app.CONTROL_ALPHA)
-    assert merged == pytest.approx(0.8425)
+    # 两层是同一量级的浅色薄罩（0.55 / 0.73），直接叠起来只有 0.8785 —— 所以面板区
+    # 实际盖的那一层要先过 panel_coat 换算（见下一个用例），而不是拿 0.73 硬叠。
+    assert merged == pytest.approx(1 - (1 - 0.55) * (1 - 0.73))
+    # 全透明叠加不产生新的不透明层
+    assert app.merge_layers((10, 20, 30), 0.0, (40, 50, 60), 0.0) == ((0, 0, 0), 0.0)
+
+
+def test_panel_coat_lands_on_the_measured_total_opacity():
+    """面板区要「一共遮住 73%」：在 55% 的对话层之上再盖的那层必须解出来。"""
+    coat = app.panel_coat(app.CONVERSATION_ALPHA, app.CONTROL_ALPHA)
+    assert coat == pytest.approx(0.4)
+    # 两层叠完正好是 CONTROL_ALPHA：壁纸没被多遮一层，也没少遮。
+    _color, total = app.merge_layers(app.CONVERSATION_RGB, app.CONVERSATION_ALPHA,
+                                     app.CONTROL_RGB, coat)
+    assert total == pytest.approx(app.CONTROL_ALPHA)
+    # 对话层已经完全不透、或目标比它还透时，直接返回目标值，不除零、不出负值。
+    assert app.panel_coat(1.0, 0.73) == pytest.approx(0.73)
+    assert app.panel_coat(0.55, 0.3) == pytest.approx(0.3)
+    assert app.panel_coat(0.0, 1.0) == pytest.approx(1.0)
     # 全透明叠加不产生新的不透明层
     assert app.merge_layers((10, 20, 30), 0.0, (40, 50, 60), 0.0) == ((0, 0, 0), 0.0)
 
@@ -4641,3 +4662,577 @@ def test_gui_toggling_serial_keeps_the_photo_theme(tk_root, tmp_path):
     assert settings.load()["theme"] == app.THEME_PHOTO
     assert window.theme_key == app.THEME_PHOTO
     window.root.destroy()
+
+# ---------------------------------------------------------------------------
+# 12. 多行单元格的行高与选区（v0.9.1 修「文字糊成一团」）
+# ---------------------------------------------------------------------------
+def _mapped_table(tk_root, columns, **kwargs):
+    """建一张真映射到屏幕上的自绘表格：宽高小于 2px 时 redraw 直接返回，什么都画不出来。"""
+    tk_root.deiconify()
+    tk_root.geometry("560x320")
+    tk_root.update()
+    table = app.CanvasTable(tk_root, columns=list(columns), **kwargs)
+    table.pack(fill="both", expand=True)
+    tk_root.update()
+    if table.winfo_width() <= 1:
+        pytest.skip("窗口未映射，Canvas 拿不到实际尺寸，跳过绘制相关断言")
+    return table
+
+
+def test_char_run_split_lines_normalizes_newlines():
+    """一格两行文字靠它切开：\\r\\n 与单独的 \\r 都算换行，尾部空行丢掉。"""
+    assert app.CharRun.split_lines("a\nb") == ["a", "b"]
+    assert app.CharRun.split_lines("a\r\nb\rc") == ["a", "b", "c"]
+    assert app.CharRun.split_lines("a\n\n") == ["a"]
+    assert app.CharRun.split_lines("") == [""]
+    assert app.CharRun.split_lines(None) == [""]
+    # 超过 MAX_CELL_LINES 的行直接丢掉，否则一行能把表头顶出屏幕
+    assert app.CharRun.split_lines("1\n2\n3\n4\n5") == ["1", "2", "3"]
+    assert app.MAX_CELL_LINES == 3
+
+
+def test_canvas_table_grows_rows_so_two_line_cells_do_not_overlap(tk_root):
+    """型号\\n序列号必须上下排开、互不越界——实机截图里的糊成一团就是这里出的错。"""
+    table = _mapped_table(tk_root, ["model", "size"], palette={"bg": None})
+    table.column("model", width=260)
+    table.column("size", width=120)
+    table.insert("", "end", iid="r1",
+                 values=("Acme SK500\nSYNTHSATA0001", "73,136.84"))
+    table.insert("", "end", iid="r2",
+                 values=("Sample NVMe SSD\nS9ANJ00001", "12.50"))
+    table.redraw()
+    tk_root.update()
+
+    linespace = float(table._font.metrics("linespace"))
+    # 两行文字至少两倍行距；最小行高（34）不能被压小
+    for index in range(2):
+        assert table._row_heights[index] >= 2 * linespace
+        assert table._row_heights[index] >= 34
+
+    first = table._char_runs[(0, 0, 0)]
+    second = table._char_runs[(0, 0, 1)]
+    assert first.text == "Acme SK500"
+    assert second.text == "SYNTHSATA0001"
+    # 上一行的底不压下一行的顶：允许 0.5px 的取整误差
+    assert first.bottom <= second.top + 0.5
+    # 两行都要待在自己这一行里（CharRun 的 y 是画布坐标，要加回表头高度）
+    row_top = table._head_height + table._row_tops[0]
+    row_bottom = row_top + table._row_heights[0]
+    assert first.top >= row_top - 0.5
+    assert second.bottom <= row_bottom + 0.5
+
+
+def test_canvas_table_keeps_one_char_run_per_line(tk_root):
+    """_char_runs 的键必须带「格内第几行」，否则第二行覆盖第一行，拖选只能选到后半截。"""
+    table = _mapped_table(tk_root, ["model"], palette={"bg": None})
+    table.column("model", width=260)
+    table.insert("", "end", iid="r1", values=("AAA\nBBB",))
+    table.redraw()
+    tk_root.update()
+    assert (0, 0, 0) in table._char_runs
+    assert (0, 0, 1) in table._char_runs
+    assert table._char_runs[(0, 0, 0)].text == "AAA"
+    assert table._char_runs[(0, 0, 1)].text == "BBB"
+
+
+def test_canvas_table_hit_tests_the_line_under_the_cursor(tk_root):
+    """点第二行就该从第二行算起，不能一律按第一行的 x 处理。"""
+    table = _mapped_table(tk_root, ["model"], palette={"bg": None})
+    table.column("model", width=260)
+    table.insert("", "end", iid="r1", values=("AAA\nBBB",))
+    table.redraw()
+    tk_root.update()
+    first = table._char_runs[(0, 0, 0)]
+    second = table._char_runs[(0, 0, 1)]
+    assert table._hit_line(0, 0, (first.top + first.bottom) / 2.0) == 0
+    assert table._hit_line(0, 0, (second.top + second.bottom) / 2.0) == 1
+
+
+def test_canvas_table_selection_text_joins_lines_with_a_space(tk_root):
+    """一格两行导出时要拼成一段（用空格），塞换行会让 TSV 的行列错位。"""
+    table = _mapped_table(tk_root, ["model", "size"], palette={"bg": None})
+    table.column("model", width=260)
+    table.column("size", width=120)
+    table.insert("", "end", iid="r1", values=("AAA\nBBB", "12"))
+    table.insert("", "end", iid="r2", values=("CCC\nDDD", "34"))
+    table.redraw()
+    table._sel_range = (0, 0, 0, 1, 1, 2)
+    table._sel_lines = (0, 0)
+    text = table.selection_text()
+    rows = text.split("\n")
+    assert rows[0] == "AAA BBB\t12"
+    assert rows[1] == "CCC DDD\t34"
+
+
+def test_canvas_table_normalizes_the_selection_once(tk_root):
+    """_normalized_range 会顺手翻正 _sel_lines，所以必须幂等，否则画一次选一次就翻回去。"""
+    table = _mapped_table(tk_root, ["model"], palette={"bg": None})
+    table.column("model", width=260)
+    for iid in ("r0", "r1", "r2"):
+        table.insert("", "end", iid=iid, values=(iid,))
+    table.redraw()
+    table._sel_range = (2, 0, 3, 0, 0, 1)
+    table._sel_lines = (1, 0)
+    first = table._normalized_range()
+    second = table._normalized_range()
+    assert first == (0, 0, 1, 2, 0, 3)
+    assert first == second
+    assert table._sel_lines == (0, 1)
+
+# ---------------------------------------------------------------------------
+# 13. 整窗外壳切片层（第 7 套主题把顶栏/提示行/底栏一起透出壁纸）
+# ---------------------------------------------------------------------------
+class _FakeEvent:
+    """Tk 回调只用到 event.widget，真事件对象造不出来也无所谓。"""
+
+    def __init__(self, widget):
+        self.widget = widget
+
+
+def test_shell_surface_ignores_child_widget_events(tk_root):
+    """子控件的 Configure/Destroy 绝不能传到合成层。
+
+    Tk 的 bindtags 第三个标签是顶层窗口名，所以 bind(root, ...) 绑到的回调会被
+    每一个子控件触发：不判 event.widget，切主题重建表格时旧表格一销毁就把整层判死，
+    壁纸当场消失。这条用例就是钉住那个判断。
+    """
+    surface = app.ShellSurface(tk_root)
+    surface.client_size = lambda: (800, 600)
+    assert surface._alive is True
+
+    doomed = tkinter.Frame(tk_root)
+    doomed.pack()
+    tk_root.update_idletasks()
+    # 子控件的 Configure 不能改合成层尺寸
+    surface._on_root_configure(_FakeEvent(doomed))
+    assert (surface.width, surface.height) == (0, 0)
+    doomed.destroy()
+    # 子控件销毁更不能把合成层判死
+    assert surface._alive is True
+
+    # 根窗口自己的事件才认
+    surface._on_root_configure(_FakeEvent(tk_root))
+    assert (surface.width, surface.height) == (800, 600)
+
+
+def test_shell_surface_delivers_the_composed_photo_to_clients(tk_root):
+    """合出来的图只存一份，所有切片共用同一张（接缝才能对齐）。"""
+    photo = tkinter.PhotoImage(master=tk_root, width=4, height=4)
+    calls = []
+
+    def provider(width, height):
+        calls.append((width, height))
+        return photo
+
+    surface = app.ShellSurface(tk_root, provider=provider)
+    canvas = app.SliceCanvas(tk_root, surface, background="#FFFFFF")
+    surface.client_size = lambda: (640, 480)
+    surface.offset_of = lambda widget: (0, 0)
+    surface._recompose()
+    assert calls == [(640, 480)]
+    assert surface.image() is photo
+    assert canvas._image_item is not None
+
+    # provider 炸掉时只退回纯色，旧图必须撤掉，不能留半张
+    surface.provider = lambda width, height: (_ for _ in ()).throw(RuntimeError("boom"))
+    surface._recompose()
+    assert surface.image() is None
+    assert canvas._image_item is None
+
+
+def test_slice_canvas_paints_its_slice_at_the_negative_offset(tk_root):
+    """每块切片贴的是整窗图的负偏移处，于是拼起来是一张连续壁纸。"""
+    photo = tkinter.PhotoImage(master=tk_root, width=8, height=8)
+    surface = app.ShellSurface(tk_root)
+    surface.photo = photo
+    surface.offset_of = lambda widget: (40, 30)
+    canvas = app.SliceCanvas(tk_root, surface, background="#EEF2FA")
+    canvas.repaint()
+    assert canvas._image_item is not None
+    coords = canvas.coords(canvas._image_item)
+    assert (float(coords[0]), float(coords[1])) == (-40.0, -30.0)
+    # 图必须压在最底层，否则会盖住自己上面的内容
+    assert canvas.find_all()[0] == canvas._image_item
+
+    # 没有图时退回纯色底
+    surface.photo = None
+    canvas.repaint()
+    assert canvas._image_item is None
+    assert str(canvas.cget("bg")).lower() == "#eef2fa"
+
+
+def test_attach_backdrop_lays_a_full_size_slice_under_the_children(tk_root):
+    """容器本身一个都不换，只在它内部 place 一层铺满的切片。"""
+    surface = app.ShellSurface(tk_root)
+    container = tkinter.Frame(tk_root)
+    container.pack(fill="both", expand=True)
+    canvas = app.attach_backdrop(container, surface, background="#EEF2FA")
+    assert canvas is not None
+    assert canvas.shell_surface is surface
+    info = canvas.place_info()
+    assert float(info["x"]) == 0.0 and float(info["y"]) == 0.0
+    assert float(info["relwidth"]) == 1.0
+    assert float(info["relheight"]) == 1.0
+    assert canvas in container.winfo_children()
+
+    # surface 为 None（没开整窗透图）时一个控件都不该建
+    before = len(container.winfo_children())
+    assert app.attach_backdrop(container, None) is None
+    assert len(container.winfo_children()) == before
+
+
+def test_canvas_label_mimics_the_label_api(tk_root):
+    """13 个外壳文字控件都靠这几个接口活着：configure(text=)、cget("text"/"style")。"""
+    label = app.CanvasLabel(tk_root, text="上次记录：—", style="App.TLabel")
+    assert label.cget("text") == "上次记录：—"
+    assert label.cget("style") == "App.TLabel"
+    assert label.cget("anchor") == "w"
+
+    narrow = label.winfo_reqwidth()
+    label.configure(text="上次记录：2026-10-31T22:54:50+08:00")
+    assert label.cget("text").startswith("上次记录：2026")
+    # 宽度必须跟着文字长，否则会被 pack 压成半截
+    assert label.winfo_reqwidth() > narrow
+
+    label.configure(style="Error.TLabel")
+    assert label.cget("style") == "Error.TLabel"
+
+    label.apply_palette(foreground="#B32D1F", font=("Microsoft YaHei UI", 9),
+                        background="#EEF2FA", padx=4, pady=2)
+    assert label._foreground == "#B32D1F"
+    assert (label._pad_x, label._pad_y) == (4, 2)
+    assert str(label.cget("bg")).lower() == "#eef2fa"
+
+
+def _photo_window(tk_root, tmp_path, theme=None):
+    return app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                              store=_gui_store(tmp_path), autostart=False,
+                              settings=app.SettingsStore(tmp_path),
+                              theme=theme or app.THEME_LEDGER)
+
+
+def test_gui_shell_labels_are_canvas_labels(tk_root, tmp_path):
+    """外壳 13 个文字控件一律是自绘 CanvasLabel，接口仍按 ttk.Label 回读。"""
+    window = _photo_window(tk_root, tmp_path)
+    labels = list(window._shell_labels)
+    assert len(labels) == 13
+    assert all(isinstance(widget, app.CanvasLabel) for widget in labels)
+    assert window.title_label.cget("text") == app.window_title()
+    assert window.fail_label.cget("style") == "Muted.TLabel"
+    assert window.ok_label.cget("style") == "Ok.TLabel"
+    assert window.action_label.cget("style") == "Action.TLabel"
+    assert window.error_label.cget("style") == "Error.TLabel"
+
+    # 切主题只改配色，不重建控件
+    before = window.title_label
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    assert window.title_label is before
+    photo = app.THEMES[app.THEME_PHOTO]
+    assert window.title_label._foreground == photo["title_fg"]
+    assert window.alert_label._foreground == photo["alert_fg"]
+    # 没设背景图时不该挂切片
+    assert window.title_label.shell_surface is None
+    window.root.destroy()
+
+
+def test_gui_shell_layer_only_exists_with_a_wallpaper(tk_root, tmp_path):
+    """整窗透图只在「图片背景主题 + 真选了图」时挂，且六个容器都要垫上。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    assert window._shell_wanted() is False
+    assert window._shell is None
+    assert window._shell_backdrops == {}
+
+    window.wallpaper_path = str(FIXTURES / "wallpaper_sample.png")
+    if not app.gdiplus_available():
+        pytest.skip("系统没有 GDI+，整窗外壳层不会启用，跳过")
+    assert window._shell_wanted() is True
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    assert window._shell is not None
+    expected = {name for name, _ in window._shell_containers()}
+    assert set(window._shell_backdrops) == expected
+    for canvas in window._shell_backdrops.values():
+        assert isinstance(canvas, app.SliceCanvas)
+        assert canvas.shell_surface is window._shell
+    for widget in window._shell_labels:
+        assert widget.shell_surface is window._shell
+    window.root.destroy()
+
+
+def test_gui_leaving_the_photo_theme_detaches_every_slice(tk_root, tmp_path):
+    """切回浅色主题必须把每一块切片都摘掉，否则画面上留着旧图的碎块。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.wallpaper_path = str(FIXTURES / "wallpaper_sample.png")
+    if not app.gdiplus_available():
+        pytest.skip("系统没有 GDI+，整窗外壳层不会启用，跳过")
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    assert window._shell_backdrops
+
+    window.apply_theme(app.THEME_LEDGER, persist=False)
+    assert window._shell_wanted() is False
+    assert window._shell.provider is None
+    for canvas in window._shell_backdrops.values():
+        assert canvas.shell_surface is None
+        assert canvas._image_item is None
+    for widget in window._shell_labels:
+        assert widget.shell_surface is None
+    # 撤下后即使还有残留的重算任务，也不该再往控件上贴任何东西
+    window._run_shell_refresh()
+    for canvas in window._shell_backdrops.values():
+        assert canvas._image_item is None
+    window.root.destroy()
+
+
+def test_gui_returning_to_the_photo_theme_reattaches_every_slice(tk_root, tmp_path):
+    """切走再切回来，六块切片必须重新挂回合成层。
+
+    撤下时会把切片从 _clients 里摘掉（否则它会继续贴一张不属于当前主题的图），
+    所以切回来时不能以为「对象还在就该能用」——必须重新 set_surface，
+    否则顶栏、时间行、底栏会永远停在纯色底上，只剩数据区透图。
+    """
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.wallpaper_path = str(FIXTURES / "wallpaper_sample.png")
+    if not app.gdiplus_available():
+        pytest.skip("系统没有 GDI+，整窗外壳层不会启用，跳过")
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    first = dict(window._shell_backdrops)
+    assert len(first) == 6
+
+    window.apply_theme(app.THEME_LEDGER, persist=False)
+    assert all(canvas.shell_surface is None for canvas in first.values())
+
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    # 不重建控件：还是原来那六块，只是重新接回合成层
+    assert dict(window._shell_backdrops) == first
+    shell = window._shell
+    assert shell is not None and shell.provider is not None
+    for name, canvas in window._shell_backdrops.items():
+        assert canvas.shell_surface is shell, f"{name} 没重新接回合成层"
+        assert canvas in shell._clients, f"{name} 没回到合成层的客户端列表"
+    for widget in window._shell_labels:
+        assert widget.shell_surface is shell
+    window.root.destroy()
+
+
+def test_gui_shell_targets_exclude_the_covered_containers(tk_root, tmp_path):
+    """只给「底色真露在外面」的容器垫切片；被子控件盖住或有卡片的容器不能动。"""
+    window = _photo_window(tk_root, tmp_path)
+    names = [name for name, _ in window._shell_containers()]
+    assert names == list(app.DiskTrackerApp._SHELL_TARGETS)
+    assert len(names) == 6
+    # kpi_frame 的被测试数子控件（多一块 Canvas 就挂），body / table_frame /
+    # cards_frame 被子控件完全盖住，垫了也看不见
+    for banned in ("kpi_frame", "body", "table_frame", "cards_frame"):
+        assert banned not in names
+    window.root.destroy()
+
+
+def test_gui_window_layer_returns_none_without_a_wallpaper(tk_root, tmp_path):
+    """没设背景图时整窗合成图必须是 None，所有控件回落到各自纯色底。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.wallpaper_path = ""
+    assert window._window_layer(900, 600) is None
+    assert window._wallpaper_layer() is None
+    window.root.destroy()
+
+
+def test_gui_window_layer_caches_by_geometry(tk_root, tmp_path):
+    """同一尺寸只合成一次；尺寸一变必须重合成，否则拉伸窗口会贴错图。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.wallpaper_path = str(FIXTURES / "wallpaper_sample.png")
+    if not app.gdiplus_available():
+        pytest.skip("系统没有 GDI+，解不出壁纸，跳过")
+    first = window._window_layer(900, 600)
+    assert first is not None
+    assert window._wallpaper_size == (900, 600)
+    assert window._window_layer(900, 600) is first
+    assert window._window_layer(901, 600) is not first
+    window.root.destroy()
+
+
+def test_gui_panel_regions_uses_the_control_layer_rects(tk_root, tmp_path):
+    """控件层（数据区 / KPI / 底栏 / 提示栏）用更实的一层，留白用更透的一层。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    # 量不出几何时整块都按对话层走，不能返回空列表（空列表就没地方叠面板了）
+    window._client_rect = lambda widget: None
+    assert window._panel_regions(800, 600) == [(0, 0, 800, 600)]
+
+    # compose_ppm / assemble 收的是半开区间 (x0, y0, x1, y1)，而 _client_rect
+    # 给的是 (x, y, w, h)。这里必须断言换算后的右下角，否则数据区只有左上四分之三
+    # 是实层，下面一条会突然回落到对话层。
+    window._client_rect = lambda widget: (10, 20, 100, 40)
+    regions = window._panel_regions(800, 600)
+    assert len(regions) == 4
+    assert regions[0] == (10, 20, 110, 60)
+    window.root.destroy()
+
+# ---------------------------------------------------------------------------
+# 13. 第 7 套主题的自绘卡片
+# ---------------------------------------------------------------------------
+
+
+def _decode_flat_png(data):
+    """把 solid_rgba_png 的结果拆开，返回 IHDR 与解压后的扫描行。"""
+    import struct
+    import zlib
+
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos = 8
+    chunks = {}
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        chunks.setdefault(tag, b"")
+        chunks[tag] += data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+    width, height, depth, color_type = struct.unpack(">IIBB", chunks[b"IHDR"][:10])
+    raw = zlib.decompress(chunks[b"IDAT"])
+    return width, height, depth, color_type, raw
+
+
+def test_solid_rgba_png_encodes_one_flat_translucent_layer():
+    """薄罩是一张纯色 RGBA PNG：Tk 8.6 会对它做真 alpha 合成。"""
+    data = app.solid_rgba_png(6, 4, (255, 255, 255), 69)
+    width, height, depth, color_type, raw = _decode_flat_png(data)
+    assert (width, height) == (6, 4)
+    assert depth == 8
+    # 6 = 真彩色带 alpha
+    assert color_type == 6
+    # 每行一个 filter 字节 + width*4 字节
+    assert len(raw) == height * (1 + width * 4)
+    assert raw[0] == 0
+    assert raw[1:5] == bytes((255, 255, 255, 69))
+    # 非法尺寸要夹到至少 1，不能让 IHDR 出现 0
+    tiny = app.solid_rgba_png(0, -3, (0, 0, 0), 0)
+    assert _decode_flat_png(tiny)[:2] == (1, 1)
+
+
+def test_gui_photo_card_metrics_keep_the_table_value_rules(tk_root, tmp_path):
+    """自绘卡片的九格取值必须与表格/卡片视图完全同一套规则。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    try:
+        window.run_pipeline_sync()
+        # 挑一块读得出来的盘：失败盘的容量是占位文本，没有单位
+        row = next(r for r in window.rows if not r.failed)
+        items = window._card_metric_items(row, window.theme)
+        assert len(items) == len(app.CARD_METRICS)
+        assert items[0][0] == app.tr(app.CARD_METRICS[0][0])
+        # 容量/增量都自带单位（卡片每格没有列头写单位），失败盘除外
+        assert items[0][1].endswith((" GB", " TB", " MB"))
+        assert any(item[1].endswith((" GB", " TB", " MB")) for item in items)
+        # 时长格走 interval_text，不能是裸数字
+        assert any("天" in item[1] or "分钟" in item[1] or item[1] == "—"
+                   for item in items)
+        # 时长与 0E 不用等宽字体，其余用等宽
+        assert {item[3] for item in items} == {True, False}
+    finally:
+        window.root.destroy()
+
+
+def test_gui_photo_theme_builds_self_drawn_cards(tk_root, tmp_path):
+    """第 7 套主题的卡片是 PhotoCard：卡内没有 Entry，文字全在画布上。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    assert window._use_photo_cards()
+    cards = window.cards_inner.winfo_children()
+    assert len(cards) == len(window.rows)
+    assert all(isinstance(card, app.PhotoCard) for card in cards)
+    assert window._photo_cards == cards
+    # 卡内不能再有 tk.Entry（有的话就是旧结构，透图会露矩形补丁）
+    assert [w for card in cards for w in _descendants(card)
+            if w.winfo_class() == "Entry"] == []
+    # 每张卡都画出了文字块，型号块在最前
+    first = cards[0]
+    assert first._blocks
+    assert first._blocks[0].text
+    assert first.get_children() == ()
+
+    # 默认主题仍走 Frame + Entry 的老结构，自绘只属于第 7 套
+    plain = _photo_window(tk_root, tmp_path, theme=app.THEME_LEDGER)
+    plain.run_pipeline_sync()
+    plain.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    assert not plain._use_photo_cards()
+    assert all(not isinstance(card, app.PhotoCard)
+               for card in plain.cards_inner.winfo_children())
+    assert plain.cards_inner.winfo_children()[0].winfo_class() == "Frame"
+    plain.root.destroy()
+    window.root.destroy()
+
+
+def test_gui_photo_card_marks_alert_rows_with_a_warm_veil(tk_root, tmp_path):
+    """0E 增长的卡用偏红的薄罩；普通卡用近白薄罩。告警卡边框用告警色。"""
+    provider = _FakeProvider([
+        app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                         model="Test NVMe", serial="SN1",
+                         read_bytes=300 * 1024 ** 3, write_bytes=400 * 1024 ** 3,
+                         media_errors=5),
+        app.DiskSnapshot(device_path="/dev/sdb", protocol="SATA",
+                         model="Plain SATA", serial="SN3",
+                         read_bytes=120 * 1024 ** 3, write_bytes=80 * 1024 ** 3),
+    ])
+    window = app.DiskTrackerApp(tk_root, provider=provider,
+                                store=_gui_store(tmp_path), autostart=False,
+                                settings=app.SettingsStore(tmp_path),
+                                theme=app.THEME_PHOTO,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    cards = window._photo_cards
+    assert len(cards) == 2
+    alert_cards = [c for c in cards if c._spec["veil_rgb"] == app.ALERT_VEIL_RGB]
+    plain_cards = [c for c in cards if c._spec["veil_rgb"] == app.VEIL_RGB]
+    assert len(alert_cards) == 1, "0E 从 0 涨到 5 的盘必须走告警薄罩"
+    assert len(plain_cards) == 1
+    assert alert_cards[0]._spec["veil_alpha"] == app.ALERT_VEIL_ALPHA
+    assert plain_cards[0]._spec["veil_alpha"] == app.VEIL_ALPHA
+    theme = app.THEMES[app.THEME_PHOTO]
+    assert alert_cards[0]._spec["border"] == theme["alert_fg"]
+    assert plain_cards[0]._spec["border"] == theme["card_border"]
+    window.root.destroy()
+
+def test_gui_photo_card_selection_and_copy_go_through_the_clipboard_outlet(
+        tk_root, tmp_path):
+    """卡内拖选得到的文字必须走 _copy_text，与表格同一条出口。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    captured = []
+    window._copy_text = lambda text, hint: captured.append(text) or True
+    card = window._photo_cards[0]
+    block = card._blocks[0]
+    card._sel_range = (0, 0, 0, len(block.text))
+    assert card.selection_text() == block.text
+    card._on_copy_event(None)
+    assert captured == [block.text]
+
+    # 零宽选区不算选中，Ctrl+C 不该往剪贴板塞空串
+    card._sel_range = (0, 2, 0, 2)
+    captured.clear()
+    card._on_copy_event(None)
+    assert captured == []
+    window.root.destroy()
+
+
+def test_gui_photo_card_survives_theme_round_trip(tk_root, tmp_path):
+    """切走再切回第 7 套：卡片重建、重新挂上合成层，不残留旧切片。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    window.run_pipeline_sync()
+    window.set_view(app.VIEW_CARDS, persist=False)
+    tk_root.update_idletasks()
+    assert window._photo_cards
+    window.apply_theme(app.THEME_LEDGER, persist=False)
+    tk_root.update_idletasks()
+    # 切走后不可能还留着自绘卡片
+    assert all(not isinstance(card, app.PhotoCard)
+               for card in window.cards_inner.winfo_children())
+    window.apply_theme(app.THEME_PHOTO, persist=False)
+    tk_root.update_idletasks()
+    assert window._photo_cards
+    for card in window._photo_cards:
+        assert card.shell_surface is window._shell or card.shell_surface is None
+    window.root.destroy()
+

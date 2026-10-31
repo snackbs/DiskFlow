@@ -144,26 +144,33 @@ THEMES: dict[str, dict[str, Any]] = {
     },
     # 第 7 套：图片背景 + 分层半透明。数据区不再用 Treeview，改由 CanvasTable 自绘，
     # 行底色留空（palette["bg"] = None）以便壁纸透出来；表头与告警行仍给实色块。
-    # 配色按「深色文字压在 55%~65% 浅色面板上」定：壁纸最亮处 p95=194 时正文对比度
-    # 仍有 6.04（WCAG AA 要 4.5），最暗处更高，所以正文用近黑而不是白。
+    #
+    # 配色是「浅色薄罩」体系：对着用户最终拍板的参照图（并排图左半的卡片视图）
+    # 逐像素回归，对话区 α≈0.55、卡片区 α≈0.65、表格/控件区 α≈0.73，面板本色都
+    # 落在近白 #E6E9F0~#F2F5FA —— 也就是说壁纸在面板后面透出约 27%~45%，观感是
+    # 「薄薄一层奶白」。ttk 控件画不了 alpha，所以 win_bg/tree_bg 直接取面板本色，
+    # 真正的壁纸合成由 wallpaper.py 交给 CanvasTable 绘制。
+    # 浅底必须配深字：tree_fg #1F2933 对近白面板约 12:1（WCAG AA 要 4.5），
+    # 就算壁纸纯黑，正文对比度仍在 7:1 以上。早先那版深藏青 #2D3241 + 浅字
+    # 只透 19%，实机壁纸被压死，方向反了。
     THEME_PHOTO: {
         "key": THEME_PHOTO, "label": "图片背景", "base": "clam",
-        "win_bg": "#EEF2F8", "tree_bg": "#F4F7FC", "tree_fg": "#0E1216",
-        "head_bg": "#2B333C", "head_fg": "#FFFFFF", "head_bold": True,
-        "zebra": None, "alert_bg": "#FFE0DD", "alert_fg": "#761410",
+        "win_bg": "#EEF2FA", "tree_bg": "#E6E9F0", "tree_fg": "#1F2933",
+        "head_bg": "#232B35", "head_fg": "#F4F7FB", "head_bold": True,
+        "zebra": None, "alert_bg": "#FDECEA", "alert_fg": "#B32D1F",
         "muted_fg": "#6B7179",
-        "select_bg": "#3D7ECC", "select_fg": "#FFFFFF",
+        "select_bg": "#CFE0F5", "select_fg": "#12212F",
         "rowheight": 34, "padx": 14, "pady": 12, "kpi": "cards",
-        "title_fg": "#0E1216", "title_pt": 15,
-        "hint_fg": "#8A5A00", "ok_fg": "#1B7F49", "note_fg": "#49525D",
-        "summary_fg": "#0E1216",
-        "card_bg": "#F6F8FB", "card_border": None, "card_val": "#0E1216",
-        "card_lbl": "#49525D", "num_family": "Consolas", "card_pt": 12,
-        "scroll_thumb": "#A9B6C6", "scroll_thumb_hover": "#8797AA",
-        "scroll_idle": "#DDE5EF",
-        "seg_sel_bg": "#2B333C", "seg_sel_fg": "#FFFFFF",
-        "seg_hover_bg": "#DCE4EF", "seg_hover_fg": "#0E1216",
-        "seg_border": "#C9D4E2",
+        "title_fg": "#1F2933", "title_pt": 15,
+        "hint_fg": "#8A5A00", "ok_fg": "#1B7F49", "note_fg": "#5C6673",
+        "summary_fg": "#1F2933",
+        "card_bg": "#F2F5FA", "card_border": None, "card_val": "#1B6FB8",
+        "card_lbl": "#5C6673", "num_family": "Consolas", "card_pt": 12,
+        "scroll_thumb": "#A8B4C4", "scroll_thumb_hover": "#7E8FA4",
+        "scroll_idle": "#DCE3ED",
+        "seg_sel_bg": "#1B6FB8", "seg_sel_fg": "#FFFFFF",
+        "seg_hover_bg": "#DCE8F6", "seg_hover_fg": "#12212F",
+        "seg_border": "#B9C6D6",
     },
 }
 

@@ -146,12 +146,24 @@ from diskflow.theme import (  # noqa: F401
 
 from diskflow.canvas_surface import (  # noqa: F401
     CanvasTable, CharRun, fit_text, DEFAULT_PALETTE, PALETTE_KEYS,
+    MAX_CELL_LINES, CHAR_SPLIT_LIMIT, WHEEL_STEP,
 )
 
 from diskflow.wallpaper import (  # noqa: F401
     ALPHA_LEVELS, DEFAULT_ALPHA_LEVEL, CONVERSATION_RGB, CONVERSATION_ALPHA,
-    CONTROL_RGB, CONTROL_ALPHA, normalize_alpha, alpha_pair, hex_rgb, merge_layers,
-    cover_geometry, ppm_bytes, compose_ppm, compose_png_fallback, gdiplus_available,
+    CONTROL_RGB, CONTROL_ALPHA, normalize_alpha, alpha_pair, panel_coat, hex_rgb,
+    merge_layers, alpha_lut, tint_planes, assemble, cover_geometry, ppm_bytes,
+    compose_ppm, compose_png_fallback, gdiplus_available,
+)
+
+from diskflow.shell_canvas import (  # noqa: F401
+    ShellSurface, SliceCanvas, CanvasLabel, attach_backdrop, send_to_back,
+    descendant_children, RECOMPOSE_DELAY_MS,
+)
+
+from diskflow.photo_card import (  # noqa: F401
+    PhotoCard, solid_rgba_png, VEIL_RGB, VEIL_ALPHA,
+    ALERT_VEIL_RGB, ALERT_VEIL_ALPHA,
 )
 
 from diskflow.viewmodel import (  # noqa: F401
@@ -226,10 +238,16 @@ __all__ = [
     "THEME_SYSTEM_DARK", "REG_PERSONALIZE", "REG_LIGHT_VALUE", "THEMES",
     "detect_system_dark_mode", "normalize_theme_key", "system_theme_name",
     "resolve_theme", "theme_surface", "CanvasTable", "CharRun", "fit_text",
-    "DEFAULT_PALETTE", "PALETTE_KEYS", "ALPHA_LEVELS", "DEFAULT_ALPHA_LEVEL",
+    "DEFAULT_PALETTE", "PALETTE_KEYS", "MAX_CELL_LINES", "CHAR_SPLIT_LIMIT",
+    "WHEEL_STEP", "ALPHA_LEVELS", "DEFAULT_ALPHA_LEVEL",
     "CONVERSATION_RGB", "CONVERSATION_ALPHA", "CONTROL_RGB", "CONTROL_ALPHA",
-    "normalize_alpha", "alpha_pair", "hex_rgb", "merge_layers", "cover_geometry",
+    "normalize_alpha", "alpha_pair", "panel_coat", "hex_rgb", "merge_layers",
+    "alpha_lut", "tint_planes", "assemble", "cover_geometry",
     "ppm_bytes", "compose_ppm", "compose_png_fallback", "gdiplus_available",
+    "ShellSurface", "SliceCanvas", "CanvasLabel", "attach_backdrop",
+    "send_to_back", "descendant_children", "RECOMPOSE_DELAY_MS",
+    "PhotoCard", "solid_rgba_png", "VEIL_RGB", "VEIL_ALPHA",
+    "ALERT_VEIL_RGB", "ALERT_VEIL_ALPHA",
     "VIEW_TABLE", "VIEW_CARDS", "VIEW_GRID", "VIEW_ORDER",
     "VIEW_LABELS", "DEFAULT_VIEW", "CARD_METRICS", "CARD_METRICS_GRID",
     "CARD_METRIC_COLUMNS", "CARD_METRIC_COLUMNS_GRID", "normalize_view_key",

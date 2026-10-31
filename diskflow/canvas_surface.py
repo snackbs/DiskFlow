@@ -33,6 +33,14 @@ WHEEL_STEP = 54
 
 PALETTE_KEYS = ("bg", "fg", "line", "head_bg", "head_fg", "sel_bg", "sel_fg", "zebra")
 
+# 单元格里最多画几行：型号/序列号、读/写都是两行，多出来的行直接丢掉，
+# 否则有人往 values 里塞十行换行文本，一行能撑到看不见表头。
+MAX_CELL_LINES = 3
+
+# CharRun 的键：(行号, 列号, 格内第几行)。早先只有 (行号, 列号)，
+# 一格两行文字时第二行会把第一行覆盖掉，拖选只能选到后半截。
+RunKey = tuple[int, int, int]
+
 DEFAULT_PALETTE: dict[str, str | None] = {
     "bg": None,            # None = 不画行底色，让壁纸透出来
     "fg": "#0e1216",
@@ -74,9 +82,14 @@ class CharRun:
 
     spans[i] 是第 i 个字符的 [左, 右) 像素区间；hit() 用它把鼠标 x 换算成
     「插在第几个字前面」——拖选就是靠这个下标区间取子串。
+
+    y 是本行的**行顶**（不是基线）：item 用的是 anchor="nw"，它的 y 就是文字
+    包围盒的上边。早先按「基线」算 y 再配 anchor="nw"，整个人往下坠了一个
+    上升高，单行还能忍，两行就直接压到下一行上（实机截图里型号和序列号糊成
+    一片就是这个原因）。top/bottom 留给多行单元格按 y 判断落在第几行。
     """
 
-    __slots__ = ("text", "spans", "items")
+    __slots__ = ("text", "spans", "items", "top", "bottom")
 
     def __init__(self, canvas: tk.Canvas, font: tkfont.Font, fill: str,
                  x: float, y: float, text: str, *, split_limit: int = CHAR_SPLIT_LIMIT) -> None:
@@ -84,6 +97,8 @@ class CharRun:
         self.spans: list[tuple[float, float]] = []
         # items[i] 是 spans[i] 对应的 canvas item id：拖选高亮要逐字改 fill
         self.items: list[int] = []
+        self.top = float(y)
+        self.bottom = float(y) + float(font.metrics("linespace"))
         if not self.text:
             return
         if len(self.text) > split_limit:
@@ -99,6 +114,26 @@ class CharRun:
             self.spans.append((cursor, cursor + advance))
             self.items.append(item)
             cursor += advance
+
+    def items_for(self, start: int, end: int) -> list[int]:
+        """字符区间 [start, end) 对应的 item；越界夹紧，顺序不保证（只用来改色）。"""
+        low = max(0, min(int(start), len(self.items)))
+        high = max(0, min(int(end), len(self.items)))
+        return self.items[low:high] if low < high else []
+
+    @staticmethod
+    def split_lines(text: str) -> list[str]:
+        """按换行切格；\r\n 与单独的 \r 都算换行，尾部空行丢掉。
+
+        gui.py 的成对列用 PAIR_SEPARATOR="\n" 把「读 / 写」拼在一个格里，
+        这里切开才能一行画一项。
+        """
+        raw = "" if text is None else str(text)
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        lines = raw.split("\n")
+        while len(lines) > 1 and not lines[-1].strip():
+            lines.pop()
+        return lines[:MAX_CELL_LINES] if lines else [""]
 
     def hit(self, x: float) -> int:
         """把绝对 x 换算成字符下标 0..len；落在字中间时取更近的一侧。"""
@@ -139,6 +174,9 @@ class CanvasTable(tk.Canvas):
     HEAD_H = 30
     ROW_H = 34
     PAD_X = 8
+    # 单元格里可以有换行（型号 \n 序列号、读 \n 写），行高要容得下最多那一列。
+    # 上下各留一点，否则两行正好等于行高时贴边看着像被切断。
+    ROW_PADDING = 3
 
     def __init__(self, master: Any, *, columns: Sequence[str],
                  selectmode: str = "extended", rowheight: int = ROW_H,
@@ -167,16 +205,24 @@ class CanvasTable(tk.Canvas):
         self._sort_column = ""
         self._sort_reverse = False
 
+        # _row_height 是"最小行高"：单元格有两行文字时这一行会长高，
+        # 实际高度在 _ensure_layout() 里按内容算，存进 _row_tops/_row_heights。
         self._row_height = int(rowheight)
+        self._row_tops: list[int] = []
+        self._row_heights: list[int] = []
+        self._content_height = 0
+        self._layout_dirty = True
         self._head_height = int(head_height)
         self._offset_y = 0
         self._offset_x = 0
         self._yscroll_command: Any = None
         self._xscroll_command: Any = None
-        self._char_runs: dict[tuple[int, int], CharRun] = {}
+        self._char_runs: dict[RunKey, CharRun] = {}
         # 拖选区间：(起行, 起列, 起字符, 止行, 止列, 止字符)
         self._sel_range: tuple[int, int, int, int, int, int] | None = None
-        self._drag_origin: tuple[int, int, int] | None = None
+        # 两端各自落在格内第几行文字（一格两行时选区要能横跨）
+        self._sel_lines: tuple[int, int] = (0, 0)
+        self._drag_origin: tuple[int, int, int, int] | None = None
         self._resize_column = ""
         self._resize_origin: tuple[int, int, int] = (0, 0, 0)
         self._pending_command: Any = None
@@ -185,6 +231,8 @@ class CanvasTable(tk.Canvas):
         # 先把整块画布清空，所以底层图必须跟着重画，不能只在建表时贴一次。
         self._background_item: int | None = None
         self.wallpaper_provider: Any = None
+        # provider 给的图若是「整窗」的，这里填本控件在窗口里的左上角偏移（像素）。
+        self.wallpaper_offset: tuple[int, int] = (0, 0)
         # 右键菜单的宿主回调：Canvas 自己的 <Button-3> 一定 return "break"，
         # 所以同一个控件上再 bind 一个 <Button-3> 永远不会被触发，只能由这里转出去。
         self.context_menu: Any = None
@@ -274,6 +322,7 @@ class CanvasTable(tk.Canvas):
             raise ValueError('Item "%s" already exists' % iid)
         self._cells[iid] = (tuple(str(v) for v in values), tuple(tags))
         self._rows.append(iid)
+        self._layout_dirty = True
         self.redraw()
         return iid
 
@@ -284,6 +333,7 @@ class CanvasTable(tk.Canvas):
                 self._rows.remove(iid)
             if iid in self._selection:
                 self._selection.remove(iid)
+        self._layout_dirty = True
         self._offset_y = self._clamp_y(self._offset_y)
         self.redraw()
 
@@ -335,12 +385,14 @@ class CanvasTable(tk.Canvas):
     def see(self, iid: str) -> None:
         if iid not in self._rows:
             return
-        top = self._rows.index(iid) * self._row_height
+        index = self._rows.index(iid)
+        top = self._row_top(index)
+        height = self._row_height_of(index)
         view_h = self._body_height()
         if top < self._offset_y:
             self._offset_y = top
-        elif top + self._row_height > self._offset_y + view_h:
-            self._offset_y = top + self._row_height - view_h
+        elif top + height > self._offset_y + view_h:
+            self._offset_y = top + height - view_h
         self._offset_y = self._clamp_y(self._offset_y)
         self.redraw()
 
@@ -348,13 +400,15 @@ class CanvasTable(tk.Canvas):
         """行在屏幕上的矩形；滚出视野或不存在时返回 None（与 Treeview 一致）。"""
         if iid not in self._rows:
             return None
-        top = self._rows.index(iid) * self._row_height - self._offset_y + self._head_height
-        if top + self._row_height <= self._head_height:
+        index = self._rows.index(iid)
+        height = self._row_height_of(index)
+        top = self._row_top(index) - self._offset_y + self._head_height
+        if top + height <= self._head_height:
             return None
         if top >= self._head_height + self._body_height():
             return None
         width = max(1, int(self.winfo_width()) - 2 * self.PAD_X)
-        return self.PAD_X, top, width, self._row_height
+        return self.PAD_X, top, width, height
 
     def identify_row(self, y: int) -> str:
         index = self._row_index_at(y)
@@ -383,11 +437,13 @@ class CanvasTable(tk.Canvas):
 
     def set_row_height(self, height: int) -> None:
         self._row_height = max(20, int(height))
+        self._layout_dirty = True
         self.redraw()
 
     def set_fonts(self, family: str, size: int) -> None:
         self._font = tkfont.Font(family=family, size=size)
         self._head_font = tkfont.Font(family=family, size=size, weight="bold")
+        self._layout_dirty = True
         self.redraw()
 
     def set_sort_indicator(self, column: str, reverse: bool) -> None:
@@ -418,14 +474,23 @@ class CanvasTable(tk.Canvas):
         return -1
 
     def _row_index_at(self, y: float) -> int:
-        """y 落在第几行（从 0 数）；表头区或空白区返回 -1。"""
+        """y 落在第几行（从 0 数）；表头区或空白区返回 -1。
+
+        行高不再统一（两行文字的单元格会把这一行撑高），所以只能按累计高度
+        查表，不能再用 y // 行高 一步除法。
+        """
         if y < self._head_height:
             return -1
-        index = int((y - self._head_height + self._offset_y) // self._row_height)
-        return index if 0 <= index < len(self._rows) else -1
+        self._ensure_layout()
+        probe = int((y - self._head_height) + self._offset_y)
+        for index, top in enumerate(self._row_tops):
+            if top <= probe < top + self._row_heights[index]:
+                return index
+        return -1
 
     def _clamp_y(self, value: int) -> int:
-        maximum = max(0, len(self._rows) * self._row_height - self._body_height())
+        self._ensure_layout()
+        maximum = max(0, self._content_height - self._body_height())
         return max(0, min(int(value), maximum))
 
     def _clamp_x(self, value: int) -> int:
@@ -433,7 +498,8 @@ class CanvasTable(tk.Canvas):
         return max(0, min(int(value), maximum))
 
     def _y_fraction(self) -> tuple[float, float]:
-        total = max(1, len(self._rows) * self._row_height)
+        self._ensure_layout()
+        total = max(1, self._content_height)
         first = self._offset_y / total
         return first, min(1.0, first + self._body_height() / total)
 
@@ -459,7 +525,8 @@ class CanvasTable(tk.Canvas):
         if args[0] == "moveto":
             fraction = float(args[1])
             if axis == "y":
-                total = max(1, len(self._rows) * self._row_height)
+                self._ensure_layout()
+                total = max(1, self._content_height)
                 self._offset_y = self._clamp_y(int(fraction * total))
             else:
                 self._offset_x = self._clamp_x(int(fraction * self._total_width()))
@@ -473,6 +540,54 @@ class CanvasTable(tk.Canvas):
                 step = 40 if unit == "units" else max(1, int(self.winfo_width()))
                 self._offset_x = self._clamp_x(self._offset_x + amount * step)
         self.redraw()
+
+    # ---------- 行高布局 ----------
+    def _cell_lines(self, iid: str, column_index: int) -> list[str]:
+        values = self._cells.get(iid, ((), ()))[0]
+        text = values[column_index] if column_index < len(values) else ""
+        return CharRun.split_lines(text)
+
+    def _row_text_height(self, iid: str) -> float:
+        lines = 1
+        for column_index in range(len(self._columns)):
+            lines = max(lines, len(self._cell_lines(iid, column_index)))
+        return lines * float(self._font.metrics("linespace"))
+
+    def _ensure_layout(self) -> None:
+        """算出每行的真实高度与纵向起点（像素，未扣滚动偏移）。
+
+        多行单元格必须把行撑高，否则两行 9pt 文字（约 34px）正好等于行高，
+        再有点行内留白就会压到下一行上——实机截图里型号和序列号糊成一团、
+        还盖住下面的行，就是这么来的。
+        """
+        if not self._layout_dirty and len(self._row_tops) == len(self._rows):
+            return
+        min_height = max(20, int(self._row_height))
+        heights: list[int] = []
+        for iid in self._rows:
+            need = self._row_text_height(iid) + 2 * self.ROW_PADDING
+            heights.append(max(min_height, int(need + 0.5)))
+        tops: list[int] = []
+        cursor = 0
+        for height in heights:
+            tops.append(cursor)
+            cursor += height
+        self._row_heights = heights
+        self._row_tops = tops
+        self._content_height = cursor
+        self._layout_dirty = False
+
+    def _row_top(self, index: int) -> int:
+        self._ensure_layout()
+        if 0 <= index < len(self._row_tops):
+            return self._row_tops[index]
+        return self._content_height if index >= len(self._row_tops) else 0
+
+    def _row_height_of(self, index: int) -> int:
+        self._ensure_layout()
+        if 0 <= index < len(self._row_heights):
+            return self._row_heights[index]
+        return max(20, int(self._row_height))
 
     # ---------- 绘制 ----------
     def _row_style(self, iid: str, index: int) -> tuple[str, str | None]:
@@ -503,8 +618,10 @@ class CanvasTable(tk.Canvas):
         if width <= 1 or height <= 1:
             return
         self._paint_background()
-        self._draw_header(width)
+        # 先画行、后画表头：Tk 的 Canvas 没有裁剪区，滚动到半截的行会把
+        # 上半截探进表头区域，压在表头文字上。后画表头就能把探出来的那部分盖住。
         self._draw_rows(width, height)
+        self._draw_header(width)
         self._paint_selection()
         self._notify_scroll()
 
@@ -521,8 +638,13 @@ class CanvasTable(tk.Canvas):
         if not layer:
             return
         photo = layer[0]
+        # 整窗透图时这张图是「整个客户区」，表格只该露出自己那一块，
+        # 于是按用户在窗口里的偏移把图往左上推。整套图只有一张，
+        # 相邻控件贴的是同一张图的连续区域，接缝处像素天然对齐。
+        offset_x, offset_y = getattr(self, "wallpaper_offset", (0, 0))
         try:
-            self._background_item = self.create_image(0, 0, image=photo, anchor="nw")
+            self._background_item = self.create_image(
+                -int(offset_x), -int(offset_y), image=photo, anchor="nw")
         except Exception:              # noqa: BLE001
             self._background_item = None
             return
@@ -557,46 +679,104 @@ class CanvasTable(tk.Canvas):
     def _draw_rows(self, width: int, height: int) -> None:
         if not self._rows:
             return
+        self._ensure_layout()
         selected = set(self._selection)
-        first = max(0, self._offset_y // self._row_height)
-        last = min(len(self._rows), first + self._body_height() // self._row_height + 2)
-        ascent = self._font.metrics("ascent")
-        for index in range(first, last):
-            iid = self._rows[index]
-            top = self._head_height + index * self._row_height - self._offset_y
+        for index, iid in enumerate(self._rows):
+            top = self._head_height + self._row_tops[index] - self._offset_y
+            row_height = self._row_heights[index]
             if top > height:
                 break
+            if top + row_height < self._head_height:
+                continue
             fg, bg = self._row_style(iid, index)
             if iid in selected:
                 bg = self._palette["sel_bg"] or bg
                 fg = self._palette["sel_fg"] or fg
             if bg:
-                self.create_rectangle(0, top, width, top + self._row_height, fill=bg, outline="")
-            values = self._cells[iid][0]
-            baseline = top + (self._row_height - self._font.metrics("linespace")) // 2 + ascent
+                self.create_rectangle(0, top, width, top + row_height, fill=bg, outline="")
             for column_index, key in enumerate(self._columns):
                 left = self._column_left(column_index)
                 cell_width = self._widths.get(key, 100)
                 if left + cell_width < 0 or left > width:
                     continue
-                text = values[column_index] if column_index < len(values) else ""
                 room = cell_width - self.PAD_X * 2
-                if not text or room <= 0:
+                if room <= 0:
                     continue
-                if self._font.measure(text) > room:
-                    text = fit_text(self._font, text, room)
-                self._char_runs[(index, column_index)] = CharRun(
-                    self, self._font, fg, left + self.PAD_X, baseline, text)
+                lines = self._cell_lines(iid, column_index)
+                self._draw_cell_text(index, column_index, left + self.PAD_X, top,
+                                     row_height, lines, room, fg)
+
+    def _draw_cell_text(self, index: int, column_index: int, left: float, top: float,
+                        row_height: int, lines: Sequence[str], room: float, fg: str) -> None:
+        """把一个单元格里的若干行文字画进这一行，整体纵向居中。
+
+        每行单独一个 CharRun，键里带"格内第几行"，否则第二行会覆盖第一行，
+        拖选只能选到后半截。y 传的是行顶：create_text 用的是 anchor="nw"，
+        它的 y 就是文字包围盒上边，早先传基线导致整段往下坠一个上升高。
+        """
+        line_height = float(self._font.metrics("linespace"))
+        visible = max(1, min(len(lines), MAX_CELL_LINES))
+        block = visible * line_height
+        y = top + (row_height - block) / 2.0
+        for line_index, text in enumerate(lines[:visible]):
+            y_line = y + line_index * line_height
+            if not text:
+                continue
+            if self._font.measure(text) > room:
+                text = fit_text(self._font, text, room)
+            if not text:
+                continue
+            self._char_runs[(index, column_index, line_index)] = CharRun(
+                self, self._font, fg, left, y_line, text)
 
     # ---------- 选区 ----------
     def _normalized_range(self) -> tuple[int, int, int, int, int, int] | None:
-        """把拖选的首尾按「先按位置排序」整理成 (r0, c0, o0, r1, c1, o1)。"""
+        """把拖选的首尾按「先按位置排序」整理成 (r0, c0, o0, r1, c1, o1)。
+
+        排序顺手把 _sel_lines 也翻正，否则从第二行往上拖时，起点行号配的是
+        终点的行列，整段选区会错位半格。
+        """
         if self._sel_range is None:
             return None
         r0, c0, o0, r1, c1, o1 = self._sel_range
-        if (r0, c0, o0) <= (r1, c1, o1):
+        l0, l1 = self._sel_lines
+        if (r0, c0, l0, o0) <= (r1, c1, l1, o1):
             return r0, c0, o0, r1, c1, o1
-        return r1, c1, o1, r0, c0, o0
+        # 连 _sel_range 一起翻正，否则这个方法是「读一眼就改状态」的不幂等操作：
+        # 第二次进来 _sel_lines 已经是翻过的，再按老顺序比一次又会翻回去，
+        # 画选区（_paint_selection）和复制（selection_text）各调一次就会错位半格。
+        self._sel_lines = (l1, l0)
+        self._sel_range = (r1, c1, o1, r0, c0, o0)
+        return self._sel_range
+
+    def _cell_spans(self, row: int, column: int,
+                    start: tuple[int, int] | None,
+                    end: tuple[int, int] | None) -> list[tuple[CharRun, int, int]]:
+        """一格内被选中的片段，按 (格内第几行, 起始字符) 收成 [(run, low, high)]。
+
+        start/end 是 (格内第几行, 字符下标)，None 表示这一端不设限。一格两行
+        文字时选区要能横跨两行：起点在第二行就从第二行中间开始，第一行整行算在内。
+        """
+        spans: list[tuple[CharRun, int, int]] = []
+        for line_index in range(MAX_CELL_LINES):
+            run = self._char_runs.get((row, column, line_index))
+            if run is None:
+                continue
+            low = 0
+            high = len(run.text)
+            if start is not None:
+                if line_index < start[0]:
+                    continue
+                if line_index == start[0]:
+                    low = max(0, min(int(start[1]), high))
+            if end is not None:
+                if line_index > end[0]:
+                    break
+                if line_index == end[0]:
+                    high = max(0, min(int(end[1]), high))
+            if low < high:
+                spans.append((run, low, high))
+        return spans
 
     def _paint_selection(self) -> None:
         """把落在选区内的字符改成反白（逐字 item 能这样上色，整段 item 只能整段变）。"""
@@ -604,7 +784,8 @@ class CanvasTable(tk.Canvas):
         if span is None:
             return
         r0, c0, o0, r1, c1, o1 = span
-        if (r0, c0) == (r1, c1) and o0 == o1:
+        l0, l1 = self._sel_lines
+        if (r0, c0, l0, o0) == (r1, c1, l1, o1):
             return
         highlight = self._palette["sel_fg"] or "#ffffff"
         for row in range(r0, r1 + 1):
@@ -613,13 +794,11 @@ class CanvasTable(tk.Canvas):
                     continue
                 if row == r1 and column > c1:
                     continue
-                run = self._char_runs.get((row, column))
-                if run is None:
-                    continue
-                start = o0 if (row, column) == (r0, c0) else 0
-                end = o1 if (row, column) == (r1, c1) else len(run.text)
-                for item in run.items[min(start, end):max(start, end)]:
-                    self.itemconfigure(item, fill=highlight)
+                start = (l0, o0) if (row, column) == (r0, c0) else None
+                end = (l1, o1) if (row, column) == (r1, c1) else None
+                for run, low, high in self._cell_spans(row, column, start, end):
+                    for item in run.items_for(low, high):
+                        self.itemconfigure(item, fill=highlight)
 
     def selection_text(self) -> str:
         """把当前拖选导出成 TSV：跨列用制表符，跨行用换行。"""
@@ -627,7 +806,8 @@ class CanvasTable(tk.Canvas):
         if span is None:
             return ""
         r0, c0, o0, r1, c1, o1 = span
-        if (r0, c0, o0) == (r1, c1, o1):
+        l0, l1 = self._sel_lines
+        if (r0, c0, l0, o0) == (r1, c1, l1, o1):
             return ""
         lines: list[str] = []
         for row in range(r0, min(r1, len(self._rows) - 1) + 1):
@@ -637,14 +817,15 @@ class CanvasTable(tk.Canvas):
                     continue
                 if row == r1 and column > c1:
                     continue
-                run = self._char_runs.get((row, column))
-                if run is None:
-                    continue
-                start = o0 if (row, column) == (r0, c0) else 0
-                end = o1 if (row, column) == (r1, c1) else len(run.text)
-                piece = run.text[min(start, end):max(start, end)]
-                if piece:
-                    pieces.append(piece)
+                start = (l0, o0) if (row, column) == (r0, c0) else None
+                end = (l1, o1) if (row, column) == (r1, c1) else None
+                cell = ""
+                for run, low, high in self._cell_spans(row, column, start, end):
+                    piece = run.text[low:high]
+                    if piece:
+                        cell += piece if not cell else " " + piece
+                if cell:
+                    pieces.append(cell)
             if pieces:
                 lines.append("\t".join(pieces))
         return "\n".join(lines)
@@ -658,9 +839,35 @@ class CanvasTable(tk.Canvas):
         return values[column] if 0 <= column < len(values) else ""
 
     # ---------- 鼠标与键盘 ----------
-    def _hit_char(self, row: int, column: int, x: float) -> int:
-        run = self._char_runs.get((row, column))
+    def _hit_char(self, row: int, column: int, x: float, y: float | None = None) -> int:
+        """鼠标 x 落在这一格的哪个字符上；纵向给得出 y 就先挑中的是哪一行。
+
+        拖选以「格」为单位（不跨格选子串），所以只要取到一行的字符下标就够，
+        这里按 y 挑离得最近的那行，免得点在第二行却按第一行的 x 算。
+        """
+        run = self._char_run_at(row, column, y)
         return 0 if run is None else run.hit(x)
+
+    def _hit_cell(self, row: int, column: int, x: float,
+                  y: float | None = None) -> tuple[int, int]:
+        """鼠标落点 -> (格内第几行, 字符下标)。"""
+        line = self._hit_line(row, column, y)
+        return line, self._hit_char(row, column, x, y)
+
+    def _hit_line(self, row: int, column: int, y: float | None = None) -> int:
+        runs = [(line_index, self._char_runs[(row, column, line_index)])
+                for line_index in range(MAX_CELL_LINES)
+                if (row, column, line_index) in self._char_runs]
+        if not runs:
+            return 0
+        if y is None or len(runs) == 1:
+            return runs[0][0]
+        return min(runs, key=lambda pair: abs((pair[1].top + pair[1].bottom) / 2.0
+                                              - float(y)))[0]
+
+    def _char_run_at(self, row: int, column: int, y: float | None = None) -> CharRun | None:
+        line = self._hit_line(row, column, y)
+        return self._char_runs.get((row, column, line))
 
     def _on_press(self, event: Any) -> str:
         # 键盘事件（Ctrl+C 等）只会派给有焦点的控件，Canvas 不会自己抢焦点，
@@ -677,9 +884,10 @@ class CanvasTable(tk.Canvas):
             self.selection_remove(*self._selection)
             return "break"
         column = self._column_index_at(event.x)
-        offset = self._hit_char(index, column, event.x)
+        line, offset = self._hit_cell(index, column, event.x, event.y)
+        self._sel_lines = (line, line)
         self._sel_range = (index, column, offset, index, column, offset)
-        self._drag_origin = (index, column, offset)
+        self._drag_origin = (index, column, offset, line)
         self._last_cell = (index, column)
 
         iid = self._rows[index]
@@ -720,9 +928,10 @@ class CanvasTable(tk.Canvas):
             if index < 0:
                 index = len(self._rows) - 1 if event.y > self._head_height else 0
             column = self._column_index_at(event.x)
-            offset = self._hit_char(index, column, event.x)
-            r0, c0, o0 = self._drag_origin
+            line, offset = self._hit_cell(index, column, event.x, event.y)
+            r0, c0, o0, l0 = self._drag_origin
             self._sel_range = (r0, c0, o0, index, column, offset)
+            self._sel_lines = (l0, line)
             self._sync_selection_to_range()
             self.redraw()
         return "break"
@@ -737,6 +946,17 @@ class CanvasTable(tk.Canvas):
                 command()
             del key
             return "break"
+        # 只点了一下没拖动：松开时清掉零宽选区，否则整格会被判成"已选"。
+        # 比较必须带上「格内第几行」：同一格里从第一行拖到第二行时，行列和
+        # 字符下标都可能一样，但那是一条有内容的跨行选区，不能当零宽清掉。
+        if self._sel_range is not None and self._drag_origin is not None:
+            r0, c0, o0, r1, c1, o1 = self._sel_range
+            l0, l1 = self._sel_lines
+            if (r0, c0, l0, o0) == (r1, c1, l1, o1):
+                self._sel_range = None
+                self._drag_origin = None
+                self.redraw()
+        self._drag_origin = None
         return "break"
 
     def _sync_selection_to_range(self) -> None:
