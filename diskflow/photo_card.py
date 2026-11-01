@@ -31,10 +31,14 @@ CARD_PAD_X = 12
 CARD_PAD_Y = 9
 # 指标格之间的横向间隙（旧实现 padx=(0, 14)）
 METRIC_GAP_X = 14
-METRIC_GAP_Y = 2
+# 指标「行」之间的间隙。标签与数值是同一组的上下两行，块高就是 linespace，
+# 组内没有额外留白（字形上下各有一段 linespace 余量，看起来约 7px）；
+# 行与行之间必须明显大于它，否则四行等距铺开、看不出「标签-数值」成对。
+# 参照图里组内 : 组间 ≈ 1 : 2.5，这里取 12（渲染出来组间约 19px）。
+METRIC_GAP_Y = 12
 # 标题行 / 副标题 / 指标区之间的纵向留白
 TITLE_GAP = 2
-SUBTITLE_GAP = 7
+SUBTITLE_GAP = 10
 # 徽章：左右内边距、徽章之间的间距、型号与首个徽章的间距
 BADGE_PAD_X = 6
 BADGE_GAP = 6
@@ -223,8 +227,10 @@ class PhotoCard(SliceCanvas):
         total = CARD_PAD_Y * 2 + title_h + TITLE_GAP + SUBTITLE_GAP
         if self._spec.get("subtitle"):
             total += sub_h
-        total += rows * (sub_h + self._font_value.metrics("linespace")
-                         + METRIC_GAP_Y)
+        # 每行是「标签 + 数值」两块，行间只在下边界后加 METRIC_GAP_Y；
+        # 最后一行之后不再加，否则卡片底部会多出一条空带。
+        total += rows * (sub_h + self._font_value.metrics("linespace"))
+        total += max(0, rows - 1) * METRIC_GAP_Y
         return int(total)
 
     def _draw_text(self, width: int) -> None:

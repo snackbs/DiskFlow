@@ -164,6 +164,7 @@ from diskflow.shell_canvas import (  # noqa: F401
 from diskflow.photo_card import (  # noqa: F401
     PhotoCard, solid_rgba_png, VEIL_RGB, VEIL_ALPHA,
     ALERT_VEIL_RGB, ALERT_VEIL_ALPHA,
+    CARD_PAD_X, CARD_PAD_Y, METRIC_GAP_X, METRIC_GAP_Y, TITLE_GAP, SUBTITLE_GAP,
 )
 
 from diskflow.viewmodel import (  # noqa: F401
@@ -248,6 +249,8 @@ __all__ = [
     "send_to_back", "descendant_children", "RECOMPOSE_DELAY_MS",
     "PhotoCard", "solid_rgba_png", "VEIL_RGB", "VEIL_ALPHA",
     "ALERT_VEIL_RGB", "ALERT_VEIL_ALPHA",
+    "CARD_PAD_X", "CARD_PAD_Y", "METRIC_GAP_X", "METRIC_GAP_Y",
+    "TITLE_GAP", "SUBTITLE_GAP",
     "VIEW_TABLE", "VIEW_CARDS", "VIEW_GRID", "VIEW_ORDER",
     "VIEW_LABELS", "DEFAULT_VIEW", "CARD_METRICS", "CARD_METRICS_GRID",
     "CARD_METRIC_COLUMNS", "CARD_METRIC_COLUMNS_GRID", "normalize_view_key",

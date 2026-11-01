@@ -87,8 +87,10 @@ from .viewmodel import (
 # set()/get() 协议，因此可以直接挂在 yscrollcommand / xscrollcommand 上。
 try:                                   # 无 Tk 的环境也能 import 本模块（测试可只跑逻辑层）
     import tkinter as _tk_for_scrollbar
+    from tkinter import font as tkfont
 except Exception:                       # pragma: no cover - 依赖系统 Tk
     _tk_for_scrollbar = None
+    tkfont = None                       # type: ignore[assignment]
 
 # 第 7 套「图片背景」主题的数据区控件与壁纸层。canvas_surface 依赖真实 Tk，
 # 没有 Tk 的环境（只跑逻辑层的测试）里退化成 None，表格回落到 Treeview。
@@ -101,11 +103,12 @@ from . import wallpaper as _wallpaper
 # 第 7 套主题的外壳层：容器本身不动，只往里垫一层「背景切片」Canvas，
 # 再把外壳上的 ttk.Label 换成 CanvasLabel（ttk 控件的底色是实色，没法透出壁纸）。
 try:                                    # pragma: no cover - 依赖系统 Tk
-    from .shell_canvas import (CanvasLabel, CardCanvas, ShellSurface,
+    from .shell_canvas import (CanvasLabel, CardCanvas, ShellSurface, SliceCanvas,
                                attach_backdrop)
 except Exception:
     CanvasLabel = None                  # type: ignore[assignment]
     CardCanvas = None                   # type: ignore[assignment]
+    SliceCanvas = None                  # type: ignore[assignment]
     ShellSurface = None                 # type: ignore[assignment]
     attach_backdrop = None              # type: ignore[assignment]
 
@@ -142,6 +145,8 @@ _SHELL_LABEL_STYLES: dict[str, tuple[str, bool, str]] = {
 
 _SCROLLBAR_BASE: Any = _tk_for_scrollbar.Canvas if _tk_for_scrollbar else object
 _LABEL_BASE: Any = _tk_for_scrollbar.Label if _tk_for_scrollbar else object
+# 视图分段按钮的基类：优先用切片画布（能贴壁纸），没有 Tk 的环境退回 Label。
+_SEG_BASE: Any = SliceCanvas if SliceCanvas is not None else _LABEL_BASE
 
 
 # 数据区右侧细滚动条占用的宽度。KPI 指标行必须留出同样的右边距，
@@ -186,6 +191,12 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         self.first = 0.0
         self.last = 1.0
         self._hover = False
+        # 图片背景主题：滚动条轨道也要贴壁纸切片，否则整窗透图会在最右侧
+        # 漏出一条 10px 的实色竖条（截图实测 x=1229 起就是纯 #EEF2FA）。
+        self.shell_surface: Any = None
+        self._surface_item: Any = None
+        self._registered = False
+
         self._drag_origin: float | None = None
         self._drag_first = 0.0
         self._alive = True
@@ -224,6 +235,51 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
             pass
         self._redraw()
 
+    def set_surface(self, surface: Any) -> None:
+        """挂上/摘掉壁纸切片（图片背景主题用）。不传 None 之外的东西就按切片画。"""
+        if self.shell_surface is not None and self._registered:
+            try:
+                self.shell_surface.unregister(self)
+            except Exception:               # pragma: no cover
+                pass
+            self._registered = False
+        self.shell_surface = surface
+        if surface is not None:
+            try:
+                surface.register(self)
+                self._registered = True
+            except Exception:               # pragma: no cover
+                self._registered = False
+        self._redraw()
+
+    def _paint_surface(self) -> None:
+        """把整窗合成图里属于自己这一块贴到最底层；没有切片时退回纯色轨道。"""
+        surface = self.shell_surface
+        photo = surface.image() if surface is not None else None
+        if photo is None:
+            if self._surface_item is not None:
+                try:
+                    self.delete(self._surface_item)
+                except Exception:           # pragma: no cover
+                    pass
+                self._surface_item = None
+            try:
+                self.configure(bg=self.track_color)
+            except Exception:               # pragma: no cover
+                pass
+            return
+        offset_x, offset_y = surface.offset_of(self)
+        try:
+            if self._surface_item is None:
+                self._surface_item = self.create_image(-offset_x, -offset_y,
+                                                       anchor="nw", image=photo)
+            else:
+                self.coords(self._surface_item, -offset_x, -offset_y)
+                self.itemconfigure(self._surface_item, image=photo)
+            self.tag_lower(self._surface_item)
+        except Exception:                   # pragma: no cover - 控件已销毁
+            self._surface_item = None
+
     # ---- 绘制 ----
     @property
     def visible(self) -> bool:
@@ -250,6 +306,7 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
     def _redraw(self) -> None:
         if not self._alive:
             return
+        self._paint_surface()
         try:
             self.delete("thumb")
         except Exception:
@@ -329,36 +386,134 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         self._alive = False
 
 
-class SegButton(_LABEL_BASE):   # type: ignore[misc,valid-type]
-    """顶栏「表格 / 卡片 / 双列」分段切换按钮——自绘的 tk.Label。
+class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
+    """顶栏「表格 / 卡片 / 双列」分段切换按钮——自绘控件。
 
     不用 ttk.Radiobutton 的原因：vista 主题下 radiobutton 由系统 element 绘制，
     style.map() 里配的 active 配色会被系统配色盖掉，鼠标悬停就变成系统蓝 + 虚线焦点框，
-    和自定义主题冲突（原生默认主题下最明显）。改用 tk.Label 完全自绘后，
-    常态 / 悬停 / 选中三种状态的颜色都只取自主题表，跨 ttk 主题表现一致。
-    接口保留 invoke()，与 ttk.Radiobutton 兼容，便于测试直接触发。
+    和自定义主题冲突（原生默认主题下最明显）。
+
+    也不用普通的 tk.Label：Label 的底色只能是平色，第 7 套「图片背景」主题里
+    它会在壁纸上戳出两个实色白块（截图实测未选中按钮是纯 #F2F5FA，壁纸完全透不出来）。
+    所以这里改成画布：有切片时先贴自己那块壁纸，再按状态决定要不要盖底色——
+    未选中就完全让壁纸透出来，选中才铺主题强调色（那是当前视图的标识，本来就该实）。
+
+    对外接口与原来的 Label 版一致：value / command / selected / apply_palette /
+    set_text / set_selected / refresh / invoke / cget("text"/"background"/"foreground")，
+    测试与 gui 的调用点都不用改。
     """
 
     def __init__(self, master: Any, text: str, value: str, command: Any = None,
                  **kwargs: Any) -> None:
+        kwargs.setdefault("highlightthickness", 0)
         kwargs.setdefault("bd", 0)
         kwargs.setdefault("takefocus", 0)
         kwargs.setdefault("cursor", "hand2")
-        kwargs.setdefault("anchor", "center")
-        super().__init__(master, text=text, highlightthickness=1, **kwargs)
+        super().__init__(master, background="#FFFFFF", **kwargs)
         self.value = value
         self.command = command
         self.selected = False
         self._hover = False
+        self._text = str(text)
+        self._bg_flat = "#FFFFFF"
+        self._fg = "#1A1A1A"
         self._palette: dict[str, str] = {
             "bg": "#FFFFFF", "fg": "#1A1A1A",
             "sel_bg": "#0078D7", "sel_fg": "#FFFFFF",
             "hover_bg": "#E5F1FB", "hover_fg": "#1A1A1A",
             "border": "#B8B8B8",
         }
+        # 切片层与配色层各自一个 item：重画时只换填充，不重建控件
+        self._bg_item: Any = None
+        self._text_item: Any = None
+        self._font_spec: Any = ("Microsoft YaHei UI", 9)
+        self._pad_x = 11
+        self._pad_y = 4
+        self._font = None
         self.bind("<Button-1>", self._on_click)
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
+        self.bind("<Configure>", lambda _e: self.refresh(), add="+")
+        self._fit()
+
+    # ---- 尺寸：Canvas 默认 10c×7c，不按文字定宽就会撑成一大块 ----
+    def _apply_font(self) -> None:
+        spec = self._font_spec
+        if spec is None:
+            self._font = tkfont.nametofont("TkDefaultFont")
+        elif isinstance(spec, str):
+            self._font = tkfont.nametofont(spec)
+        else:
+            self._font = tkfont.Font(font=spec)
+
+    def _fit(self) -> None:
+        """按文字宽度 + 内边距定宽、按行高定高：pack 时只占文字大小。"""
+        self._apply_font()
+        try:
+            text_w = int(self._font.measure(self._text or ""))
+        except Exception:                   # pragma: no cover
+            text_w = 0
+        try:
+            line_h = int(self._font.metrics("linespace"))
+        except Exception:                   # pragma: no cover
+            line_h = 16
+        try:
+            super().configure(width=text_w + self._pad_x * 2,
+                              height=line_h + self._pad_y * 2)
+        except Exception:                   # pragma: no cover
+            pass
+        # 不在这里 repaint：此时尺寸刚设、_bg_item 还没建，提前画一次只会把
+        # 底色矩形留在画布上挡住后面贴的切片。<Configure> 会带着真实尺寸再来一次。
+
+    # ---- 兼容原 Label 版的取值接口 ----
+    def cget(self, key: str) -> Any:                # type: ignore[override]
+        if key == "text":
+            return self._text
+        if key == "background" or key == "bg":
+            return self._current_background()
+        if key == "foreground" or key == "fg":
+            return self._current_foreground()
+        if key == "font":
+            return self._font_spec
+        return super().cget(key)
+
+    def configure(self, **kwargs: Any) -> Any:      # type: ignore[override]
+        if "text" in kwargs:
+            self._text = str(kwargs.pop("text"))
+        if "font" in kwargs:
+            self._font_spec = kwargs.pop("font")
+        if kwargs:
+            super().configure(**kwargs)
+        self.refresh()
+        return None
+
+    config = configure
+
+    def _current_background(self) -> str:
+        palette = self._palette
+        if self.selected:
+            return palette["sel_bg"]
+        if self._hover:
+            return palette["hover_bg"]
+        # 未选中且挂着切片时是「透」的；对外仍报一个颜色串，调用方拿到的语义不变。
+        return palette["bg"] if self._surface_photo() is None else palette.get("see_through", palette["bg"])
+
+    def _current_foreground(self) -> str:
+        palette = self._palette
+        if self.selected:
+            return palette["sel_fg"]
+        if self._hover:
+            return palette["hover_fg"]
+        return palette["fg"]
+
+    def _surface_photo(self) -> Any:
+        surface = self.shell_surface
+        if surface is None:
+            return None
+        try:
+            return surface.image()
+        except Exception:       # pragma: no cover
+            return None
 
     # ---- 外观 ----
     def apply_palette(self, theme: dict[str, Any], base_font: tuple[str, int]) -> None:
@@ -371,33 +526,102 @@ class SegButton(_LABEL_BASE):   # type: ignore[misc,valid-type]
             "hover_bg": theme["seg_hover_bg"],
             "hover_fg": theme["seg_hover_fg"],
             "border": theme["seg_border"],
+            # 图片背景主题：未选中的按钮不铺底色，让壁纸直接透出来。
+            "see_through": theme["seg_border"],
         }
         family, size = base_font
-        self.configure(font=(family, size), padx=11, pady=4)
-        self.refresh()
+        self._font_spec = (family, size)
+        self._bg_flat = str(self._palette["bg"])
+        self.set_background(self._bg_flat)
+        self._fit()
 
     def set_text(self, text: str) -> None:
         """只改文字（切语言时用）：字体、内边距、配色都保持 apply_palette 设好的。"""
-        self.configure(text=text)
+        self._text = str(text)
+        if self._text_item is not None:
+            try:
+                self.itemconfigure(self._text_item, text=self._text)
+            except Exception:       # pragma: no cover
+                pass
+        self._fit()
 
     def set_selected(self, selected: bool) -> None:
         self.selected = bool(selected)
         self.refresh()
 
-    def refresh(self) -> None:
-        palette = self._palette
-        if self.selected:
-            background, foreground = palette["sel_bg"], palette["sel_fg"]
-        elif self._hover:
-            background, foreground = palette["hover_bg"], palette["hover_fg"]
-        else:
-            background, foreground = palette["bg"], palette["fg"]
-        border = palette["sel_bg"] if self.selected else palette["border"]
+    def repaint(self) -> None:
+        """重画整块按钮：壁纸切片 → 状态底色 → 文字。
+
+        顺序不能反。上一版把「铺底色」写在 _fit() 里、把「贴切片」交给基类的
+        repaint()，结果底色矩形先建、切片后建又被 tag_lower 压到底下，
+        未选中的按钮就永远是纯底色（实机截图里那两块白板就是这么来的）。
+        现在只有这一个绘制入口，Configure / set_surface / 配色变化全走它。
+        """
         try:
-            self.configure(background=background, foreground=foreground,
-                           highlightbackground=border, highlightcolor=border)
-        except Exception:       # pragma: no cover - 控件已销毁
-            pass
+            width = int(self.winfo_width())
+            height = int(self.winfo_height())
+        except Exception:       # pragma: no cover
+            return
+        if width <= 1 or height <= 1:
+            return
+        surface = self.shell_surface
+        photo = None
+        offset_x = offset_y = 0
+        if surface is not None:
+            try:
+                photo = surface.image()
+                offset_x, offset_y = surface.offset_of(self)
+            except Exception:       # pragma: no cover
+                photo = None
+        # 选中/悬停时铺实色（当前视图要有明确标识），否则让壁纸透出来
+        solid = self.selected or self._hover
+        # 1) 切片/纯色底
+        if photo is not None and not solid:
+            if self._image_item is None:
+                self._image_item = self.create_image(
+                    -offset_x, -offset_y, anchor="nw", image=photo)
+            else:
+                self.coords(self._image_item, -offset_x, -offset_y)
+                self.itemconfigure(self._image_item, image=photo)
+            self.tag_lower(self._image_item)
+        elif self._image_item is not None:
+            try:
+                self.delete(self._image_item)
+            except Exception:       # pragma: no cover
+                pass
+            self._image_item = None
+        # 2) 状态底色矩形
+        if solid or photo is None:
+            if self._bg_item is None:
+                self._bg_item = self.create_rectangle(
+                    0, 0, width, height, outline="", fill=self._current_background(),
+                    tags="seg_bg")
+            else:
+                self.coords(self._bg_item, 0, 0, width, height)
+                self.itemconfigure(self._bg_item, fill=self._current_background())
+            self.tag_lower(self._bg_item)
+            if self._image_item is not None:
+                self.tag_lower(self._image_item, self._bg_item)
+        elif self._bg_item is not None:
+            try:
+                self.delete(self._bg_item)
+            except Exception:       # pragma: no cover
+                pass
+            self._bg_item = None
+        # 3) 文字
+        if self._text_item is None:
+            self._text_item = self.create_text(
+                width // 2, height // 2, text=self._text,
+                fill=self._current_foreground(), anchor="center", tags="seg_text")
+        else:
+            self.coords(self._text_item, width // 2, height // 2)
+            self.itemconfigure(self._text_item, text=self._text,
+                               fill=self._current_foreground())
+        self.tag_raise(self._text_item)
+
+    def refresh(self) -> None:
+        """兼容既有调用点：等价于重画一次。"""
+        self.repaint()
 
     # ---- 交互 ----
     def invoke(self) -> None:
@@ -418,7 +642,8 @@ class SegButton(_LABEL_BASE):   # type: ignore[misc,valid-type]
         self.refresh()
 
 
-# 工具 → 排序 子菜单（卡片视图没有表头，排序必须也能从这里触发）
+
+
 SORT_MENU_ITEMS: tuple[tuple[str, str], ...] = (
     ("model", "按磁盘型号"),
     ("rw", "按累计读取"),
@@ -1243,7 +1468,15 @@ class DiskTrackerApp:
     # 只收「底色真正露在外面」的容器：body 被自绘表格（自己铺壁纸）或 cards_canvas
     # 完全盖住，table_frame / cards_frame 同理，垫了也看不见；kpi_frame 里的 KPI 卡
     # 是实色 Card.TFrame，垫一层只会让卡缝透出壁纸、显得斑驳，而且测试要数它的子控件。
+    # kpi_frame 不在这里：它里面放的是自绘 CardCanvas，垫层要跟卡片一起挂/撤
+    # （见 _sync_kpi_backdrop），混进这个元组会被 _sync_shell_surface 当普通容器处理。
     _SHELL_TARGETS = ("outer", "head", "seg_frame", "status_bar", "top_row", "bottom")
+    # 除上面这批外壳容器外，还要单独垫切片的两块：
+    #   kpi_frame  —— 四张 KPI 卡之间的 10px 缝隙露的是它的底色；
+    #   cards_inner—— 双列视图最后一行不满时，右边那一大片露的是它的底色。
+    # 它们里面装的是自绘卡片/画布，垫层要跟卡片同生共死，所以不进 _SHELL_TARGETS；
+    # 名字集中在这里，测试按这个元组断言，加垫层时不用改测试里的魔数。
+    _SHELL_EXTRA_BACKDROPS = ("kpi_frame", "cards_inner")
 
     def _shell_containers(self) -> list[tuple[str, Any]]:
         """(键, 容器) 列表，顺序无关，只用于去重与排查。
@@ -1283,7 +1516,11 @@ class DiskTrackerApp:
         百分点（0.73 / 0.55），观感上是同一块薄罩的深浅，不是两种风格。
         """
         regions: list[tuple[int, int, int, int]] = []
-        for name in ("table_frame", "kpi_frame", "bottom", "status_bar"):
+        # status_bar 刻意不在列：它只有一行提示文字，上下都是对话层。
+        # 单独给它铺一层更实的控件层，会让这一行在截图上显出一条明显的浅色横带
+        # （实测 y=92..106 的 RGB 从 139,143,164 跳到 176,179,195），
+        # 用户看到的就是「数据已更新并保存那行带白底」。
+        for name in ("table_frame", "kpi_frame", "bottom"):
             rect = self._client_rect(getattr(self, name, None))
             if rect is not None:
                 # _client_rect 给的是 (x, y, w, h)，而 assemble 要的是半开区间
@@ -1397,6 +1634,37 @@ class DiskTrackerApp:
                         widget.set_background(win_bg)
                 except Exception:           # pragma: no cover
                     pass
+            # 卡片区内层垫层
+            cards_backdrop = self._shell_backdrops.get("cards_inner")
+            if cards_backdrop is not None:
+                try:
+                    cards_backdrop.set_surface(None)
+                    cards_backdrop.set_background(win_bg)
+                except Exception:           # pragma: no cover
+                    pass
+            # 三个视图分段按钮同样是切片客户端，不摘会残留旧图碎片
+            for button in getattr(self, "seg_buttons", {}).values():
+                try:
+                    button.set_surface(None)
+                except Exception:           # pragma: no cover
+                    pass
+            # 三条细滚动条也要摘：它们的轨道是 Canvas 底，留着会贴旧图
+            for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
+                        getattr(self, "cards_scroll", None)):
+                if bar is not None:
+                    try:
+                        bar.set_surface(None)
+                    except Exception:       # pragma: no cover
+                        pass
+            # KPI 行自己的垫层：卡与卡之间的 10px 缝隙露出的是它，
+            # 不摘的话切回浅色主题会留一条贴过壁纸的细条。
+            kpi_backdrop = self._shell_backdrops.get("kpi_frame")
+            if kpi_backdrop is not None:
+                try:
+                    kpi_backdrop.set_surface(None)
+                    kpi_backdrop.set_background(win_bg)
+                except Exception:           # pragma: no cover
+                    pass
             # KPI 卡的画布底座同理：摘掉后回落到 card_bg 纯色，与其余主题一致
             for card in self._card_shells:
                 try:
@@ -1433,6 +1701,61 @@ class DiskTrackerApp:
             try:
                 canvas.set_background(win_bg)
             except Exception:               # pragma: no cover
+                pass
+        # 三个视图分段按钮：它们是画布，未选中时不铺底色，直接透出壁纸
+        for button in getattr(self, "seg_buttons", {}).values():
+            try:
+                button.set_surface(self._shell)
+                button.set_background(str(self.theme.get("win_bg") or "#FFFFFF"))
+            except Exception:               # pragma: no cover
+                pass
+        # 三条细滚动条：轨道同样是画布底，不贴切片的话整窗最右侧会漏一条
+        # 10px 的实色竖条（截图实测 x=1229 起是纯 #EEF2FA）。
+        for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
+                    getattr(self, "cards_scroll", None)):
+            if bar is not None:
+                try:
+                    bar.set_surface(self._shell)
+                except Exception:           # pragma: no cover
+                    pass
+        # 卡片区的内层 Frame（cards_inner）也要垫一层：双列视图最后一行不满时，
+        # 右边那一大片露的就是它的 win_bg 实色（截图实测 (700,600) 是纯 #EEF2FA、
+        # stdev 0），壁纸完全透不出来——用户说的「双列模式大片留白」就是这一块。
+        cards_inner = getattr(self, "cards_inner", None)
+        if cards_inner is not None:
+            cards_canvas = self._shell_backdrops.get("cards_inner")
+            if cards_canvas is None:
+                cards_canvas = attach_backdrop(cards_inner, self._shell, background=win_bg)
+                if cards_canvas is not None:
+                    self._shell_backdrops["cards_inner"] = cards_canvas
+            else:
+                try:
+                    cards_canvas.set_surface(self._shell)
+                except Exception:               # pragma: no cover
+                    pass
+            if cards_canvas is not None:
+                try:
+                    cards_canvas.set_background(win_bg)
+                except Exception:               # pragma: no cover
+                    pass
+        # KPI 行（kpi_frame）自己也要垫一层：四张卡之间留 10px 缝隙，缝隙里露的是
+        # kpi_frame 的底色。实测卡0 x=12..317、卡1 x=328..628，中间 x=318..327 那条
+        # 10px 在截图里就是一条纯 #EEF2FA 竖条，正是用户说的「卡片中间有白色的块」。
+        # 卡片本身（CardCanvas）已经各自贴了切片，只有这层还空着。
+        kpi_canvas = self._shell_backdrops.get("kpi_frame")
+        if kpi_canvas is None:
+            kpi_canvas = attach_backdrop(self.kpi_frame, self._shell, background=win_bg)
+            if kpi_canvas is not None:
+                self._shell_backdrops["kpi_frame"] = kpi_canvas
+        else:
+            try:
+                kpi_canvas.set_surface(self._shell)
+            except Exception:           # pragma: no cover
+                pass
+        if kpi_canvas is not None:
+            try:
+                kpi_canvas.set_background(win_bg)
+            except Exception:           # pragma: no cover
                 pass
         # 13 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
         # 否则它们会在切片层上面留下一小块一小块的实色补丁。
@@ -2231,7 +2554,13 @@ class DiskTrackerApp:
         """按当前视图重建卡片（单列=卡片视图，双列=两列网格）。"""
         columns = 1 if self.view_key == VIEW_CARDS else 2
         theme = self.theme
+        # 垫在最底层的切片画布不是卡片，必须留着：它是用 place 铺满 cards_inner 的
+        # 普通子控件，一起 destroy 掉的话，双列视图最后一行右侧那片留白就会
+        # 回落到 cards_inner 的实色底（用户截图里的「双列模式大片留白」）。
+        cards_backdrop = self._shell_backdrops.get("cards_inner")
         for child in self.cards_inner.winfo_children():
+            if child is cards_backdrop:
+                continue
             child.destroy()
         self._photo_cards = []
         # 先把上一种视图留下的列配置清干净：双列给每列配了 weight/uniform，
@@ -2267,6 +2596,16 @@ class DiskTrackerApp:
         self.cards_inner.configure(bg=theme["win_bg"])
         self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
                                   theme["scroll_thumb_hover"], theme["scroll_idle"])
+        # 新卡片是 grid 进来的，会盖在垫层上面；把垫层重新压回最底层。
+        if cards_backdrop is not None:
+            try:
+                self.tk.call("lower", cards_backdrop._w)
+            except Exception:                   # pragma: no cover
+                pass
+            try:
+                self._shell.invalidate()
+            except Exception:                   # pragma: no cover
+                pass
         self.root.after_idle(self._sync_cards_scrollregion)
 
     def _font_measure(self, font: tuple, text: str | None = None) -> int:

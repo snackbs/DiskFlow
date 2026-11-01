@@ -425,7 +425,7 @@ _EN: dict[str, str] = {
     "显示": "shown",
     "已隐藏": "hidden",
     # ---- 第 7 套「图片背景」主题 ----
-    "图片背景": "Photo Background",
+    "图片背景（Beta）": "Photo Background (Beta)",
     "选择背景图…": "Choose Background Image…",
     "清除背景图": "Clear Background Image",
     "背景图透明度(A)": "Background Opacity(A)",

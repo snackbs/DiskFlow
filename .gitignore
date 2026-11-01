@@ -43,6 +43,8 @@ pytest-cache-files-*
 .zzpt*
 release_notes.md
 *.tmp
+# 本机运行写出的用户设置（主题/视图/壁纸等），不进仓库
+settings.json
 history.json
 history.corrupt-*.json
 history.reset-*.json

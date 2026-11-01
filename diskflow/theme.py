@@ -41,7 +41,9 @@ THEME_LABELS = {
     THEME_GAUGE: "清爽仪表",
     THEME_MINIMAL: "极简留白",
     THEME_NATIVE: "原生默认",
-    THEME_PHOTO: "图片背景",
+    # 第 7 套还在打磨（自绘表格与卡片的观感仍在按效果图校准），
+    # 标个 Beta 让用户知道这套可能还会变。1.0.0 转正式版时去掉后缀即可。
+    THEME_PHOTO: "图片背景（Beta）",
 }
 # 「跟随系统」解析到的具体主题
 THEME_SYSTEM_LIGHT = THEME_LEDGER

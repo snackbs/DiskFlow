@@ -4597,12 +4597,12 @@ def test_gui_wallpaper_choice_never_touches_history(tk_root, tmp_path):
 
 def test_photo_theme_strings_are_translated():
     """英文界面不能露出中文（菜单、状态提示、错误信息都要有词条）。"""
-    for text in ("图片背景", "选择背景图…", "清除背景图", "背景图透明度(A)",
+    for text in ("图片背景（Beta）", "选择背景图…", "清除背景图", "背景图透明度(A)",
                  "不透明度 {value}%", "背景图已载入：{name}",
                  "背景图读不出来，已退回纯色面板：{error}", "背景图已清除",
                  "图片文件", "打开文件对话框失败：{error}"):
         assert app.has_translation(text), text
-    assert app.tr("图片背景", app.LANG_EN) == "Photo Background"
+    assert app.tr("图片背景（Beta）", app.LANG_EN) == "Photo Background (Beta)"
     assert app.tr("不透明度 {value}%", app.LANG_EN, value=50) == "Opacity 50%"
 
 
@@ -4936,7 +4936,12 @@ def test_gui_shell_labels_are_canvas_labels(tk_root, tmp_path):
 
 
 def test_gui_shell_layer_only_exists_with_a_wallpaper(tk_root, tmp_path):
-    """整窗透图只在「图片背景主题 + 真选了图」时挂，且六个容器都要垫上。"""
+    """整窗透图只在「图片背景主题 + 真选了图」时挂，且外壳容器都要垫上。
+
+    kpi_frame 不在这张表里：它放的是四张自绘 CardCanvas，垫层要跟着卡片一起
+    挂/撤（见 _sync_shell_surface），所以它由 _shell_backdrops 单独记录，
+    名字是 "kpi_frame"。
+    """
     window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
     assert window._shell_wanted() is False
     assert window._shell is None
@@ -4949,12 +4954,17 @@ def test_gui_shell_layer_only_exists_with_a_wallpaper(tk_root, tmp_path):
     window.apply_theme(app.THEME_PHOTO, persist=False)
     assert window._shell is not None
     expected = {name for name, _ in window._shell_containers()}
-    assert set(window._shell_backdrops) == expected
+    # 外壳容器 + 额外垫层（KPI 行卡缝、卡片区内层留白），名字都来自单一配置点
+    assert set(window._shell_backdrops) == expected | set(app.DiskTrackerApp._SHELL_EXTRA_BACKDROPS)
     for canvas in window._shell_backdrops.values():
         assert isinstance(canvas, app.SliceCanvas)
         assert canvas.shell_surface is window._shell
     for widget in window._shell_labels:
         assert widget.shell_surface is window._shell
+    # 三条细滚动条的轨道也要贴切片，否则整窗右侧/底部会漏出实色条
+    for bar in (window.yscroll, window.xscroll, window.cards_scroll):
+        assert bar.shell_surface is window._shell
+    window.root.destroy()
     window.root.destroy()
 
 
@@ -4995,7 +5005,10 @@ def test_gui_returning_to_the_photo_theme_reattaches_every_slice(tk_root, tmp_pa
         pytest.skip("系统没有 GDI+，整窗外壳层不会启用，跳过")
     window.apply_theme(app.THEME_PHOTO, persist=False)
     first = dict(window._shell_backdrops)
-    assert len(first) == 6
+    # 外壳容器数 + 额外垫层数，都从配置点算，不写死魔数
+    expected_count = (len(window._shell_containers())
+                      + len(app.DiskTrackerApp._SHELL_EXTRA_BACKDROPS))
+    assert len(first) == expected_count
 
     window.apply_theme(app.THEME_LEDGER, persist=False)
     assert all(canvas.shell_surface is None for canvas in first.values())
@@ -5019,7 +5032,8 @@ def test_gui_shell_targets_exclude_the_covered_containers(tk_root, tmp_path):
     names = [name for name, _ in window._shell_containers()]
     assert names == list(app.DiskTrackerApp._SHELL_TARGETS)
     assert len(names) == 6
-    # kpi_frame 的被测试数子控件（多一块 Canvas 就挂），body / table_frame /
+    # kpi_frame 走独立的 _shell_backdrops["kpi_frame"]（它里面是自绘卡片，
+    # 垫层要跟卡片一起挂/撤，不能混进这张通用表），body / table_frame /
     # cards_frame 被子控件完全盖住，垫了也看不见
     for banned in ("kpi_frame", "body", "table_frame", "cards_frame"):
         assert banned not in names
@@ -5061,7 +5075,9 @@ def test_gui_panel_regions_uses_the_control_layer_rects(tk_root, tmp_path):
     # 是实层，下面一条会突然回落到对话层。
     window._client_rect = lambda widget: (10, 20, 100, 40)
     regions = window._panel_regions(800, 600)
-    assert len(regions) == 4
+    # 数据区 / KPI / 底栏三块；status_bar 不铺——它只有一行提示文字，
+    # 单独铺一层控件层会让那行在壁纸上显出一条浅色横带。
+    assert len(regions) == 3
     assert regions[0] == (10, 20, 110, 60)
     window.root.destroy()
 
@@ -5126,6 +5142,36 @@ def test_gui_photo_card_metrics_keep_the_table_value_rules(tk_root, tmp_path):
         assert {item[3] for item in items} == {True, False}
     finally:
         window.root.destroy()
+
+
+def test_photo_card_metric_rows_are_grouped_tighter_than_they_are_spaced():
+    """指标格必须「标签紧贴数值、组与组拉开」，否则四行等距铺开看不出配对。
+
+    参照图（浅色薄罩卡片视图）实测：组内间隙 ≈7px、组间 ≈19px。
+    这里只锁关系，不锁具体像素，字号变化时仍然成立。
+    """
+    linespace = 14  # 代表 9pt 的 linespace
+    inner_gap = 0   # 标签块与数值块之间没有额外留白
+    assert inner_gap < app.METRIC_GAP_Y
+    # 组间（上一组的数值底 → 下一组的标签顶）必须显著大于组内
+    assert app.METRIC_GAP_Y * 2 >= linespace
+    assert app.METRIC_GAP_Y > app.TITLE_GAP
+
+
+def test_photo_card_height_does_not_add_a_trailing_gap_row():
+    """最后一行指标后面不能再加 METRIC_GAP_Y，否则卡片底部多一条空带。"""
+    title_h, sub_h, val_h = 17, 15, 17
+
+    def height(rows: int) -> int:
+        total = app.CARD_PAD_Y * 2 + title_h + app.TITLE_GAP + app.SUBTITLE_GAP
+        total += sub_h  # 有副标题
+        total += rows * (sub_h + val_h)
+        total += max(0, rows - 1) * app.METRIC_GAP_Y
+        return int(total)
+
+    # 多一行 = 一行高度 + 一个行间隙，不多不少
+    assert height(2) - height(1) == app.METRIC_GAP_Y + sub_h + val_h
+    assert height(1) - height(0) == sub_h + val_h
 
 
 def test_gui_photo_theme_builds_self_drawn_cards(tk_root, tmp_path):
