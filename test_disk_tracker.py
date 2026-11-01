@@ -21,8 +21,8 @@ import main as app
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TZ8 = timezone(timedelta(hours=8))
 
-NVME_KEY = "Sample NVMe SSD 1TB|N1SAMPLE0001"
-SATA_KEY = "Sample SATA SSD 1TB|S5SAMPLE0002"
+NVME_KEY = "SAMPLE NVME SSD 1TB|N1SAMPLE0001"
+SATA_KEY = "SAMPLE SATA SSD 1TB|S5SAMPLE0002"
 
 # fixtures 样本的精确换算值（供断言使用）
 NVME_READ_GB = 13314398 * 512000 / 1024 ** 3      # 6348.799705505371
@@ -859,7 +859,7 @@ def test_end_to_end_new_disk_and_vanished_disk(tmp_path):
     rows = {r.key: r for r in outcome.rows}
     assert rows[NVME_KEY].read_delta_gb is not None
     assert rows[SATA_KEY].read_delta_gb is not None
-    vanished = rows["WDC Sample Archive HDD 4TB|WD-H4SAMPLE0004"]
+    vanished = rows["SAMPLE ARCHIVE HDD 4TB|H4SAMPLE0004"]
     assert vanished.vanished is True
 
     store2 = _prepare_store(tmp_path / "second", "history_with_new_disk.json")
