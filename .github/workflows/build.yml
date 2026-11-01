@@ -400,4 +400,4 @@ jobs:
             ${{ steps.setup.outputs.setup_path }}
           fail_on_unmatched_files: true
           draft: false
-          prerelease: false
+          prerelease: true
