@@ -22,8 +22,8 @@ import main as app
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TZ8 = timezone(timedelta(hours=8))
 
-NVME_KEY = "Sample NVMe SSD 1TB|N1SAMPLE0001"
-SATA_KEY = "Sample SATA SSD 1TB|S5SAMPLE0002"
+NVME_KEY = "SAMPLE NVME SSD 1TB|N1SAMPLE0001"
+SATA_KEY = "SAMPLE SATA SSD 1TB|S5SAMPLE0002"
 
 # fixtures 样本的精确换算值（供断言使用）
 NVME_READ_GB = 13314398 * 512000 / 1024 ** 3      # 6348.799705505371
@@ -918,7 +918,7 @@ def test_end_to_end_new_disk_and_vanished_disk(tmp_path):
     rows = {r.key: r for r in outcome.rows}
     assert rows[NVME_KEY].read_delta_gb is not None
     assert rows[SATA_KEY].read_delta_gb is not None
-    vanished = rows["WDC Sample Archive HDD 4TB|WD-H4SAMPLE0004"]
+    vanished = rows["SAMPLE ARCHIVE HDD 4TB|H4SAMPLE0004"]
     assert vanished.vanished is True
 
     store2 = _prepare_store(tmp_path / "second", "history_with_new_disk.json")
@@ -3322,12 +3322,12 @@ def test_serial_masked_as_prefix_plus_fixed_stars():
     assert app.SERIAL_MASK_CHARS == 8 and app.SERIAL_MASK_VISIBLE_PREFIX == 2
 
     # 真实盘两种典型序列号：只露前两位
-    assert app._mask_serial("ZK7Y4B2K91XD") == "20********"
-    assert app._mask_serial("QN2W8N5T63VKM") == "S7********"
+    assert app._mask_serial("ZK7Y4B2K91XD") == "ZK********"
+    assert app._mask_serial("QN2W8N5T63VKM") == "QN********"
 
     # 长短不同的序列号遮盖串长度一致——长度本身也是信息，不能泄露
     masks = {app._mask_serial(value) for value in ("SN1", "ZK7Y4B2K91XD", "X" * 40)}
-    assert masks == {"SN********", "20********", "X" * 2 + "********"}
+    assert masks == {"SN********", "ZK********", "X" * 2 + "********"}
     assert len({len(mask) for mask in masks}) == 1
 
     # 不足两位：一位都不露，整个遮掉
@@ -3340,7 +3340,7 @@ def test_serial_masked_as_prefix_plus_fixed_stars():
     assert app._mask_serial(None) == "—"
 
     # 前后空白不影响取哪两位
-    assert app._mask_serial("  ZK7Y4B2K91XD  ") == "20********"
+    assert app._mask_serial("  ZK7Y4B2K91XD  ") == "ZK********"
 
 
 def test_serial_hidden_by_default_in_row_values_and_short_serial():
@@ -3350,13 +3350,13 @@ def test_serial_hidden_by_default_in_row_values_and_short_serial():
         protocol="NVMe", device_path="/dev/sda",
         read_gb=100.0, write_gb=50.0,
     )
-    assert app._short_serial("ZK7Y4B2K91XD", show=False) == "20********"
+    assert app._short_serial("ZK7Y4B2K91XD", show=False) == "ZK********"
     assert app._short_serial("ZK7Y4B2K91XD", show=True) == "ZK7Y4B2K91XD"
     assert app._short_serial("", show=True) == "—"
     assert app._short_serial("  ", show=False) == "—"
 
     hidden = app._row_values(row, show_serial=False)
-    assert hidden[0] == "Test NVMe\n20********"
+    assert hidden[0] == "Test NVMe\nZK********"
     assert "ZK7Y4B2K91XD" not in "".join(hidden)
 
     shown = app._row_values(row, show_serial=True)
