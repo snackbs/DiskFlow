@@ -601,4 +601,11 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即
 
 ## 许可
 
-[MIT](LICENSE)
+本仓库自己的源码以 [MIT](LICENSE) 授权。
+
+**但发布出去的二进制里还打包了第三方程序**，它们适用各自的许可证：
+便携版 `DiskFlow.exe` 与安装包里含 `smartctl.exe`（smartmontools 7.5，
+**GPL-2.0**），以及 Python 运行时与 Tcl/Tk。
+完整清单、调用方式（独立进程，不与主程序构成同一作品）与源码获取方式见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；
+GPL-2.0 全文在 [licenses/GPL-2.0.txt](licenses/GPL-2.0.txt)。

@@ -5236,3 +5236,37 @@ def test_gui_photo_card_survives_theme_round_trip(tk_root, tmp_path):
         assert card.shell_surface is window._shell or card.shell_surface is None
     window.root.destroy()
 
+def test_repo_ships_the_gpl_license_for_bundled_smartctl():
+    """分发的 exe 里打包了 GPL-2.0 的 smartctl.exe：必须随仓库附上许可全文。
+
+    GPL-2.0 第 1 条要求分发二进制时附带许可证副本。这个用例守住三件事：
+    ① 许可全文在仓库里；② 第三方声明写明了 smartctl 与它的版本；
+    ③ README 的许可小节指向这两份文件。少任何一份都算合规漏洞。
+    """
+    gpl = ROOT / "licenses" / "GPL-2.0.txt"
+    assert gpl.is_file(), "缺少 licenses/GPL-2.0.txt（GPL-2.0 要求分发时附许可全文）"
+    text = gpl.read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in text
+    assert "Version 2, June 1991" in text
+    assert "END OF TERMS AND CONDITIONS" in text
+
+    notices = ROOT / "THIRD-PARTY-NOTICES.md"
+    assert notices.is_file(), "缺少 THIRD-PARTY-NOTICES.md（要说明 exe 里打包了 GPL 组件）"
+    body = notices.read_text(encoding="utf-8")
+    assert "smartmontools" in body and "smartctl" in body
+    assert "GPL-2.0" in body or "GPLv2" in body or "General Public License v2" in body
+    # 必须写明是独立进程调用，否则 MIT 与 GPL 混用说不清
+    assert "subprocess" in body or "独立进程" in body
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "THIRD-PARTY-NOTICES.md" in readme
+    assert "licenses/GPL-2.0.txt" in readme
+
+
+def test_installer_ships_the_license_files():
+    """安装包要把 MIT 许可、第三方声明、GPL-2.0 全文一起装进安装目录。"""
+    iss = (ROOT / "installer" / "DiskFlow.iss").read_text(encoding="utf-8")
+    assert 'Source: "..\\LICENSE"' in iss
+    assert "THIRD-PARTY-NOTICES.md" in iss
+    assert "GPL-2.0.txt" in iss
+

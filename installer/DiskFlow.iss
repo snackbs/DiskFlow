@@ -118,6 +118,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "..\dist\{#MyAppExeName}.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 图标一并放进去，便于在安装目录里辨认
 Source: "..\diskflow-icons\diskflow.ico"; DestDir: "{app}"; Flags: ignoreversion
+; 许可证与第三方声明：GPL-2.0 第 1 条要求分发二进制时附带许可副本，
+; 装到 {app} 与 {app}\licenses 下，用户装完就能在安装目录里看到。
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE-DiskFlow.txt"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\licenses\GPL-2.0.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 ; 快捷方式一律用英文 exe 名（DiskFlow），中文显示名只用在开始菜单分组与卸载列表
