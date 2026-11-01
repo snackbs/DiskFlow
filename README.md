@@ -601,4 +601,4 @@ GUI 构造函数接受 `provider=` 注入点，测试注入 fixture provider 即
 
 ## 许可
 
-MIT
+[MIT](LICENSE)
