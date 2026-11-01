@@ -230,4 +230,6 @@ jobs:
           name: ${{ steps.names.outputs.display_name }} ${{ github.ref_name }}
           files: dist/${{ steps.names.outputs.exe_name }}.exe
           fail_on_unmatched_files: true
+          draft: false
+          prerelease: true
           generate_release_notes: true
