@@ -54,6 +54,8 @@ Windows 桌面小工具：读取本机每块物理磁盘（SATA SSD / NVMe SSD /
 
 ## 使用
 
+> 当前所有版本都标记为 **pre-release（预览版）**，1.0.0 才会转为正式版。
+
 1. 从 [Releases](../../releases) 下载，两种形式任选（或从 Actions 的 Artifacts 里取）：
    - `DiskFlow.exe`：便携版，双击直接用，不进注册表；
    - `DiskFlow-<版本>-windows-setup.exe`：安装版，装到 `Program Files`、带开始菜单项与卸载器，
