@@ -2490,10 +2490,28 @@ def test_fmt_delta_gb_always_carries_unit():
     assert app.fmt_delta_gb(0.0) == "+0.00 GB"
     assert app.fmt_delta_gb(-12.345) == "-12.35 GB"
     assert app.fmt_delta_gb(None) == "—"
-    # fmt_delta 是「只有数字」的底层写法，调用方负责补单位（底部汇总就是这么用的）
+    # fmt_delta 是「只有数字」的底层写法，调用方负责补单位
     assert app.fmt_delta(348.8) == "+348.80"
-    assert "GB" in f"本次总读增 {app.fmt_delta(348.8)} GB"
+    assert "GB" in f"本次总读增 {app.fmt_delta_gb(348.8)}"
     assert any(field.endswith("_delta_gb") for _, field in app.CARD_METRICS)
+
+
+def test_fmt_delta_gb_switches_to_tb_above_a_terabyte():
+    """累计增量超过 1 TB 时必须换单位，否则卡片里挤着 +2,416.07 GB。
+
+    块大小是「一块盘一年写几 TB」这种量级，历史总写增动辄四位数 GB；
+    用户看不出 2,416 GB 就是 2.36 TB。阈值与 fmt_delta_short 保持一致。
+    """
+    assert app.fmt_delta_gb(1023.99) == "+1,023.99 GB"
+    assert app.fmt_delta_gb(1024.0) == "+1.00 TB"
+    assert app.fmt_delta_gb(2416.07) == "+2.36 TB"
+    assert app.fmt_delta_gb(-2048.0) == "-2.00 TB"
+    # 三个增量的出口必须同阈值：卡片、表格、KPI 卡不会各写一套
+    for value in (0.0, 1023.0, 1024.0, 2416.07, -2048.0):
+        unit_gb = app.fmt_delta_gb(value).endswith("GB")
+        unit_short = app.fmt_delta_short(value).endswith("GB")
+        unit_compact = app.fmt_delta_compact(value).endswith("GB")
+        assert unit_gb == unit_short == unit_compact
 
 
 def test_fmt_delta_short_carries_unit_and_switches_to_tb():
@@ -5064,7 +5082,7 @@ def test_gui_window_layer_caches_by_geometry(tk_root, tmp_path):
 
 
 def test_gui_panel_regions_uses_the_control_layer_rects(tk_root, tmp_path):
-    """控件层（数据区 / KPI / 底栏 / 提示栏）用更实的一层，留白用更透的一层。"""
+    """控件层（数据区 / 底栏）用更实的一层，留白用更透的一层。"""
     window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
     # 量不出几何时整块都按对话层走，不能返回空列表（空列表就没地方叠面板了）
     window._client_rect = lambda widget: None
@@ -5075,9 +5093,14 @@ def test_gui_panel_regions_uses_the_control_layer_rects(tk_root, tmp_path):
     # 是实层，下面一条会突然回落到对话层。
     window._client_rect = lambda widget: (10, 20, 100, 40)
     regions = window._panel_regions(800, 600)
-    # 数据区 / KPI / 底栏三块；status_bar 不铺——它只有一行提示文字，
-    # 单独铺一层控件层会让那行在壁纸上显出一条浅色横带。
-    assert len(regions) == 3
+    # 只剩数据区与底栏两块。
+    # status_bar 不铺——它只有一行提示文字，单独铺一层控件层会让那行在壁纸上
+    # 显出一条浅色横带。
+    # kpi_frame 也不铺：参照图里 KPI 带是「对话层 + 卡片自己那层白罩」，卡间
+    # 缝隙露出的是对话层（L≈150）而不是卡面（L≈178 = 0.73*150 + 0.27*255）。
+    # 把整条 KPI 带垫成控件层，缝隙会被垫到和卡面一样亮（实测两者都是 184.7），
+    # 四张卡连成一片，用户看到的正是「卡片中间的分隔没了」。
+    assert len(regions) == 2
     assert regions[0] == (10, 20, 110, 60)
     window.root.destroy()
 

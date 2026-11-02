@@ -103,11 +103,12 @@ from . import wallpaper as _wallpaper
 # 第 7 套主题的外壳层：容器本身不动，只往里垫一层「背景切片」Canvas，
 # 再把外壳上的 ttk.Label 换成 CanvasLabel（ttk 控件的底色是实色，没法透出壁纸）。
 try:                                    # pragma: no cover - 依赖系统 Tk
-    from .shell_canvas import (CanvasLabel, CardCanvas, ShellSurface, SliceCanvas,
-                               attach_backdrop)
+    from .shell_canvas import (CanvasLabel, CardCanvas, QuietButton, ShellSurface,
+                               SliceCanvas, attach_backdrop)
 except Exception:
     CanvasLabel = None                  # type: ignore[assignment]
     CardCanvas = None                   # type: ignore[assignment]
+    QuietButton = None                  # type: ignore[assignment]
     SliceCanvas = None                  # type: ignore[assignment]
     ShellSurface = None                 # type: ignore[assignment]
     attach_backdrop = None              # type: ignore[assignment]
@@ -1141,8 +1142,14 @@ class DiskTrackerApp:
         """把当前主题的配色刷到外壳 CanvasLabel 上（CanvasLabel 不认识 ttk style）。"""
         win_bg = str(self.theme.get("win_bg") or "#FFFFFF")
         card_bg = str(self.theme.get("card_bg") or win_bg)
-        groups = ((self._shell_labels, win_bg), (self._card_labels, card_bg))
-        for widgets, background in groups:
+        border = self.theme.get("card_border")
+        veil = self.theme.get("card_veil")
+        veil_alpha = float(self.theme.get("card_veil_alpha") or 0.0)
+        # 卡内文字画布必须叠与卡片同一层薄罩：它自己的切片取自「对话层」（比卡面暗
+        # 一档），不叠罩就会在卡片上留下两块更暗的实色条（实测 147 vs 卡面 175）。
+        groups = ((self._shell_labels, win_bg, None, 0.0),
+                  (self._card_labels, card_bg, veil, veil_alpha))
+        for widgets, background, veil_rgb, veil_value in groups:
             for widget in widgets:
                 if CanvasLabel is None or not isinstance(widget, CanvasLabel):
                     continue
@@ -1152,14 +1159,15 @@ class DiskTrackerApp:
                             or self.theme.get("tree_fg") or "#1F2933")
                 try:
                     widget.apply_palette(foreground=color, font=self._shell_font(style),
-                                         background=background, padx=0, pady=0)
+                                         background=background, padx=0, pady=0,
+                                         veil_rgb=veil_rgb, veil_alpha=veil_value)
                 except Exception:           # pragma: no cover - 控件已销毁
                     pass
         # KPI 卡的底座是 CardCanvas：底色 + 可选描边也要跟着主题走
-        border = self.theme.get("card_border")
         for card in self._card_shells:
             try:
-                card.set_colors(background=card_bg, border=border)
+                card.set_colors(background=card_bg, border=border,
+                                veil_rgb=veil, veil_alpha=veil_alpha)
             except Exception:               # pragma: no cover - 控件已销毁
                 pass
 
@@ -1257,6 +1265,8 @@ class DiskTrackerApp:
                     self.kpi_frame,
                     background=str(self.theme.get("card_bg") or "#FFFFFF"),
                     border=self.theme.get("card_border"),
+                    veil_rgb=self.theme.get("card_veil"),
+                    veil_alpha=float(self.theme.get("card_veil_alpha") or 0.0),
                 )
                 self._card_shells.append(card)
                 value = self._card_label(card, text="—", style="CardValue.TLabel")
@@ -1371,8 +1381,18 @@ class DiskTrackerApp:
         # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死。
         # 它用 Quiet.TButton：有边框、无填充，和主按钮同高但不同分量——
         # 低频次操作不该和主操作抢同样的视觉重量，也不该看起来像一段纯文字。
-        self.about_button = ttk.Button(bottom, text=tr("关于"), style="Quiet.TButton",
-                                       width=0, command=self.show_about)
+        # 图片背景主题下 ttk.Button 的底色只能是 style 里的平色（win_bg #EEF2FA），
+        # 壁纸透不过去——截图实测那块区域是 46x27 的纯色块，用户报的「底部红框
+        # 白区」就是它。有 shell_canvas 时改用自绘的 QuietButton：贴自己那块壁纸
+        # 切片 + 一条 1px 描边 + 文字，和顶栏的分段按钮同一套做法。
+        if QuietButton is not None:
+            self.about_button: Any = QuietButton(
+                bottom, text=tr("关于"), style=QuietButton.STYLE_QUIET,
+                command=self.show_about, background=self.theme["win_bg"],
+                padx=10, pady=4, font=(self.base_font[0], self.base_font[1]))
+        else:
+            self.about_button = ttk.Button(bottom, text=tr("关于"), style="Quiet.TButton",
+                                           width=0, command=self.show_about)
         self.about_button.pack(side="right", padx=(0, 6))
 
         # 底部条与注释行已占位，数据区吃剩下的高度
@@ -1471,12 +1491,14 @@ class DiskTrackerApp:
     # kpi_frame 不在这里：它里面放的是自绘 CardCanvas，垫层要跟卡片一起挂/撤
     # （见 _sync_kpi_backdrop），混进这个元组会被 _sync_shell_surface 当普通容器处理。
     _SHELL_TARGETS = ("outer", "head", "seg_frame", "status_bar", "top_row", "bottom")
-    # 除上面这批外壳容器外，还要单独垫切片的两块：
+    # 除上面这批外壳容器外，还要单独垫切片的三块：
     #   kpi_frame  —— 四张 KPI 卡之间的 10px 缝隙露的是它的底色；
-    #   cards_inner—— 双列视图最后一行不满时，右边那一大片露的是它的底色。
+    #   cards_inner—— 双列视图最后一行不满时，右边那一大片露的是它的底色；
+    #   table_frame—— 竖向滚动条与横向滚动条交汇的那个 10x10 直角，
+    #                 既不属于表格画布也不属于任何一条滚动条，露的是它的底色。
     # 它们里面装的是自绘卡片/画布，垫层要跟卡片同生共死，所以不进 _SHELL_TARGETS；
     # 名字集中在这里，测试按这个元组断言，加垫层时不用改测试里的魔数。
-    _SHELL_EXTRA_BACKDROPS = ("kpi_frame", "cards_inner")
+    _SHELL_EXTRA_BACKDROPS = ("kpi_frame", "cards_inner", "table_frame")
 
     def _shell_containers(self) -> list[tuple[str, Any]]:
         """(键, 容器) 列表，顺序无关，只用于去重与排查。
@@ -1520,7 +1542,14 @@ class DiskTrackerApp:
         # 单独给它铺一层更实的控件层，会让这一行在截图上显出一条明显的浅色横带
         # （实测 y=92..106 的 RGB 从 139,143,164 跳到 176,179,195），
         # 用户看到的就是「数据已更新并保存那行带白底」。
-        for name in ("table_frame", "kpi_frame", "bottom"):
+        # kpi_frame 也不在列：KPI 带在参照图里是「对话层 + 卡片自己那层白罩」。
+        # 实测 ref_C4_sheet.png 左半：卡间缝隙 L≈150（与卡片上下的留白同值），
+        # 卡面 L≈178，正好等于 0.73*150 + 0.27*255 —— 也就是说那条「分隔线」
+        # 不是画出来的线，而是缝里露出的、比卡片暗一层的对话层。
+        # 早先这里把 kpi_frame 当控件层铺了一遍，缝隙被垫到和卡面一样亮
+        # （实测卡面 184.7 / 缝隙 184.7），于是四张卡连成一片，看着就是
+        # 「KPI 中间的卡片分隔没了」。
+        for name in ("table_frame", "bottom"):
             rect = self._client_rect(getattr(self, name, None))
             if rect is not None:
                 # _client_rect 给的是 (x, y, w, h)，而 assemble 要的是半开区间
@@ -1648,6 +1677,14 @@ class DiskTrackerApp:
                     button.set_surface(None)
                 except Exception:           # pragma: no cover
                     pass
+            # 底部「关于」按钮（自绘 QuietButton）同理
+            if QuietButton is not None and isinstance(
+                    getattr(self, "about_button", None), QuietButton):
+                try:
+                    self.about_button.set_surface(None)
+                    self.about_button.set_background(win_bg)
+                except Exception:           # pragma: no cover
+                    pass
             # 三条细滚动条也要摘：它们的轨道是 Canvas 底，留着会贴旧图
             for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
                         getattr(self, "cards_scroll", None)):
@@ -1709,6 +1746,15 @@ class DiskTrackerApp:
                 button.set_background(str(self.theme.get("win_bg") or "#FFFFFF"))
             except Exception:               # pragma: no cover
                 pass
+        # 底部「关于」按钮：自绘按钮自己不铺底色时是纯色，挂上切片才透得出壁纸
+        if QuietButton is not None and isinstance(
+                getattr(self, "about_button", None), QuietButton):
+            try:
+                self.about_button.set_surface(self._shell)
+                self.about_button.set_background(
+                    str(self.theme.get("win_bg") or "#FFFFFF"))
+            except Exception:           # pragma: no cover
+                pass
         # 三条细滚动条：轨道同样是画布底，不贴切片的话整窗最右侧会漏一条
         # 10px 的实色竖条（截图实测 x=1229 起是纯 #EEF2FA）。
         for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
@@ -1718,45 +1764,17 @@ class DiskTrackerApp:
                     bar.set_surface(self._shell)
                 except Exception:           # pragma: no cover
                     pass
-        # 卡片区的内层 Frame（cards_inner）也要垫一层：双列视图最后一行不满时，
-        # 右边那一大片露的就是它的 win_bg 实色（截图实测 (700,600) 是纯 #EEF2FA、
-        # stdev 0），壁纸完全透不出来——用户说的「双列模式大片留白」就是这一块。
-        cards_inner = getattr(self, "cards_inner", None)
-        if cards_inner is not None:
-            cards_canvas = self._shell_backdrops.get("cards_inner")
-            if cards_canvas is None:
-                cards_canvas = attach_backdrop(cards_inner, self._shell, background=win_bg)
-                if cards_canvas is not None:
-                    self._shell_backdrops["cards_inner"] = cards_canvas
-            else:
-                try:
-                    cards_canvas.set_surface(self._shell)
-                except Exception:               # pragma: no cover
-                    pass
-            if cards_canvas is not None:
-                try:
-                    cards_canvas.set_background(win_bg)
-                except Exception:               # pragma: no cover
-                    pass
-        # KPI 行（kpi_frame）自己也要垫一层：四张卡之间留 10px 缝隙，缝隙里露的是
-        # kpi_frame 的底色。实测卡0 x=12..317、卡1 x=328..628，中间 x=318..327 那条
-        # 10px 在截图里就是一条纯 #EEF2FA 竖条，正是用户说的「卡片中间有白色的块」。
-        # 卡片本身（CardCanvas）已经各自贴了切片，只有这层还空着。
-        kpi_canvas = self._shell_backdrops.get("kpi_frame")
-        if kpi_canvas is None:
-            kpi_canvas = attach_backdrop(self.kpi_frame, self._shell, background=win_bg)
-            if kpi_canvas is not None:
-                self._shell_backdrops["kpi_frame"] = kpi_canvas
-        else:
-            try:
-                kpi_canvas.set_surface(self._shell)
-            except Exception:           # pragma: no cover
-                pass
-        if kpi_canvas is not None:
-            try:
-                kpi_canvas.set_background(win_bg)
-            except Exception:           # pragma: no cover
-                pass
+        # 三块「容器自己露底色」的地方各垫一层切片，名字集中在
+        # _SHELL_EXTRA_BACKDROPS 里，加一块只改那一个元组：
+        #   kpi_frame   —— 四张 KPI 卡之间 10px 缝隙露的是它的底色。
+        #                  实测卡面 L=176、缝隙 L=146，落差 30 与参照图的 28~30
+        #                  基本一致，说明「卡片分隔」靠的就是这里没被垫亮。
+        #   cards_inner —— 双列视图最后一行不满时右边那一大片露的是它的底色
+        #                  （实测 (700,600) 曾是纯 #EEF2FA、stdev 0）。
+        #   table_frame —— 竖向滚动条与横向滚动条交汇的 10x10 直角，谁都不盖，
+        #                  截图里是唯一剩下的纯色块（x=1220..1229, y=619..628）。
+        for extra_name in self._SHELL_EXTRA_BACKDROPS:
+            self._sync_extra_backdrop(extra_name, win_bg)
         # 13 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
         # 否则它们会在切片层上面留下一小块一小块的实色补丁。
         # KPI 卡里的两行字同理，底色用卡片色而不是窗口色。
@@ -1784,6 +1802,31 @@ class DiskTrackerApp:
         try:
             self._shell.invalidate()
         except Exception:                   # pragma: no cover
+            pass
+
+    def _sync_extra_backdrop(self, name: str, background: str) -> None:
+        """给 _SHELL_EXTRA_BACKDROPS 里的某个容器挂上（或重新挂上）切片垫底。
+
+        这些容器的共同点是「自己会露出一块底色，但里面装的是自绘控件」，
+        所以既不能进 _SHELL_TARGETS（那批要按通用外壳处理），也不能不管。
+        """
+        container = getattr(self, name, None)
+        if container is None:
+            return
+        canvas = self._shell_backdrops.get(name)
+        if canvas is None:
+            canvas = attach_backdrop(container, self._shell, background=background)
+            if canvas is None:
+                return
+            self._shell_backdrops[name] = canvas
+        else:
+            try:
+                canvas.set_surface(self._shell)
+            except Exception:           # pragma: no cover
+                pass
+        try:
+            canvas.set_background(background)
+        except Exception:               # pragma: no cover
             pass
 
     def _schedule_shell_refresh(self, delay: int = 120) -> None:
@@ -2058,6 +2101,16 @@ class DiskTrackerApp:
             self.refresh_button.configure(style="TButton" if native_base else "Primary.TButton")
         if hasattr(self, "about_button"):
             self.about_button.configure(style="TButton" if native_base else "Quiet.TButton")
+            if QuietButton is not None and isinstance(self.about_button, QuietButton):
+                # 自绘的次级按钮不吃 style：描边用 seg_border、文字用正文色、
+                # 悬停走主题的悬停色（和顶栏分段按钮同一组键）。
+                # 原生主题也照样给这一套——它已经不是 ttk 控件了，退回系统画的
+                # 前提不存在，硬留一个 style 名字只会让按钮停在上一个主题的配色上。
+                self.about_button.apply_palette(
+                    foreground=theme["tree_fg"], background=theme["win_bg"],
+                    border=theme["seg_border"], font=(family, size),
+                    hover_fill=theme["seg_hover_bg"],
+                    hover_foreground=theme["seg_hover_fg"])
         style.configure("Primary.TButton", background=accent_bg,
                         foreground=theme["seg_sel_fg"], borderwidth=0, relief="flat",
                         padding=(14, 5), font=(family, size, "bold"),
@@ -2968,14 +3021,16 @@ class DiskTrackerApp:
         if outcome.baseline:
             self.summary_label.configure(text=tr("已记录基线，下次打开将显示增量"))
         else:
-            # 括号里的数值与单位不进翻译表：英文用同一串模板，只换标签词
+            # 括号里的数值与单位不进翻译表：英文用同一串模板，只换标签词。
+            # 单位写在占位符里而不是模板里，这样超过 1 TB 会自动变 TB，
+            # 不会出现「历史总读增 +9,657.00 GB」这种四位整数挤爆底栏的情况。
             self.summary_label.configure(
-                text=tr("本次总读增 {read} GB ｜ 本次总写增 {write} GB ｜ "
-                        "历史总读增 {hread} GB ｜ 历史总写增 {hwrite} GB",
-                        read=fmt_delta(totals.get("read_delta")),
-                        write=fmt_delta(totals.get("write_delta")),
-                        hread=fmt_delta(totals.get("hist_read_delta")),
-                        hwrite=fmt_delta(totals.get("hist_write_delta")))
+                text=tr("本次总读增 {read} ｜ 本次总写增 {write} ｜ "
+                        "历史总读增 {hread} ｜ 历史总写增 {hwrite}",
+                        read=fmt_delta_gb(totals.get("read_delta")),
+                        write=fmt_delta_gb(totals.get("write_delta")),
+                        hread=fmt_delta_gb(totals.get("hist_read_delta")),
+                        hwrite=fmt_delta_gb(totals.get("hist_write_delta")))
             )
         for key, label in self.kpi_values.items():
             label.configure(text="—" if outcome.baseline else fmt_delta_compact(totals.get(key)))

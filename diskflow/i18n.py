@@ -176,9 +176,9 @@ _EN: dict[str, str] = {
     # ---- 底部汇总 ----
     # 汇总行与右侧两个按钮同处一行，英文必须压在 620px 以内，
     # 否则会被挤成 "Historic read Δ +9,657.00 G" 这种截断。
-    "本次总读增 {read} GB ｜ 本次总写增 {write} GB ｜ 历史总读增 {hread} GB ｜ 历史总写增 {hwrite} GB":
-        "Read Δ {read} GB | Write Δ {write} GB | "
-        "All-time read Δ {hread} GB | All-time write Δ {hwrite} GB",
+    "本次总读增 {read} ｜ 本次总写增 {write} ｜ 历史总读增 {hread} ｜ 历史总写增 {hwrite}":
+        "Read Δ {read} | Write Δ {write} | "
+        "All-time read Δ {hread} | All-time write Δ {hwrite}",
     # ---- 右键「复制选中行」的计数后缀 ----
     "{count} 行": "{count} rows",
     # ---- 诊断信息（复制诊断信息 / 数据源状态用）----

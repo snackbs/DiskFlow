@@ -79,9 +79,9 @@ def fmt_gb(value: float | None, digits: int = 2) -> str:
 def fmt_delta(value: float | None, digits: int = 2) -> str:
     """只有数字的增量：+348.80。
 
-    调用方**必须**在同一句里补上单位（底部汇总就是这么用的：
-    `f"本次总读增 {fmt_delta(v)} GB"`）。凡是独立成格、不跟列头文字的地方，
-    一律改用 fmt_delta_gb / fmt_delta_short，否则看的人不知道是 GB 还是次数。
+    调用方**必须**在同一句里补上单位。凡是独立成格、不跟列头文字的地方，
+    一律改用 fmt_delta_gb / fmt_delta_short，否则看的人不知道是 GB 还是次数；
+    而且这两个还会在超过 1 TB 时换成 TB，模板里写死 "GB" 会自相矛盾。
     """
     if value is None:
         return "—"
@@ -90,13 +90,20 @@ def fmt_delta(value: float | None, digits: int = 2) -> str:
 
 
 def fmt_delta_gb(value: float | None, digits: int = 2) -> str:
-    """增量带单位的写法（卡片用）：+348.80 GB。
+    """增量带单位的写法（卡片用）：+348.80 GB，超过 1 TB 自动换成 TB。
 
     卡片与表格的增量格是独立小字，没有列头替它写「(GB)」，所以这里必须自带单位。
+
+    单位必须跟着量级走：一块盘一年写几 TB 很常见，历史总写增动辄
+    「+2,416.07 GB」，四位数整数部分在卡片小格子里既挤又难读，用户也看不出
+    它其实是 2.36 TB。与 fmt_delta_short 的阈值一致（abs >= 1024 GB → TB）。
     """
     if value is None:
         return "—"
-    return f"{fmt_delta(value, digits)} GB"
+    sign = "+" if value >= 0 else ""
+    if abs(value) >= 1024.0:
+        return f"{sign}{value / 1024.0:,.{digits}f} TB"
+    return f"{sign}{value:,.{digits}f} GB"
 
 
 def fmt_delta_short(value: float | None, digits: int = 2) -> str:

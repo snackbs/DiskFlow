@@ -29,14 +29,39 @@ configure(text=...) 这些 gui 和测试都在用的接口。
 from __future__ import annotations
 
 import re
+import struct
 import tkinter as tk
+import zlib
 from tkinter import font as tkfont
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 # 重排合成图的防抖：拖动窗口时 <Configure> 会连发几十次，每次重新解码整张壁纸
 # 要 100ms 量级，不防抖会让缩放明显卡顿。只延后「重新合成」，
 # 平移已经合成好的图（贴片）是纯坐标操作，可以立即做。
 RECOMPOSE_DELAY_MS = 140
+
+
+def solid_rgba_png(width: int, height: int,
+                   rgb: Sequence[int], alpha: int) -> bytes:
+    """生成 width×height 的纯色 RGBA PNG 字节（纯标准库，不依赖 Pillow）。
+
+    Tk 8.6 会对 RGBA 图片做真正的 alpha 合成（实测 50% 白压在纯蓝图片项上得到
+    (128,128,255)），所以「半透明薄罩」只能做成图片——canvas 的 rectangle 只支持
+    不透明色。photo_card 与 CardCanvas 共用这一个编码器。
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    color = bytes((int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
+                   int(rgb[2]) & 0xFF, max(0, min(255, int(alpha)))))
+    raw = (b"\x00" + color * width) * height
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
 class ShellSurface:
@@ -193,14 +218,24 @@ class SliceCanvas(tk.Canvas):
     """
 
     def __init__(self, master: Any, surface: ShellSurface | None = None, *,
-                 background: str = "#FFFFFF", **kwargs: Any) -> None:
+                 background: str = "#FFFFFF",
+                 veil_rgb: Sequence[int] | None = None,
+                 veil_alpha: float = 0.0, **kwargs: Any) -> None:
         kwargs.setdefault("highlightthickness", 0)
         kwargs.setdefault("bd", 0)
         kwargs.setdefault("takefocus", 0)
         super().__init__(master, bg=background, **kwargs)
         self.shell_surface = surface
         self._flat_bg = background
+        self._show_flat_bg = True
         self._image_item: Any = None
+        self._veil_rgb: tuple[int, int, int] = (
+            (int(veil_rgb[0]) & 0xFF, int(veil_rgb[1]) & 0xFF, int(veil_rgb[2]) & 0xFF)
+            if veil_rgb is not None else (255, 255, 255))
+        self._veil_alpha = max(0.0, min(1.0, float(veil_alpha)))
+        self._veil_item: Any = None
+        self._veil_key: tuple[int, int, bytes, int] | None = None
+        self._veil_image: Any = None
         self._registered = False
         self.bind("<Configure>", self._on_configure, add="+")
         self.bind("<Map>", self._on_configure, add="+")
@@ -240,10 +275,12 @@ class SliceCanvas(tk.Canvas):
                 except Exception:
                     pass
                 self._image_item = None
-            try:
-                self.configure(bg=self._flat_bg)
-            except Exception:   # pragma: no cover
-                pass
+            self._drop_veil_item()
+            if self._show_flat_bg:
+                try:
+                    self.configure(bg=self._flat_bg)
+                except Exception:   # pragma: no cover
+                    pass
             return
         offset_x, offset_y = surface.offset_of(self)
         try:
@@ -257,6 +294,65 @@ class SliceCanvas(tk.Canvas):
                 self.tag_lower(self._image_item)
         except Exception:       # pragma: no cover - 控件已销毁
             self._image_item = None
+        self._paint_veil()
+
+    # ---- 薄罩：半透明白色图片，压在切片之上 ----
+    def set_veil(self, *, rgb: Sequence[int] | None = None,
+                 alpha: float | None = None) -> None:
+        """设置薄罩颜色与不透明度（alpha=0 即不铺）。"""
+        if rgb is not None:
+            self._veil_rgb = (int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
+                              int(rgb[2]) & 0xFF)
+        if alpha is not None:
+            self._veil_alpha = max(0.0, min(1.0, float(alpha)))
+        self.repaint()
+
+    def _drop_veil_item(self) -> None:
+        if self._veil_item is not None:
+            try:
+                self.delete(self._veil_item)
+            except Exception:       # pragma: no cover - 控件已销毁
+                pass
+            self._veil_item = None
+
+    def _paint_veil(self) -> None:
+        """把薄罩贴成一张 RGBA 图片，压在切片之上、其余图元之下。
+
+        为什么要贴图片而不是画矩形：canvas 的 rectangle 只支持不透明色，
+        半透明只能用 RGBA 图片（Tk 8.6 会做真正的 alpha 合成）。
+        """
+        level = int(round(self._veil_alpha * 255))
+        if level <= 0:
+            self._drop_veil_item()
+            return
+        try:
+            width = int(self.winfo_width())
+            height = int(self.winfo_height())
+        except Exception:           # pragma: no cover
+            return
+        if width <= 1 or height <= 1:
+            return                  # 还没映射出来，等 <Configure> 再来一次
+        key = (width, height, bytes(self._veil_rgb), level)
+        if key == self._veil_key and self._veil_item is not None:
+            return                  # 尺寸与颜色都没变，复用现有 item
+        if key != self._veil_key:
+            try:
+                data = solid_rgba_png(width, height, self._veil_rgb, level)
+                self._veil_image = tk.PhotoImage(master=self, data=data)
+                self._veil_key = key
+            except Exception:       # pragma: no cover - 控件已销毁
+                self._drop_veil_item()
+                return
+        self._drop_veil_item()
+        try:
+            self._veil_item = self.create_image(0, 0, anchor="nw",
+                                                image=self._veil_image)
+            # 压在切片之上、文字之下：文字 item 先建、薄罩后建会盖住文字，
+            # 所以显式提到切片正上方一档。
+            if self._image_item is not None:
+                self.tag_raise(self._veil_item, self._image_item)
+        except Exception:           # pragma: no cover - 控件已销毁
+            self._veil_item = None
 
     def destroy(self) -> None:      # pragma: no cover - 由 Tk 生命周期覆盖
         if self.shell_surface is not None and self._registered:
@@ -278,8 +374,10 @@ class CanvasLabel(SliceCanvas):
                  text: str = "", style: str = "App.TLabel", anchor: str = "w",
                  font: Any = None, foreground: str = "#1A1A1A",
                  padx: int = 0, pady: int = 0, background: str = "#FFFFFF",
-                 **kwargs: Any) -> None:
-        super().__init__(master, surface, background=background, **kwargs)
+                 veil_rgb: Sequence[int] | None = None,
+                 veil_alpha: float = 0.0, **kwargs: Any) -> None:
+        super().__init__(master, surface, background=background,
+                         veil_rgb=veil_rgb, veil_alpha=veil_alpha, **kwargs)
         self._text = str(text)
         self._style = str(style)
         self._anchor = anchor
@@ -340,10 +438,17 @@ class CanvasLabel(SliceCanvas):
 
     # ---- 外观 ----
     def apply_palette(self, *, foreground: str, font: Any, background: str,
-                      padx: int = 0, pady: int = 0) -> None:
+                      padx: int = 0, pady: int = 0,
+                      veil_rgb: Sequence[int] | None = None,
+                      veil_alpha: float | None = None) -> None:
         self._foreground = str(foreground)
         self._font_spec = font
         self._pad_x, self._pad_y = int(padx), int(pady)
+        if veil_rgb is not None:
+            self._veil_rgb = (int(veil_rgb[0]) & 0xFF, int(veil_rgb[1]) & 0xFF,
+                              int(veil_rgb[2]) & 0xFF)
+        if veil_alpha is not None:
+            self._veil_alpha = max(0.0, min(1.0, float(veil_alpha)))
         self.set_background(background)
         self.itemconfigure(self._text_item, fill=self._foreground)
         self._apply_font()
@@ -392,34 +497,55 @@ class CanvasLabel(SliceCanvas):
 
 
 class CardCanvas(SliceCanvas):
-    """充当「卡片底座」的切片画布：比 SliceCanvas 多一层可选描边。
+    """充当「卡片底座」的切片画布：切片 + 半透明薄罩 + 可选描边。
 
     KPI 指标卡原来用 ttk.Frame(style="Card.TFrame")：底色是实色 card_bg，
     在图片背景主题里就是四块白板，壁纸在中间断成四块。换成 Canvas 之后卡片自己
     也去合成图里取自己那块，四张卡与周围留白连成一片。
 
-    唯一不能白丢的是 Card.TFrame 的描边（清爽仪表主题 card_border 非空），
-    所以在切片上面再画一圈 1px 矩形。描边画在画布 item 层，卡片里的文字是
-    独立子控件（子窗口永远盖在父画布的 item 之上），不会被描边压住。
+    薄罩不是装饰，是让卡片「分得开」的唯一手段：
+        参照效果图里 KPI 卡面亮度 178、卡间缝隙 150。缝隙漏的是合成图的
+        「对话层」（α0.55 白罩压壁纸，量出来 150）。如果卡片只贴切片不叠罩，
+        卡面也是 150 → 四张卡糊成一整条（实测卡面 147 / 缝隙 146，差 1）。
+        再叠一层 27% 白，0.73×150 + 0.27×255 = 178.4，与参照图逐位吻合。
+        所以卡面与缝隙的 28 个亮度差**全部来自这层罩**，不是画出来的分隔线。
+
+    薄罩与描边都在基类 SliceCanvas 里实现（CanvasLabel 也复用薄罩，
+    否则卡里的字会在卡片上留下几块实色白条）。
     """
 
     def __init__(self, master: Any, surface: "ShellSurface" | None = None, *,
                  background: str = "#FFFFFF", border: str | None = None,
-                 **kwargs: Any) -> None:
+                 veil_rgb: Sequence[int] | None = None,
+                 veil_alpha: float = 0.0, **kwargs: Any) -> None:
         # 必须在 super().__init__ 之前设好：SliceCanvas 会 bind <Configure>，
-        # 而 repaint() 里要用到这两个字段。
+        # 而 repaint() 里要用到这些字段。
         self._border = border
         self._border_item: Any = None
+        if veil_rgb is not None:
+            kwargs["veil_rgb"] = veil_rgb
+        kwargs["veil_alpha"] = veil_alpha
         super().__init__(master, surface, background=background, **kwargs)
 
-    def set_colors(self, *, background: str, border: str | None = None) -> None:
-        """换配色（切主题时调）：纯色底 + 描边色一起换，并立刻重画一次。"""
+    def set_colors(self, *, background: str, border: str | None = None,
+                   veil_rgb: Sequence[int] | None = None,
+                   veil_alpha: float | None = None) -> None:
+        """换配色（切主题时调）：纯色底 + 描边 + 薄罩一起换，只重画一次。
+
+        薄罩也走这里而不是单独调 set_veil()，否则一次切主题要重绘两遍，
+        卡片多的时候能看到明显的逐张闪烁。
+        """
         self._border = border
+        if veil_rgb is not None:
+            self._veil_rgb = (int(veil_rgb[0]) & 0xFF, int(veil_rgb[1]) & 0xFF,
+                              int(veil_rgb[2]) & 0xFF)
+        if veil_alpha is not None:
+            self._veil_alpha = max(0.0, min(1.0, float(veil_alpha)))
         self.set_background(background)
         self.repaint()
 
     def repaint(self) -> None:
-        super().repaint()
+        super().repaint()       # 切片 + 薄罩
         self._paint_border()
 
     def _paint_border(self) -> None:
@@ -446,6 +572,255 @@ class CardCanvas(SliceCanvas):
             self._border_item = None
 
 
+
+class QuietButton(SliceCanvas):
+    """底部「关于」按钮——自绘的描边次级按钮。
+
+    原来用 ttk.Button(style="Quiet.TButton")：clam 版本的按钮底色由 style 的
+    background 决定，在图片背景主题里被设成 win_bg 的实色，于是壁纸透不过去，
+    屏幕上就是一块 50x31 的浅灰白块（截图实测那块区域是纯 #EEF2FA、stdev 0）。
+    ttk 按钮没有「透明底色」这个选项，所以和顶栏的分段按钮一样改成画布：
+    有切片时先贴自己那块壁纸，再画一条 1px 描边，最后写文字。
+
+    对外保留原 ttk.Button 调用点用到的全部接口：
+      cget("text"/"style")、configure(text=/style=/state=/command=)、
+      winfo_reqwidth()（按文字 + 内边距算）、pack(side=/padx=)、invoke()。
+    "style" 只是存下来的名字（"Quiet.TButton" / "TButton"），供测试与切主题时
+    判断该用哪套外观；真正的配色由 apply_palette 给。
+    """
+
+    STYLE_QUIET = "Quiet.TButton"
+    STYLE_NATIVE = "TButton"
+
+    def __init__(self, master: Any, surface: "ShellSurface" | None = None, *,
+                 text: str = "", style: str = "Quiet.TButton", command: Any = None,
+                 background: str = "#FFFFFF", padx: int = 10, pady: int = 4,
+                 font: Any = None, **kwargs: Any) -> None:
+        # 这两个字段必须在 super().__init__ 之前设好：SliceCanvas 会 bind <Configure>，
+        # repaint() 立刻就可能被调用。
+        self._border_item: Any = None
+        self._bg_item: Any = None
+        self._text_item: Any = None
+        super().__init__(master, surface, background=background, **kwargs)
+        self._text = str(text)
+        self._style = str(style)
+        self.command = command
+        self._state = "normal"
+        self._hover = False
+        self._pad_x = int(padx)
+        self._pad_y = int(pady)
+        self._font_spec = font
+        self._font = None
+        self._fg = "#1A1A1A"
+        self._border = "#B9C6D6"
+        self._fill = str(background)
+        self._hover_fill: str | None = None
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self._apply_font()
+        self._fit()
+        self.repaint()
+
+    # ---- 尺寸 ----
+    def _apply_font(self) -> None:
+        spec = self._font_spec
+        if spec is None:
+            self._font = tkfont.nametofont("TkDefaultFont")
+        elif isinstance(spec, str):
+            self._font = tkfont.nametofont(spec)
+        else:
+            self._font = tkfont.Font(font=spec)
+
+    def _fit(self) -> None:
+        """按文字宽度 + 内边距定宽、按行高定高。
+
+        width=0 的语义原样保留：ttk 的 width 按字符数算、默认 -11 会把两个字的
+        「关于」拉成和「刷新记录」一样宽，这里一律按文字实际宽度排。
+        """
+        try:
+            text_w = int(self._font.measure(self._text or ""))
+        except Exception:                   # pragma: no cover
+            text_w = 0
+        try:
+            line_h = int(self._font.metrics("linespace"))
+        except Exception:                   # pragma: no cover
+            line_h = 16
+        try:
+            super().configure(width=text_w + self._pad_x * 2,
+                              height=line_h + self._pad_y * 2)
+        except Exception:                   # pragma: no cover
+            pass
+
+    def winfo_reqwidth(self) -> int:        # type: ignore[override]
+        """按文字算的请求宽度（测试用它断言「关于」比「刷新记录」窄）。"""
+        try:
+            return int(self._font.measure(self._text or "")) + self._pad_x * 2
+        except Exception:                   # pragma: no cover
+            return super().winfo_reqwidth()
+
+    # ---- 兼容 ttk.Button 的接口 ----
+    def cget(self, key: str) -> Any:        # type: ignore[override]
+        if key == "text":
+            return self._text
+        if key == "style":
+            return self._style
+        if key == "state":
+            return self._state
+        if key == "command":
+            return self.command
+        if key == "background" or key == "bg":
+            return self._fill
+        if key == "foreground" or key == "fg":
+            return self._fg
+        return super().cget(key)
+
+    def configure(self, **kwargs: Any) -> Any:      # type: ignore[override]
+        repaint = False
+        if "text" in kwargs:
+            self._text = str(kwargs.pop("text"))
+            repaint = True
+        if "style" in kwargs:
+            self._style = str(kwargs.pop("style"))
+            repaint = True
+        if "command" in kwargs:
+            self.command = kwargs.pop("command")
+        if "state" in kwargs:
+            self._state = str(kwargs.pop("state"))
+            repaint = True
+        if "font" in kwargs:
+            self._font_spec = kwargs.pop("font")
+            self._apply_font()
+            repaint = True
+        if repaint:
+            self._fit()
+            self.repaint()
+        if kwargs:
+            super().configure(**kwargs)
+        return None
+
+    config = configure
+
+    # ---- 外观 ----
+    def apply_palette(self, *, foreground: str, background: str, border: str,
+                      font: Any, hover_fill: str | None = None,
+                      hover_foreground: str | None = None) -> None:
+        """切主题时调：描边 / 文字 / 悬停色一起换，不重建控件。"""
+        self._fg = str(foreground)
+        self._fill = str(background)
+        self._border = str(border)
+        self._hover_fill = str(hover_fill) if hover_fill else None
+        if hover_foreground:
+            self._hover_fg = str(hover_foreground)
+        self._font_spec = font
+        self.set_background(self._fill)
+        self._apply_font()
+        self._fit()
+        self.repaint()
+
+    def _enabled(self) -> bool:
+        return self._state != "disabled"
+
+    def _line_color(self) -> str:
+        return self._border if self._enabled() else self._fill
+
+    def _text_color(self) -> str:
+        if not self._enabled():
+            return self._border
+        if self._hover and getattr(self, "_hover_fg", None):
+            return self._hover_fg
+        return self._fg
+
+    def repaint(self) -> None:
+        """重画：壁纸切片 → 悬停底色（仅悬停时）→ 描边 → 文字。"""
+        try:
+            width = int(self.winfo_width())
+            height = int(self.winfo_height())
+        except Exception:                   # pragma: no cover
+            return
+        if width <= 1 or height <= 1:
+            return
+        surface = self.shell_surface
+        photo = None
+        offset_x = offset_y = 0
+        if surface is not None:
+            try:
+                photo = surface.image()
+                offset_x, offset_y = surface.offset_of(self)
+            except Exception:               # pragma: no cover
+                photo = None
+        # 1) 底：有切片就贴切片（悬停时才盖一层实色），没有切片就是纯色底
+        if photo is not None and not self._hover:
+            if self._bg_item is not None:
+                try:
+                    self.delete(self._bg_item)
+                except Exception:           # pragma: no cover
+                    pass
+                self._bg_item = None
+            if self._image_item is None:
+                self._image_item = self.create_image(
+                    -offset_x, -offset_y, anchor="nw", image=photo)
+            else:
+                self.coords(self._image_item, -offset_x, -offset_y)
+                self.itemconfigure(self._image_item, image=photo)
+            self.tag_lower(self._image_item)
+        else:
+            if self._image_item is not None:
+                try:
+                    self.delete(self._image_item)
+                except Exception:           # pragma: no cover
+                    pass
+                self._image_item = None
+            fill = self._hover_fill if (self._hover and self._hover_fill) else self._fill
+            if self._bg_item is None:
+                self._bg_item = self.create_rectangle(0, 0, width, height,
+                                                      outline="", fill=fill,
+                                                      tags="quiet_bg")
+            else:
+                self.coords(self._bg_item, 0, 0, width, height)
+                self.itemconfigure(self._bg_item, fill=fill)
+            self.tag_lower(self._bg_item)
+        # 2) 描边
+        if self._border_item is None:
+            self._border_item = self.create_rectangle(
+                0, 0, width - 1, height - 1, outline=self._line_color(), width=1,
+                tags="quiet_border")
+        else:
+            self.coords(self._border_item, 0, 0, width - 1, height - 1)
+            self.itemconfigure(self._border_item, outline=self._line_color())
+        # 3) 文字
+        if self._text_item is None:
+            self._text_item = self.create_text(
+                width // 2, height // 2, text=self._text,
+                fill=self._text_color(), anchor="center", font=self._font,
+                tags="quiet_text")
+        else:
+            self.coords(self._text_item, width // 2, height // 2)
+            self.itemconfigure(self._text_item, text=self._text,
+                               fill=self._text_color(), font=self._font)
+        self.tag_raise(self._border_item)
+        self.tag_raise(self._text_item)
+
+    # ---- 交互 ----
+    def invoke(self) -> None:
+        if self._enabled() and self.command is not None:
+            self.command()
+
+    def _on_click(self, _event: Any = None) -> str:
+        self.invoke()
+        return "break"
+
+    def _on_enter(self, _event: Any = None) -> None:
+        if not self._enabled():
+            return
+        self._hover = True
+        self.repaint()
+
+    def _on_leave(self, _event: Any = None) -> None:
+        self._hover = False
+        self.repaint()
+
+
 def attach_backdrop(container: Any, surface: "ShellSurface" | None, *,
                     background: str = "#FFFFFF") -> Any:
     """在 container 里铺一层「背景切片」Canvas，返回这块 Canvas。
@@ -468,13 +843,18 @@ def attach_backdrop(container: Any, surface: "ShellSurface" | None, *,
         return None
     canvas = SliceCanvas(container, surface, background=background)
     try:
-        inset_x, inset_y = container_inset(container)
-        if inset_x or inset_y:
+        inset_x, inset_y, inset_right, inset_bottom = container_padding(container)
+        if inset_x or inset_y or inset_right or inset_bottom:
             # ttk 的 padding 圈是容器自己画的实色底，place 默认只能铺到内容区以内
             # （bordermode="inside"，实测 relwidth=1 拿到的是内核 padding 之后的宽度）。
             # 于是窗口最外圈会留一条 win_bg 的纯色白边，而参照图那圈是壁纸薄罩的延续，
             # 观感上就是「整窗透图漏了一圈」。把切片按负偏移顶到容器原点、尺寸按容器
             # 外框给，正好盖住 padding；超出容器的部分本来就会被父窗口裁掉。
+            #
+            # 判断条件必须四条 padding 全看：KPI 行只有右边 padding 10px（给滚动条
+            # 让位），左边和上边都是 0。早先这里只查 left/top，于是它走了 relwidth=1
+            # 那条路，切片实际只有 1206 宽而容器 1216 —— 右边整整漏出 10px 的
+            # win_bg 实色竖条，就是截图里 KPI 行右端那条白边。
             canvas.place(x=-inset_x, y=-inset_y, width=1, height=1)
             _cover_container(canvas, container)
         else:
@@ -485,18 +865,36 @@ def attach_backdrop(container: Any, surface: "ShellSurface" | None, *,
     return canvas
 
 
-def container_inset(container: Any) -> tuple[int, int]:
-    """容器 ttk padding 的左/上像素数；没有 padding（或不是 ttk）时返回 (0, 0)。"""
+def container_padding(container: Any) -> tuple[int, int, int, int]:
+    """容器 ttk padding 的 (左, 上, 右, 下) 像素数；没有 padding 时全 0。
+
+    ttk 的 padding 支持 1/2/3/4 个值的简写（1 值四边相同、2 值上下/左右对称、
+    3 值上/左右/下、4 值上右下左顺时针），这里按同一套规则展开成四元组。
+    """
     try:
         padding = container.cget("padding")
     except Exception:       # pragma: no cover - tk.Frame 没有 padding 选项
-        return (0, 0)
+        return (0, 0, 0, 0)
     values = pixel_values(padding)
     if not values:
-        return (0, 0)
-    left = values[0]
-    top = values[1] if len(values) > 1 else left
-    return (max(0, left), max(0, top))
+        return (0, 0, 0, 0)
+    if len(values) == 1:
+        left, top, right, bottom = values[0], values[0], values[0], values[0]
+    elif len(values) == 2:
+        top, right = values[0], values[1]
+        left, bottom = right, top
+    elif len(values) == 3:
+        top, right, bottom = values[0], values[1], values[2]
+        left = right
+    else:
+        top, right, bottom, left = values[0], values[1], values[2], values[3]
+    return (max(0, left), max(0, top), max(0, right), max(0, bottom))
+
+
+def container_inset(container: Any) -> tuple[int, int]:
+    """容器 ttk padding 的左/上像素数（早期接口，保留给调用方与测试）。"""
+    left, top, _right, _bottom = container_padding(container)
+    return (left, top)
 
 
 def pixel_values(value: Any) -> list[int]:
