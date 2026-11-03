@@ -14,6 +14,7 @@ import sys
 import tkinter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -4930,10 +4931,16 @@ def _photo_window(tk_root, tmp_path, theme=None):
 
 
 def test_gui_shell_labels_are_canvas_labels(tk_root, tmp_path):
-    """外壳 13 个文字控件一律是自绘 CanvasLabel，接口仍按 ttk.Label 回读。"""
+    """外壳 10 个文字控件一律是自绘 CanvasLabel，接口仍按 ttk.Label 回读。
+
+    底栏那三行（汇总 / 告警 / 历史文件说明）不在这个列表里：它们挂在同一块
+    卡片式底板上，走 _card_labels，底色用卡片色 + 27% 白罩，才能和图上的四张
+    KPI 卡连成同一套观感。10 = 标题 + 4 条状态行 + 2 条时间行 + smartctl +
+    权限 + 操作反馈。
+    """
     window = _photo_window(tk_root, tmp_path)
     labels = list(window._shell_labels)
-    assert len(labels) == 13
+    assert len(labels) == 10
     assert all(isinstance(widget, app.CanvasLabel) for widget in labels)
     assert window.title_label.cget("text") == app.window_title()
     assert window.fail_label.cget("style") == "Muted.TLabel"
@@ -5339,3 +5346,163 @@ def test_installer_ships_the_license_files():
     assert "THIRD-PARTY-NOTICES.md" in iss
     assert "GPL-2.0.txt" in iss
 
+# ---------------------------------------------------------------------------
+# 14. 半透明胶囊滑块与卡片式底栏（第 7 套主题的收尾两项）
+# ---------------------------------------------------------------------------
+
+
+def test_capsule_rgba_png_rounds_the_ends_and_keeps_the_middle_opaque():
+    """滚动条胶囊是一张圆角半透明 PNG：中段满 alpha，两端随圆角渐隐。
+
+    滑块原来用 create_line 画不透明实色，压在壁纸切片上就是一条没有纹理的
+    硬边（用户报的「滚动条左边透明度不一」）。改成图片后，两端必须留下圆角
+    的渐隐像素，否则贴上去仍是带直角的方块。
+    """
+    data = app.capsule_rgba_png(10, 200, (168, 180, 196), 140, radius=5)
+    width, height, depth, color_type, raw = _decode_flat_png(data)
+    assert (width, height) == (10, 200)
+    assert depth == 8
+    assert color_type == 6
+    assert len(raw) == height * (1 + width * 4)
+
+    def pixel(x, y):
+        offset = y * (1 + width * 4) + 1 + x * 4
+        return tuple(raw[offset:offset + 4])
+
+    # 中段：整块 RGB 一致，alpha 就是传入的半透明度
+    assert pixel(5, 100) == (168, 180, 196, 140)
+    # 上下两端在圆角里，必须比中段更透（而不是硬邦邦的直角块）
+    assert pixel(5, 0)[3] < 140
+    assert pixel(5, 199)[3] < 140
+    # 角落比端头中点更透：圆角是从四角向内收的
+    assert pixel(0, 0)[3] <= pixel(5, 0)[3]
+    # 横向胶囊（卡片区的滚动条是竖的，这里保证水平方向也能用）
+    wide = app.capsule_rgba_png(40, 10, (1, 2, 3), 128, radius=5, orient="horizontal")
+    w_width, w_height, _, _, w_raw = _decode_flat_png(wide)
+    assert (w_width, w_height) == (40, 10)
+    left = tuple(w_raw[5 * (1 + w_width * 4) + 1:5 * (1 + w_width * 4) + 5])
+    mid = tuple(w_raw[5 * (1 + w_width * 4) + 1 + 20 * 4:5 * (1 + w_width * 4) + 5 + 20 * 4])
+    assert mid == (1, 2, 3, 128)
+    assert left[3] < 128
+    # 非法尺寸不能生成 0 宽 0 高的 IHDR（Tk 会直接报错），也不能抛异常
+    assert _decode_flat_png(app.capsule_rgba_png(0, -3, (0, 0, 0), 255))[:2] == (1, 1)
+    assert _decode_flat_png(app.capsule_rgba_png(3, 3, (0, 0, 0), 255, radius=99))[:2] == (3, 3)
+
+
+def test_slim_scrollbar_keeps_the_line_without_a_wallpaper(tk_root):
+    """没有壁纸切片时滑块仍是那条圆头粗线，绝不画成半透明虚影。"""
+    bar = app.SlimScrollbar(tk_root, orient="vertical", command=lambda *args: None)
+    bar.pack(fill="y")
+    tk_root.update_idletasks()
+    bar._length = lambda: 300
+    # 即便把 alpha 调到半透明，只要没挂切片就得回落成实色线
+    bar.recolor("#FFFFFF", "#C6CDD6", "#9AA6B2", "#E4E8ED", alpha=140)
+    bar.set("0.1", "0.4")
+    items = bar.find_withtag("thumb")
+    assert len(items) == 1
+    assert bar.type(items[0]) == "line"
+    assert bar.itemcget(items[0], "fill") == "#C6CDD6"
+
+
+def test_slim_scrollbar_paints_a_translucent_capsule_over_a_wallpaper(tk_root):
+    """挂上切片后滑块改成 PNG 图元，并保留自己的引用不被 Tk 回收。"""
+    bar = app.SlimScrollbar(tk_root, orient="vertical", command=lambda *args: None)
+    bar.pack(fill="y")
+    tk_root.update_idletasks()
+    bar._length = lambda: 300
+    # 只需要一个能给出 PhotoImage 与偏移量的替身：真合成层依赖 GDI+，
+    # CI 上不一定有，这里测的是滚动条自己的绘制分支。
+    photo = tkinter.PhotoImage(master=tk_root, width=10, height=300)
+    surface = SimpleNamespace(image=lambda: photo,
+                              offset_of=lambda widget: (0, 0),
+                              register=lambda widget: None,
+                              unregister=lambda widget: None)
+    bar.set_surface(surface)
+    bar.recolor("#EEF2FA", "#A8B4C4", "#8C9AAE", "#DCE3ED", alpha=140)
+    bar.set("0.1", "0.4")
+    items = bar.find_withtag("thumb")
+    assert len(items) == 1
+    assert bar.type(items[0]) == "image"
+    assert bar._capsule_photo is not None
+    # 换回不透明（其余六套主题）后必须立刻回到线画法
+    bar.recolor("#FFFFFF", "#C6CDD6", "#9AA6B2", "#E4E8ED", alpha=255)
+    items = bar.find_withtag("thumb")
+    assert len(items) == 1
+    assert bar.type(items[0]) == "line"
+
+
+def test_gui_bottom_bar_is_a_card_surface(tk_root, tmp_path):
+    """底栏两行数据共用一块卡片式底板（与四张 KPI 卡同一套薄罩）。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    try:
+        bottom = window.bottom
+        assert isinstance(bottom, app.CardCanvas)
+        assert bottom in window._card_shells
+        # 两行文字挂在卡片里，走 _card_labels（底色 = 卡片色 + 27% 白罩），
+        # 而不是窗体外壳那条更暗的对话层。
+        assert isinstance(window.summary_label, app.CanvasLabel)
+        assert isinstance(window.alert_label, app.CanvasLabel)
+        assert window.summary_label in window._card_labels
+        assert window.alert_label in window._card_labels
+        # 历史文件说明那一行也在同一块底板上：它原来是卡片外面的一行灰字，
+        # 挂在更暗的对话层上，就是用户黑框里看着「还是白底」的那半截。
+        assert isinstance(window.note_label, app.CanvasLabel)
+        assert window.note_label in window._card_labels
+        assert window.note_label.master is bottom
+        for label in (window.summary_label, window.alert_label,
+                      window.note_label):
+            assert label not in window._shell_labels
+        # 两个按钮仍然在底栏这张卡片里（_descendants 走的是 winfo_children）
+        owners = [widget.master for widget in (window.refresh_button,
+                                               window.about_button)]
+        assert all(owner is bottom for owner in owners)
+    finally:
+        window.root.destroy()
+
+
+def test_gui_about_button_gets_a_deeper_border(tk_root, tmp_path):
+    """关于按钮的描边要明显深于 seg_border，否则「一个框」看不出来。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    try:
+        photo = app.THEMES[app.THEME_PHOTO]
+        expected = app.mix_hex(photo["seg_border"], photo["tree_fg"], 0.45)
+        assert window.about_button._border == expected
+        # 混出来的颜色必须真的比原边框深（亮度更低）
+        def luma(hex_text):
+            rgb = app.hex_rgb(hex_text)
+            return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+        assert luma(expected) < luma(photo["seg_border"])
+        # 六套实色主题同样加深，且不新增任何主题键
+        for key in (app.THEME_LEDGER, app.THEME_DARK, app.THEME_GAUGE,
+                    app.THEME_MINIMAL, app.THEME_NATIVE):
+            theme = app.THEMES[key]
+            mixed = app.mix_hex(theme["seg_border"], theme["tree_fg"], 0.45)
+            assert luma(mixed) != luma(theme["seg_border"])
+            assert mixed.startswith("#") and len(mixed) == 7
+    finally:
+        window.root.destroy()
+
+
+def test_gui_scrollbar_alpha_only_applies_to_the_photo_theme(tk_root, tmp_path):
+    """只有图片背景主题把滑块调成半透明，其余主题保持 255（不透明）。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    try:
+        assert window._scrollbar_alpha() == round(app.CAPSULE_ALPHA_PERCENT * 255 / 100)
+        for key in (app.THEME_LEDGER, app.THEME_DARK, app.THEME_GAUGE,
+                    app.THEME_MINIMAL, app.THEME_NATIVE, app.THEME_SYSTEM):
+            window.apply_theme(key, persist=False)
+            assert window._scrollbar_alpha() == 255
+    finally:
+        window.root.destroy()
+
+
+def test_mix_hex_clamps_and_falls_back(tk_root):
+    """混色辅助函数：比例钳到 0~1，坏输入不抛异常。"""
+    assert app.mix_hex("#000000", "#FFFFFF", 0.0) == "#000000"
+    assert app.mix_hex("#000000", "#FFFFFF", 1.0) == "#FFFFFF"
+    assert app.mix_hex("#000000", "#FFFFFF", 0.5) == "#808080"
+    assert app.mix_hex("#000000", "#FFFFFF", -3.0) == "#000000"
+    assert app.mix_hex("#000000", "#FFFFFF", 9.0) == "#FFFFFF"
+    assert app.mix_hex("#F2F5FA", "#EEF2FA", 0.0) == "#F2F5FA"
+    # 坏输入回落成灰，不抛异常
+    assert re.fullmatch(r"#[0-9A-F]{6}", app.mix_hex("nope", "#FFFFFF", 0.5))

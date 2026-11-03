@@ -104,7 +104,7 @@ from . import wallpaper as _wallpaper
 # 再把外壳上的 ttk.Label 换成 CanvasLabel（ttk 控件的底色是实色，没法透出壁纸）。
 try:                                    # pragma: no cover - 依赖系统 Tk
     from .shell_canvas import (CanvasLabel, CardCanvas, QuietButton, ShellSurface,
-                               SliceCanvas, attach_backdrop)
+                               SliceCanvas, attach_backdrop, capsule_rgba_png)
 except Exception:
     CanvasLabel = None                  # type: ignore[assignment]
     CardCanvas = None                   # type: ignore[assignment]
@@ -112,6 +112,7 @@ except Exception:
     SliceCanvas = None                  # type: ignore[assignment]
     ShellSurface = None                 # type: ignore[assignment]
     attach_backdrop = None              # type: ignore[assignment]
+    capsule_rgba_png = None             # type: ignore[assignment]
 
 # 第 7 套主题的卡片：卡内文字全部画在画布上。tk.Entry 的底色只能是平色，压在
 # 壁纸亮斑处会露出一个个矩形补丁（实测同一格内与壁纸相差 60~86 个通道），所以
@@ -158,6 +159,14 @@ SCROLL_GUTTER = 10
 CARD_RESIZE_DELAY_MS = 250
 # 卡片之间的水平间距（只在列与列之间留，最右一列贴边，才能和 KPI 行右缘对齐）
 CARD_GAP = 10
+# 图片背景主题下滚动条滑块的半透明度（百分比）。滑块原来是 create_line 画的不透明
+# 实色，压在壁纸切片上就是一条没有纹理的硬边——用户说的「滚动条左边有明显的
+# 透明度不一」就是它：轨道的图从左到右在变，滑块却始终同一个平色。
+# 55% 是「看得出是滑块、又不把壁纸糊死」的折中（55% 实色 + 45% 壁纸）。
+CAPSULE_ALPHA_PERCENT = 55
+# 胶囊图两端各留的空隙：只在视觉上收窄滑动范围，避免滑块横跨整个轨道时两端
+# 圆头被画布边缘切掉半圆。
+CAPSULE_PAD = 2
 
 # 第 7 套「图片背景」主题的三个菜单文案。入口放在「工具」菜单，
 # 绝不能进「主题」菜单——主题菜单必须严格等于 THEME_ORDER 那一串 radiobutton，
@@ -197,6 +206,13 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         self.shell_surface: Any = None
         self._surface_item: Any = None
         self._registered = False
+        # 滑块半透明用的胶囊图：默认 255（不透明）。只有图片背景主题会把它
+        # 调到 CAPSULE_ALPHA_PERCENT，其余六套主题的外观一个像素都不变
+        # （无切片时 _redraw 仍走原来的 create_line 分支）。
+        self._capsule_alpha = 255
+        self._capsule_height = 0
+        self._capsule_photo: Any = None
+        self._capsule_cache: Any = None
 
         self._drag_origin: float | None = None
         self._drag_first = 0.0
@@ -223,13 +239,19 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         return (self.first, self.last)
 
     def recolor(self, track: str, thumb: str, thumb_hover: str,
-                idle: str | None = None) -> None:
-        """主题切换时重配颜色（不重建控件）。"""
+                idle: str | None = None, alpha: int | None = None) -> None:
+        """主题切换时重配颜色（不重建控件）。
+
+        alpha 是滑块的半透明度（0~255）。给 None 就保持原样——非图片主题
+        必须留 255（不透明），否则滑块会变成一条看得见却压不住的虚影。
+        """
         self.track_color = track
         self.thumb_color = thumb
         self.thumb_hover_color = thumb_hover
         if idle is not None:
             self.idle_color = idle
+        if alpha is not None:
+            self._capsule_alpha = max(0, min(255, int(alpha)))
         try:
             self.configure(bg=track)
         except Exception:
@@ -304,6 +326,69 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
         start = int(round(self.first * total))
         return max(self.INSET, min(start, max(total - span - self.INSET, self.INSET)))
 
+    def _capsule_image(self, rgb: tuple[int, int, int], length: int,
+                       line_width: int) -> Any:
+        """生成（并缓存）一张半透明胶囊图；做不出来返回 None。
+
+        尺寸与画出来的结果必须和原来的圆头粗线一致：线宽 = 胶囊短边，
+        线的两段圆头半径 = 短边一半，所以胶囊的圆角半径也取短边一半。
+        缓存键带上尺寸与颜色：拖动窗口时 <Configure> 连发几十次，每次都重新
+        编码 + 让 Tk 解码一张图，滚动条会明显跟手迟滞。
+        """
+        if capsule_rgba_png is None or _tk_for_scrollbar is None:
+            return None
+        vertical = self.orient == "vertical"
+        short = max(2, int(line_width))
+        long = max(short, int(length))
+        key = (short, long, rgb, self._capsule_alpha, vertical)
+        cached = self._capsule_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            if vertical:
+                data = capsule_rgba_png(short, long, rgb, self._capsule_alpha,
+                                        radius=short // 2)
+            else:
+                data = capsule_rgba_png(long, short, rgb, self._capsule_alpha,
+                                        radius=short // 2, orient="horizontal")
+            photo = _tk_for_scrollbar.PhotoImage(master=self, data=data)
+        except Exception:                   # pragma: no cover - 依赖系统 Tk
+            return None
+        self._capsule_cache = (key, photo)
+        return photo
+
+    def _paint_capsule(self, start: int, end: int, color: str,
+                       line_width: int) -> bool:
+        """按半透明胶囊画滑块；画不了（无切片 / 不透明 / 无 Tk）返回 False。
+
+        返回 False 时调用方继续走原来的 create_line 分支，所以其余六套主题的
+        绘制路径与旧版逐像素一致。
+        """
+        if self._capsule_alpha >= 255 or self.shell_surface is None:
+            return False
+        span = int(end) - int(start)
+        if span < 2:
+            return False
+        photo = self._capsule_image(_wallpaper.hex_rgb(color, (0, 0, 0)), span,
+                                    line_width)
+        if photo is None:
+            return False
+        center = self.thickness / 2.0
+        half = max(2, int(line_width)) / 2.0
+        try:
+            if self.orient == "vertical":
+                self.create_image(center - half, start, anchor="nw", image=photo,
+                                  tags="thumb")
+            else:
+                self.create_image(start, center - half, anchor="nw", image=photo,
+                                  tags="thumb")
+        except Exception:                   # pragma: no cover - 控件已销毁
+            return False
+        # 图元自身要有人持引用，否则 Tk 会把图当垃圾回收，画面上只剩一个空框
+        self._capsule_photo = photo
+        return True
+
+
     def _redraw(self) -> None:
         if not self._alive:
             return
@@ -328,10 +413,16 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
             start = self.INSET
             end = length - self.INSET
             color = self.thumb_hover_color if self._hover else self.idle_color
+        line_width = max(2, min(self.radius * 2, self.thickness - 2 * self.INSET))
+        # 图片背景主题：滑块压在壁纸切片上，不透明实色会把底下的纹理整条盖掉，
+        # 看起来就是「轨道有纹理、滑块没有」的半截断层（用户报的「左边有明显的
+        # 透明度不一」）。这里改画一张半透明胶囊图，让壁纸从滑块里透出来；
+        # 其余主题 / 没挂切片时仍走下面那条圆头粗线，外观与旧版完全一致。
+        if self._paint_capsule(start, end, color, line_width):
+            return
         # 用一条带圆头端帽（capstyle=round）的粗线画滑块：端帽半径正好是线宽一半，
         # 上下半圆与中间直条天然同心同宽。之前用 oval+rectangle 三个图元拼，
         # 接缝和半圆处会漏出 1 像素，看起来像圆角「溢出去」了。
-        line_width = max(2, min(self.radius * 2, self.thickness - 2 * self.INSET))
         center = self.thickness / 2.0
         cap = line_width / 2.0
         near = start + cap
@@ -427,6 +518,9 @@ class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
         # 切片层与配色层各自一个 item：重画时只换填充，不重建控件
         self._bg_item: Any = None
         self._text_item: Any = None
+        # 描边单独一层：未选中时按钮既没有底色也没有切片，只靠这条 1px 框
+        # 划出边界。参照效果图里三个视图按钮各自都有可见的框。
+        self._border_item: Any = None
         self._font_spec: Any = ("Microsoft YaHei UI", 9)
         self._pad_x = 11
         self._pad_y = 4
@@ -609,7 +703,23 @@ class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
             except Exception:       # pragma: no cover
                 pass
             self._bg_item = None
-        # 3) 文字
+        # 3) 描边：每个按钮自己一个 1px 框，选中/未选中都要看得见
+        #    （未选中时既没铺底色也不贴切片，没有这层框就只剩几个字浮在壁纸上）
+        border = str(self._palette.get("border") or "")
+        if border and self._border_item is None:
+            self._border_item = self.create_rectangle(
+                0, 0, width - 1, height - 1, outline=border, width=1,
+                tags="seg_border")
+        elif border and self._border_item is not None:
+            self.coords(self._border_item, 0, 0, width - 1, height - 1)
+            self.itemconfigure(self._border_item, outline=border)
+        elif self._border_item is not None:
+            try:
+                self.delete(self._border_item)
+            except Exception:       # pragma: no cover
+                pass
+            self._border_item = None
+        # 4) 文字
         if self._text_item is None:
             self._text_item = self.create_text(
                 width // 2, height // 2, text=self._text,
@@ -618,6 +728,8 @@ class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
             self.coords(self._text_item, width // 2, height // 2)
             self.itemconfigure(self._text_item, text=self._text,
                                fill=self._current_foreground())
+        if self._border_item is not None:
+            self.tag_raise(self._border_item)
         self.tag_raise(self._text_item)
 
     def refresh(self) -> None:
@@ -708,6 +820,26 @@ def fmt_delta_compact(value: float | None, digits: int = 2) -> str:
     if abs(value) >= 1024.0:
         return f"{sign}{value / 1024.0:,.{digits}f} TB"
     return f"{sign}{value:,.{digits}f} GB"
+
+
+def mix_hex(text: str, towards: str, ratio: float,
+            fallback: str = "#808080") -> str:
+    """把 text 朝 towards 混过去 ratio（0~1），返回 #RRGGBB。
+
+    用来「在不新造主题键的前提下加深一条描边」：主题里 seg_border 与 tree_fg
+    是现成的两个色，两者按三七开就能得到一条比边框深、比正文浅的线，深浅两套
+    主题都成立（dark 主题下标字是浅色、边框是深色，混出来仍是中性灰）。
+    任一输入解析失败就用 fallback，绝不抛异常——描边颜色不值得让窗口起不来。
+    """
+    left = _wallpaper.hex_rgb(text, (128, 128, 128))
+    right = _wallpaper.hex_rgb(towards, left)
+    weight = max(0.0, min(1.0, float(ratio)))
+    try:
+        rgb = tuple(int(round(a + (b - a) * weight))
+                    for a, b in zip(left, right))
+    except Exception:                       # pragma: no cover - 参数已钳位
+        rgb = _wallpaper.hex_rgb(fallback, (128, 128, 128))
+    return "#%02X%02X%02X" % rgb
 
 
 def _default_geometry(root: Any) -> str:
@@ -1135,7 +1267,7 @@ class DiskTrackerApp:
         return widget
 
     def _all_shell_labels(self) -> list[Any]:
-        """全部自绘文字控件：13 个窗体外壳 + KPI 卡里那两行字。"""
+        """全部自绘文字控件：10 个窗体外壳 + 卡片里那几行字。"""
         return list(self._shell_labels) + list(self._card_labels)
 
     def _apply_shell_theme(self) -> None:
@@ -1334,11 +1466,23 @@ class DiskTrackerApp:
         # 卡片视图（单列 / 双列共用同一个 Canvas 容器）
         cards_frame = ttk.Frame(body, style="App.TFrame")
         self.cards_frame = cards_frame
-        self.cards_canvas = self.tk.Canvas(cards_frame, highlightthickness=0, bd=0,
-                                           bg=self.theme["win_bg"])
+        # 卡片区画布必须是切片客户端：卡片没铺满视口时，下方那条空白不属于任何
+        # 子控件，实色底的 win_bg 会整片露出来（用户截图里卡片下面那块纯色）。
+        # 切片画布自己贴自己那块合成图，而 Canvas 图元不随滚动偏移，壁纸钉在原地，
+        # 这也顺带修掉「缩小窗口往下滚把背景图切开」。
+        if SliceCanvas is not None:
+            self.cards_canvas: Any = SliceCanvas(cards_frame,
+                                                 background=self.theme["win_bg"])
+        else:                           # pragma: no cover - 依赖系统 Tk
+            self.cards_canvas = self.tk.Canvas(cards_frame, highlightthickness=0, bd=0,
+                                               bg=self.theme["win_bg"])
         self.cards_scroll = SlimScrollbar(cards_frame, orient="vertical",
                                           command=self.cards_canvas.yview)
-        self.cards_canvas.configure(yscrollcommand=self.cards_scroll.set)
+        # yscrollcommand 是「视口变了」的唯一可靠信号（滚轮、拖滑块、程序化
+        # moveto 都会走它）。滚动时内层 Frame 会整体位移，贴在它上面的切片必须
+        # 按新位置重新对齐，否则壁纸会随内容一起被推走——就是用户说的
+        # 「缩小窗口往下滑会把背景图切开」。
+        self.cards_canvas.configure(yscrollcommand=self._on_cards_yview)
         self.cards_canvas.grid(row=0, column=0, sticky="nsew")
         self.cards_scroll.grid(row=0, column=1, sticky="ns")
         cards_frame.rowconfigure(0, weight=1)
@@ -1354,28 +1498,58 @@ class DiskTrackerApp:
         # 每张卡建好后由 _bind_card_wheel() 递归绑到卡内所有控件。
         self._bind_card_wheel(self.cards_canvas)
         self._bind_card_wheel(self.cards_inner)
+        # 卡片比视口矮时，视口下方那一片不属于任何子控件，指针落在这里时事件
+        # 只能由 cards_frame / 滚动条自己接住。少绑任何一个，用户就会觉得
+        # 「鼠标放在空白处滚轮没反应，非得指到卡片上」。
+        self._bind_card_wheel(self.cards_frame)
+        self._bind_card_wheel(self.cards_scroll)
 
-        # 底部条与注释行先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
-        # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉
-        note = self._shell_label(
-            outer, text=self._history_note_text(self.store.path, baseline=False),
-            style="Note.TLabel")
-        note.pack(side="bottom", fill="x", pady=(4, 0))
-        self.note_label = note
+        # 底部条先按 side="bottom" 占位，再让上面的数据区吃剩余空间；
+        # 否则 expand=True 的数据区会把底部条压成几像素高，汇总文字被裁掉。
+        # 汇总行下面的「容量换算 / 历史文件」那一行也在同一块底板上（见下），
+        # 不再挂在卡片外面的对话层上。
 
-        bottom = ttk.Frame(outer, style="App.TFrame")
+        # 底栏底板：和 KPI 卡一样的自绘卡片（card_bg + 27% 白罩）。
+        # 用户报的「红框框起来的白底」其实是两块问题叠在一起：汇总行/提示行
+        # 原来直接铺在对话层上（没有底板，字浮在壁纸上），而「关于」按钮那一块
+        # 是 ttk 的实色平底。这一条合成一张卡片式底板，两行数据共用一块浅色薄罩，
+        # 和上面四张 KPI 卡同一套观感。
+        # 底板自己不写 height：CardCanvas 的请求尺寸由 pack 进去的子控件决定
+        # （实测 CanvasLabel + ttk.Button 的组合和 ttk.Frame 一致），内边距
+        # 靠子控件的 pady 给，画布没有 padding 选项。
+        bottom: Any
+        if CardCanvas is not None:
+            bottom = CardCanvas(
+                outer,
+                background=str(self.theme.get("card_bg") or "#FFFFFF"),
+                border=None,
+                veil_rgb=self.theme.get("card_veil"),
+                veil_alpha=float(self.theme.get("card_veil_alpha") or 0.0),
+            )
+            self._card_shells.append(bottom)
+        else:                           # pragma: no cover - 依赖系统 Tk
+            bottom = ttk.Frame(outer, style="Card.TFrame", padding=(12, 8))
         bottom.pack(side="bottom", fill="x", pady=(8, 0))
         self.bottom = bottom
-        self.summary_label = self._shell_label(bottom, text=tr("尚无记录"), style="Summary.TLabel")
-        self.summary_label.pack(side="left")
-        self.alert_label = self._shell_label(bottom, text="", style="Alert.TLabel")
-        self.alert_label.pack(side="left", padx=(12, 0))
+        # 两行文字挂在卡片里，跟 KPI 卡里的字同一套（_card_label → CanvasLabel），
+        # 才有同一个 27% 白罩；内边距靠 padx/pady 给。
+        # 顺序不能反：pack 是按调用顺序切空间的，先把说明行占成底部一条，
+        # 剩下的高度才留给汇总行与两个按钮，否则两行会挤在同一行里。
+        self.note_label = self._card_label(
+            bottom, text=self._history_note_text(self.store.path, baseline=False),
+            style="Note.TLabel")
+        self.note_label.pack(side="bottom", fill="x", padx=(12, 12), pady=(0, 8))
+        self.summary_label = self._card_label(bottom, text=tr("尚无记录"),
+                                              style="Summary.TLabel")
+        self.summary_label.pack(side="left", padx=(12, 0), pady=(8, 6))
+        self.alert_label = self._card_label(bottom, text="", style="Alert.TLabel")
+        self.alert_label.pack(side="left", padx=(12, 0), pady=(8, 6))
 
         # width=0：按文字自身宽度排，不走 ttk 的 width=-11（按字符数算最小宽，
         # 那会把两个字的「关于」和四个字的「刷新记录」拉成一样宽）。
         self.refresh_button = ttk.Button(bottom, text=tr("刷新记录"), style="Primary.TButton",
                                          width=0, command=self.refresh_async)
-        self.refresh_button.pack(side="right")
+        self.refresh_button.pack(side="right", padx=(0, 12), pady=(6, 4))
         # 「打开历史文件」只在菜单「文件 → 打开历史文件(O)」里留一个入口，
         # 底部条不再重复放按钮：同一动作两个落点只会让用户想「到底哪个不一样」。
         # 「关于」只显示 APP_VERSION，版本号不在界面任何地方重复写死。
@@ -1393,7 +1567,10 @@ class DiskTrackerApp:
         else:
             self.about_button = ttk.Button(bottom, text=tr("关于"), style="Quiet.TButton",
                                            width=0, command=self.show_about)
-        self.about_button.pack(side="right", padx=(0, 6))
+        # 关于按钮的左间距：原来只隔 6px，刷新的实心块和它的描边几乎贴在一起，
+        # 看起来像两个按钮粘住了。12px 让它们成为两个独立控件，同时不破坏
+        # 「关于在左、刷新在右」的视觉顺序。
+        self.about_button.pack(side="right", padx=(0, 12), pady=(6, 4))
 
         # 底部条与注释行已占位，数据区吃剩下的高度
         self.body.pack(fill="both", expand=True)
@@ -1762,6 +1939,12 @@ class DiskTrackerApp:
             if bar is not None:
                 try:
                     bar.set_surface(self._shell)
+                    # 挂上切片之后滑块才敢画成半透明胶囊（没切片时 _paint_capsule
+                    # 会自己回落到不透明圆头粗线），所以这里按当前主题重刷一次颜色。
+                    bar.recolor(self.theme["win_bg"], self.theme["scroll_thumb"],
+                                self.theme["scroll_thumb_hover"],
+                                self.theme["scroll_idle"],
+                                alpha=self._scrollbar_alpha())
                 except Exception:           # pragma: no cover
                     pass
         # 三块「容器自己露底色」的地方各垫一层切片，名字集中在
@@ -1775,7 +1958,7 @@ class DiskTrackerApp:
         #                  截图里是唯一剩下的纯色块（x=1220..1229, y=619..628）。
         for extra_name in self._SHELL_EXTRA_BACKDROPS:
             self._sync_extra_backdrop(extra_name, win_bg)
-        # 13 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
+        # 10 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
         # 否则它们会在切片层上面留下一小块一小块的实色补丁。
         # KPI 卡里的两行字同理，底色用卡片色而不是窗口色。
         card_bg = str(self.theme.get("card_bg") or win_bg)
@@ -2048,6 +2231,17 @@ class DiskTrackerApp:
         self.fail_label.configure(text=fail)
 
     # ---------- 主题 ----------
+    def _scrollbar_alpha(self) -> int:
+        """当前主题下滑块该用多大不透明度（0~255）。
+
+        只有图片背景主题值得半透明：六套实色主题的滚动条背后没有壁纸，
+        半透明只会让滑块变成一条虚影。有效范围由 _paint_capsule 再把关——
+        没挂切片时它一律回落成原来那条不透明圆头粗线。
+        """
+        if normalize_theme_key(getattr(self, "theme_key", None)) != THEME_PHOTO:
+            return 255
+        return max(0, min(255, int(round(CAPSULE_ALPHA_PERCENT * 255 / 100.0))))
+
     def apply_theme(self, key: Any, persist: bool = True,
                     dark_mode: bool | None = None) -> dict[str, Any]:
         """应用一套主题。控件不重建，只重配样式与指标卡可见性。"""
@@ -2106,9 +2300,14 @@ class DiskTrackerApp:
                 # 悬停走主题的悬停色（和顶栏分段按钮同一组键）。
                 # 原生主题也照样给这一套——它已经不是 ttk 控件了，退回系统画的
                 # 前提不存在，硬留一个 style 名字只会让按钮停在上一个主题的配色上。
+                # 描边不能直接用 seg_border：它是给分段按钮画分界线的浅色，
+                # 单拿一条出来框住一个按钮时几乎看不见（用户说的「加个更有辨识
+                # 度的框」）。往正文色方向混 45%——比边框明显、比文字轻，六套
+                # 主题都成立，且不用新增主题键。
                 self.about_button.apply_palette(
                     foreground=theme["tree_fg"], background=theme["win_bg"],
-                    border=theme["seg_border"], font=(family, size),
+                    border=mix_hex(theme["seg_border"], theme["tree_fg"], 0.45),
+                    font=(family, size),
                     hover_fill=theme["seg_hover_bg"],
                     hover_foreground=theme["seg_hover_fg"])
         style.configure("Primary.TButton", background=accent_bg,
@@ -2184,8 +2383,11 @@ class DiskTrackerApp:
         for bar in (getattr(self, "yscroll", None), getattr(self, "xscroll", None),
                     getattr(self, "cards_scroll", None)):
             if bar is not None:
+                # 图片背景主题下滑块改成半透明胶囊：轨道上的壁纸纹理要能透上来，
+                # 否则滑块是一条没有纹理的平色硬边（用户报的「左边透明度不一」）。
                 bar.recolor(theme["win_bg"], theme["scroll_thumb"],
-                            theme["scroll_thumb_hover"], theme["scroll_idle"])
+                            theme["scroll_thumb_hover"], theme["scroll_idle"],
+                            alpha=self._scrollbar_alpha())
         if hasattr(self, "cards_canvas"):
             self.cards_canvas.configure(bg=theme["win_bg"])
             self.cards_inner.configure(bg=theme["win_bg"])
@@ -2590,6 +2792,35 @@ class DiskTrackerApp:
         # 滚动区域就会停在旧值上，缩小窗口后便凭空多出一段能滚动的空白。
         self._apply_cards_scrollregion()
 
+    def _on_cards_yview(self, first: str, last: str) -> None:
+        """滚动位置变了：更新滚动条，并让贴在卡片区里的切片重新对齐。
+
+        卡片内层 Frame 是 Canvas 的 window item，滚动时整个 Frame 会上下位移。
+        任何挂在它上面或它内部的切片（cards_inner 垫层、卡片底座、卡内文字）
+        都会跟着走，于是壁纸被「推走」——用户看到的就是背景图在滚动时被切开。
+        这里在每次视口变化后统一重贴一次，壁纸就始终钉在屏幕坐标上。
+        """
+        if hasattr(self, "cards_scroll"):
+            self.cards_scroll.set(first, last)
+        self._realign_cards_slices()
+
+    def _realign_cards_slices(self) -> None:
+        """把卡片区里所有切片客户端按当前滚动偏移重贴一遍。"""
+        if self._shell is None:
+            return
+        widgets: list[Any] = []
+        backdrop = self._shell_backdrops.get("cards_inner")
+        if backdrop is not None:
+            widgets.append(backdrop)
+        widgets.extend(getattr(self, "_photo_cards", []))
+        widgets.extend(getattr(self, "_card_shells", []))
+        widgets.extend(getattr(self, "_card_labels", []))
+        for widget in widgets:
+            try:
+                widget.repaint()
+            except Exception:           # pragma: no cover - 控件已销毁
+                pass
+
     def _on_cards_wheel(self, event: Any) -> str:
         # 内容放得下时滚轮什么都不做：否则滚动区域一旦被撑大，
         # 滚轮就能把整块卡片推下去，露出上方一大片空白。
@@ -2648,7 +2879,8 @@ class DiskTrackerApp:
         self.cards_canvas.configure(bg=theme["win_bg"])
         self.cards_inner.configure(bg=theme["win_bg"])
         self.cards_scroll.recolor(theme["win_bg"], theme["scroll_thumb"],
-                                  theme["scroll_thumb_hover"], theme["scroll_idle"])
+                                  theme["scroll_thumb_hover"], theme["scroll_idle"],
+                                  alpha=self._scrollbar_alpha())
         # 新卡片是 grid 进来的，会盖在垫层上面；把垫层重新压回最底层。
         if cards_backdrop is not None:
             try:

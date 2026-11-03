@@ -64,6 +64,72 @@ def solid_rgba_png(width: int, height: int,
             + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+def capsule_rgba_png(width: int, height: int, rgb: Sequence[int], alpha: int,
+                      radius: int = 0, orient: str = "vertical") -> bytes:
+    """生成一个半透明圆角胶囊的 RGBA PNG（滚动条滑块的半透明版本）。
+
+    solid_rgba_png 只能出直角矩形。滑块压在壁纸切片上时是个圆头粗条，用直角矩形
+    会把两端的圆角糊成方块，比不透明时更难看。这里按「到中轴线的距离」算每个像素
+    的覆盖率：中段满幅，两端是半径 radius 的半圆，边缘一像素做抗锯齿。
+
+    orient="vertical" 时胶囊沿 y 轴（上下两端圆），"horizontal" 时沿 x 轴。
+    半径默认取短边的一半（正圆头），并且绝不会超过短边的一半——否则画出来是椭圆。
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    vertical = str(orient) != "horizontal"
+    short_side = width if vertical else height
+    corner = int(radius) if radius else max(1, short_side // 2)
+    corner = max(1, min(corner, max(short_side // 2, 1)))
+    red = int(rgb[0]) & 0xFF
+    green = int(rgb[1]) & 0xFF
+    blue = int(rgb[2]) & 0xFF
+    peak = max(0, min(255, int(alpha)))
+    center_x = width / 2.0
+    center_y = height / 2.0
+    rows = []
+    for y in range(height):
+        if vertical:
+            # 竖直胶囊：两端（y 方向）收圆，中段 dy=0
+            if y < corner:
+                dy = corner - y - 0.5
+            elif y >= height - corner:
+                dy = y - (height - corner) + 0.5
+            else:
+                dy = 0.0
+        else:
+            dy = y + 0.5 - center_y
+        row = bytearray()
+        for x in range(width):
+            dx = x + 0.5 - center_x
+            if not vertical:
+                # 水平胶囊：两端（x 方向）收圆
+                if x < corner:
+                    dx = corner - x - 0.5
+                elif x >= width - corner:
+                    dx = x - (width - corner) + 0.5
+                else:
+                    dx = 0.0
+            distance = (dx * dx + dy * dy) ** 0.5
+            if distance <= corner - 0.5:
+                cover = 255
+            elif distance >= corner + 0.5:
+                cover = 0
+            else:
+                cover = int(round((corner + 0.5 - distance) * 255))
+            row += bytes((red, green, blue, peak * cover // 255))
+        rows.append(b"\x00" + bytes(row))
+    raw = b"".join(rows)
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
 class ShellSurface:
     """整窗合成图的持有者与分发者。
 

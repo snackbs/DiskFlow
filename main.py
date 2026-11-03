@@ -157,8 +157,9 @@ from diskflow.wallpaper import (  # noqa: F401
 )
 
 from diskflow.shell_canvas import (  # noqa: F401
-    ShellSurface, SliceCanvas, CanvasLabel, attach_backdrop, send_to_back,
-    descendant_children, RECOMPOSE_DELAY_MS,
+    ShellSurface, SliceCanvas, CanvasLabel, CardCanvas, QuietButton,
+    attach_backdrop, send_to_back, descendant_children, RECOMPOSE_DELAY_MS,
+    capsule_rgba_png,
 )
 
 from diskflow.photo_card import (  # noqa: F401
@@ -186,6 +187,7 @@ from diskflow.gui import (  # noqa: F401
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
     SERIAL_MASK_CHARS, SERIAL_MASK_VISIBLE_PREFIX, SERIAL_EMPTY_TEXT,
     WALLPAPER_PICK_LABEL, WALLPAPER_CLEAR_LABEL, WALLPAPER_ALPHA_LABEL,
+    mix_hex, CAPSULE_ALPHA_PERCENT, CAPSULE_PAD,
     _mask_serial, _short_serial, _serial_line, _row_values, _row_sort_value,
     DiskTrackerApp,
 )
@@ -247,6 +249,7 @@ __all__ = [
     "ppm_bytes", "compose_ppm", "compose_png_fallback", "gdiplus_available",
     "ShellSurface", "SliceCanvas", "CanvasLabel", "attach_backdrop",
     "send_to_back", "descendant_children", "RECOMPOSE_DELAY_MS",
+    "CardCanvas", "QuietButton", "capsule_rgba_png",
     "PhotoCard", "solid_rgba_png", "VEIL_RGB", "VEIL_ALPHA",
     "ALERT_VEIL_RGB", "ALERT_VEIL_ALPHA",
     "CARD_PAD_X", "CARD_PAD_Y", "METRIC_GAP_X", "METRIC_GAP_Y",
@@ -256,7 +259,8 @@ __all__ = [
     "CARD_METRIC_COLUMNS", "CARD_METRIC_COLUMNS_GRID", "normalize_view_key",
     "SETTINGS_FILENAME",
     "DEFAULT_SETTINGS", "SettingsStore", "SCROLL_GUTTER", "CARD_RESIZE_DELAY_MS",
-    "CARD_GAP", "SlimScrollbar", "SegButton", "SORT_MENU_ITEMS", "COLUMN_SPECS",
+    "CARD_GAP", "CAPSULE_ALPHA_PERCENT", "CAPSULE_PAD", "mix_hex",
+    "SlimScrollbar", "SegButton", "SORT_MENU_ITEMS", "COLUMN_SPECS",
     "TABLE_NATURAL_WIDTH", "ROW_ALERT_TAG", "ROW_MUTED_TAG", "ROW_ZEBRA_TAG",
     "ALERT_COLOR", "MUTED_COLOR", "BASE_FONT", "SMARTCTL_INSTALL_HINT", "KPI_SPECS",
     "fmt_delta_compact", "STATUS_TEXT_LIMIT", "PAIR_SEPARATOR", "TSV_PAIR_SEPARATOR",
