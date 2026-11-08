@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import tkinter
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +24,29 @@ from types import SimpleNamespace
 import pytest
 
 import main as app
+import diskflow.diskmap as _diskmap
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TZ8 = timezone(timedelta(hours=8))
+nl = "\n"                    # 拼长报错文本时用，免得 f-string 里塞满换行
+
+
+@pytest.fixture(autouse=True)
+def _never_enumerate_real_disks(monkeypatch):
+    """全局夹具：任何用例都不许去枚举 runner 的真实硬盘。
+
+    locate_drive_letters() 缺省的 resolver 会走 list_physical_disks()——对
+    PhysicalDrive0..31 逐个做 DeviceIoControl。本机实测 0.17 秒，但 CI runner 上
+    这是唯一「跟机器硬件绑死」的阻塞点：虚拟机磁盘忙的时候它能把 30 秒的
+    _wait_until_idle 全吃掉，于是一条和跑盘毫无关系的用例随机挂掉
+    （run 42493844253 的 test_gui_background_read_only_touches_tk_from_the_main_thread）。
+    盘符逻辑本身由 match_drive_letters / attach_drive_letters 的用例用显式数据覆盖，
+    这里把「枚举」这一步钉成空，CI 的结果就只取决于代码，不取决于 runner 有几块盘。
+    """
+    monkeypatch.setattr(_diskmap, "list_physical_disks", lambda *a, **k: [])
+    monkeypatch.setattr(_diskmap, "list_volume_mounts", lambda *a, **k: [])
+    yield
+
 
 NVME_KEY = "SAMPLE NVME SSD 1TB|N1SAMPLE0001"
 SATA_KEY = "SAMPLE SATA SSD 1TB|S5SAMPLE0002"
@@ -1695,6 +1716,27 @@ def test_gui_refresh_button_text_follows_busy_state(tk_root, tmp_path):
         window.root.destroy()
 
 
+def _thread_dump() -> str:
+    """把所有线程的当前栈拼成文本（不碰 faulthandler 的 fd 要求）。
+
+    早先用 io.StringIO 接 faulthandler.dump_traceback()，在 CI 上直接抛
+    io.UnsupportedOperation: fileno——诊断分支自己炸了，把真正的「worker 没返回」
+    盖成了另一条毫不相干的失败。这里改成 sys._current_frames() 手动抓栈，
+    纯 Python 对象，不需要任何文件描述符。
+    """
+    frames = sys._current_frames()
+    chunks = []
+    for thread in threading.enumerate():
+        frame = frames.get(thread.ident)
+        chunks.append(f"--- {thread.name} (alive={thread.is_alive()}) ---")
+        if frame is None:
+            chunks.append("    <无栈信息：线程已结束或尚未启动>")
+        else:
+            chunks.extend("    " + line.rstrip()
+                          for line in traceback.format_stack(frame))
+    return nl.join(chunks)
+
+
 def _wait_until_idle(window, timeout=30.0):
     """等后台读盘结束；超时就把所有线程的栈打出来，别只留一句 assert。"""
     deadline = time.monotonic() + timeout
@@ -1702,11 +1744,9 @@ def _wait_until_idle(window, timeout=30.0):
         window.root.update()
         time.sleep(0.02)
     if window._busy:
-        import faulthandler
-        import io
-        buf = io.StringIO()
-        faulthandler.dump_traceback(file=buf)
-        raise AssertionError("后台读盘超时未完成，线程栈：" + nl + buf.getvalue())
+        dump = _thread_dump()
+        print(dump, file=sys.stderr)      # 直接进 CI 日志，别只留在断言里
+        raise AssertionError("后台读盘超时未完成，线程栈：" + nl + dump)
     return True
 
 def test_gui_background_read_only_touches_tk_from_the_main_thread(tk_root, tmp_path):
