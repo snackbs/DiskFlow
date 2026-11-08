@@ -12,6 +12,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -24,6 +25,19 @@ from .parse import parse_smartctl_payload
 # ---------------------------------------------------------------------------
 # 数据读取层：provider 接口 + 真实实现 + fixture 实现
 # ---------------------------------------------------------------------------
+
+
+# 单块盘的 smartctl 超时，以及整次读取的总预算。
+#
+# 为什么需要「总预算」：--scan-open 与每块盘的 -x -a 是串行的，异常盘（USB 桥、
+# 已休眠的外置盘）会一直挂到单盘超时才返回。盘一多，最坏耗时就是 N × 单盘超时，
+# 窗口会长时间停在「读取中…」，用户只能强杀进程。总预算到点后不再启动新的盘，
+# 直接给出明确的失败行，保证界面一定能恢复。
+PER_DEVICE_TIMEOUT_SECONDS = 25.0
+TOTAL_READ_BUDGET_SECONDS = 90.0
+# 剩余预算低于这个值时不再把剩余全给单块盘：给太少等于必然超时，
+# 不如按这个下限再试一次（超了也只是多等这么久，仍有单盘超时兜底）。
+MIN_DEVICE_TIMEOUT_SECONDS = 3.0
 
 
 def locate_smartctl(extra_candidates: Iterable[str | None] = ()) -> str | None:
@@ -66,7 +80,8 @@ def locate_smartctl(extra_candidates: Iterable[str | None] = ()) -> str | None:
     return None
 
 
-def _default_run_command(args: Sequence[str], timeout: float = 25.0) -> tuple[int, str, str]:
+def _default_run_command(args: Sequence[str],
+                         timeout: float = PER_DEVICE_TIMEOUT_SECONDS) -> tuple[int, str, str]:
     """执行命令并返回 (returncode, stdout, stderr)。Windows 下隐藏控制台窗口。"""
     kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
@@ -124,9 +139,25 @@ class SmartctlProvider:
     """默认实现：真实调用 smartctl。所有 smartctl 调用只出现在这一层。"""
 
     def __init__(self, smartctl_path: str | None = None,
-                 run_command: Callable[[Sequence[str]], tuple[int, str, str]] | None = None):
+                 run_command: Callable[[Sequence[str]], tuple[int, str, str]] | None = None,
+                 total_timeout: float | None = TOTAL_READ_BUDGET_SECONDS,
+                 per_device_timeout: float = PER_DEVICE_TIMEOUT_SECONDS):
         self._smartctl_path = smartctl_path
         self._run = run_command or _default_run_command
+        # None 或 <=0 表示不限总预算（测试与特殊场景用）
+        self._total_timeout = total_timeout
+        self._per_device_timeout = per_device_timeout
+
+    def _invoke(self, args: Sequence[str], timeout: float | None = None) -> tuple[int, str, str]:
+        """调用注入的命令执行器。
+
+        注入的替身只接受一个参数（这是历史契约），所以只有在用默认执行器时
+        才把 timeout 传下去；替身自己决定耗时，由 read_all 的预算在盘与盘之间
+        把关（超时的替身最多拖一块盘那么久）。
+        """
+        if timeout is not None and self._run is _default_run_command:
+            return self._run(args, timeout=timeout)
+        return self._run(args)
 
     def resolve_path(self) -> str | None:
         if self._smartctl_path:
@@ -139,7 +170,8 @@ class SmartctlProvider:
         if not path:
             return []
         try:
-            code, out, _err = self._run([path, "--scan-open", "--json"])
+            code, out, _err = self._invoke([path, "--scan-open", "--json"],
+                                           timeout=self._per_device_timeout)
         except (OSError, subprocess.SubprocessError):
             return []
         try:
@@ -152,14 +184,15 @@ class SmartctlProvider:
                 devices.append(str(entry["name"]))
         return devices
 
-    def read_device(self, device_path: str) -> DiskSnapshot:
+    def read_device(self, device_path: str, timeout: float | None = None) -> DiskSnapshot:
         path = self.resolve_path()
         if not path:
             return DiskSnapshot(device_path=device_path, error="读取失败：未找到 smartctl.exe")
         try:
             # -x 追加 Device Statistics（Logical Sectors Read/Written），是累计读写量的权威来源；
             # 缺少 -x 时只能退回 SMART 属性 241/242，部分主控的单位不是 512 字节，会严重偏小。
-            _code, out, err = self._run([path, "-x", "-a", "--json", device_path])
+            _code, out, err = self._invoke([path, "-x", "-a", "--json", device_path],
+                                           timeout=timeout or self._per_device_timeout)
         except subprocess.TimeoutExpired:
             return DiskSnapshot(device_path=device_path, error="读取失败：smartctl 执行超时")
         except (OSError, subprocess.SubprocessError) as exc:
@@ -181,11 +214,37 @@ class SmartctlProvider:
         if not devices:
             return ProviderResult(smartctl_path=path, ok=False,
                                   status=tr("未发现可用磁盘（可能需要管理员权限）"))
-        snapshots = [self.read_device(device) for device in devices]
+        snapshots = self._read_devices(devices)
         return ProviderResult(
             snapshots=snapshots, smartctl_path=path,
             status=tr("已读取 {count} 块磁盘（smartctl: {path}）",
                       count=len(snapshots), path=path))
+
+    def _read_devices(self, devices: Sequence[str]) -> list[DiskSnapshot]:
+        """逐块读取，但受整次读取的总预算约束（P2-5）。
+
+        预算到点后不再启动新的盘，而是给一行明确的「已跳过」失败记录：
+        用户看到的是「哪几块盘没读到、为什么」，而不是窗口一直转圈。
+        正在跑的那一块不会被中断（subprocess 没法安全跨线程喊停），
+        所以最坏超出预算是「一块盘的单盘超时」，有上界。
+        """
+        budget = self._total_timeout
+        deadline = None
+        if budget is not None and float(budget) > 0:
+            deadline = time.monotonic() + float(budget)
+        snapshots: list[DiskSnapshot] = []
+        for device in devices:
+            timeout = self._per_device_timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    snapshots.append(DiskSnapshot(
+                        device_path=device,
+                        error=tr("读取失败：本次读取总预算已用尽，已跳过该磁盘")))
+                    continue
+                timeout = min(timeout, max(MIN_DEVICE_TIMEOUT_SECONDS, remaining))
+            snapshots.append(self.read_device(device, timeout=timeout))
+        return snapshots
 
 
 class FixturesProvider:

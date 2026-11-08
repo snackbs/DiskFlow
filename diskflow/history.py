@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from . import atomicio
 from .config import APP_STORAGE_ID, PROJECT_DIR
 from .i18n import tr
 from .models import DiskSnapshot, disk_key
@@ -248,9 +249,17 @@ class HistoryStore:
 
     @staticmethod
     def _default_probe(directory: Path) -> bool:
+        """试写一个临时文件判断目录可写。
+
+        探测文件名必须每次唯一（不能只用 pid）：同一进程里的两个线程会同时
+        探测同一个目录，用同一个文件名时，先探测完的那一方把文件删掉，
+        另一方紧接着的 unlink 就会抛 FileNotFoundError —— 于是它误判
+        「目录不可写」，转头把历史写进 %LOCALAPPDATA%。结果是同一次运行里
+        两份数据各自写各自的目录，用户看到的历史凭空少了一半。
+        """
         try:
             directory.mkdir(parents=True, exist_ok=True)
-            probe = directory / f".write_probe-{os.getpid()}.tmp"
+            probe = atomicio.temp_path_for(directory / "probe.tmp")
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
             return True
@@ -287,13 +296,20 @@ class HistoryStore:
                                      message=tr("首次运行：将建立基线记录"), path=path)
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except UnicodeDecodeError:
+            # 非 UTF-8（手改时存成了 GBK / UTF-16、被别的工具写过）：内容已经
+            # 解析不出来，按「损坏」处理——备份原文件再重建，别让异常冒到界面层。
+            backup = self._backup_broken(path)
+            return HistoryLoadResult(
+                records=[], recovered=True, path=path, backup_path=backup,
+                message=tr("history.json 已损坏，已备份为 {name} 并重建基线", name=backup.name))
+        except atomicio.TEXT_READ_ERRORS as exc:
             return HistoryLoadResult(
                 records=[], recovered=True, path=path,
                 message=tr("历史文件读取失败（{error}），已重建基线", error=exc))
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             backup = self._backup_broken(path)
             return HistoryLoadResult(
                 records=[], recovered=True, path=path, backup_path=backup,
@@ -332,41 +348,89 @@ class HistoryStore:
                 pass
         return backup
 
+    def _write_locked(self, path: Path, records: Sequence[dict]) -> None:
+        """真正写盘的一步。调用方**必须已经持有** file_lock。
+
+        单独拆出来是为了让 append() 能在同一把锁里「读现状 + 合并 + 写回」，
+        同时不重复加锁——file_lock 用的是 O_CREAT|O_EXCL，同一进程再抢一次
+        会一直等到超时才降级成无锁写，白白卡住 5 秒。
+        """
+        if path.exists() and _history_schema_version(_try_json(path)) < SCHEMA_VERSION:
+            self._backup_before_trim(path)
+        payload = history_payload(records)
+        text = json.dumps(payload, ensure_ascii=False, indent=1)
+        atomicio.write_text(path, text)
+
     def save(self, records: Sequence[dict]) -> Path:
+        """整体覆盖写：records 就是文件的全部内容。
+
+        只给「我就是要覆盖」的场景用（测试里造夹具、工具脚本）。GUI 的日常记录
+        一律走 append()：并发时整份覆盖会把别的实例刚写进去的读数抹掉。
+        """
         path = self.path
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
-        if path.exists() and _history_schema_version(_try_json(path)) < SCHEMA_VERSION:
-            self._backup_before_trim(path)
-        payload = history_payload(records)
-        text = json.dumps(payload, ensure_ascii=False, indent=1)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        # 整段「判断格式 → 备份 → 写盘」都放在锁里：另一个实例（或同一进程的
+        # 另一个 store 对象）此刻也可能正在写同一份 history.json。
+        with atomicio.file_lock(path):
+            self._write_locked(path, records)
         return path
+
+    def append(self, new_records: Sequence[dict]) -> HistoryLoadResult:
+        """锁内完成「读现状 → 追加 → 写回」，返回合并后的结果。
+
+        为什么不能让调用方自己 load() 再 save()：那是读-改-写，两步之间另一次
+        运行（另一个实例、或同一进程里另一个窗口）可能已经写进了它的读数，
+        后写的那次拿着自己读到的旧快照整体覆盖，把对方刚写的那条挤掉——用户
+        看到的就是「上一次的记录莫名其妙没了」，而且事后完全无法复现。
+        锁必须罩住整段，不能只罩写盘（那是 P0-1 原来只修了一半的地方）。
+
+        返回值里的 records 是**写完之后的完整列表**（含别人的记录），
+        调用方要拿它做「本次之前」的判断时得用自己先前 load() 的那份。
+        """
+        path = self.path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        with atomicio.file_lock(path):
+            load = self.load()
+            merged = list(load.records) + list(new_records)
+            self._write_locked(path, merged)
+        return HistoryLoadResult(
+            records=merged, recovered=load.recovered, message=load.message,
+            path=load.path, backup_path=load.backup_path, migrated=load.migrated)
 
     def reset(self) -> Path | None:
         """重置历史文件：先把现有文件改名备份，再写一份空历史。
 
         返回备份文件路径；原本就没有历史文件时返回 None（那就只是写入空历史）。
         用改名而不是删除：用户点错了还能在原目录里找回 history.reset-<时间戳>.json。
+
+        「改名备份 → 写空历史」也整段放在锁里：这两步之间如果另一个实例正在
+        append，它的读数会写进刚清空的文件，随后这一步再写空就等于把它抹掉。
         """
         path = self.path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         backup: Path | None = None
-        if path.exists():
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = path.with_name(f"{HISTORY_RESET_PREFIX}{stamp}{path.suffix}")
-            try:
-                os.replace(path, backup)
-            except OSError:
-                # 改名失败（被别的程序占用等）就退回「复制一份再清空」，至少留得住数据
+        with atomicio.file_lock(path):
+            if path.exists():
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup = path.with_name(f"{HISTORY_RESET_PREFIX}{stamp}{path.suffix}")
                 try:
-                    shutil.copyfile(path, backup)
+                    os.replace(path, backup)
                 except OSError:
-                    backup = None
-        self.save([])
+                    # 改名失败（被别的程序占用等）就退回「复制一份再清空」，至少留得住数据
+                    try:
+                        shutil.copyfile(path, backup)
+                    except OSError:
+                        backup = None
+            self._write_locked(path, [])
         return backup
 
 

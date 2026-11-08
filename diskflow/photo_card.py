@@ -17,13 +17,13 @@
 
 from __future__ import annotations
 
-import struct
 import tkinter as tk
 import tkinter.font as tkfont
-import zlib
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 from .canvas_surface import CharRun, fit_text
+from .pngenc import capsule_rgba_png, solid_rgba_png  # noqa: F401  对外再导出
+from .pngenc import VeilImage
 from .shell_canvas import SliceCanvas
 
 # 卡片内边距（与旧 _build_card 的 inner padx=12 / pady=9 对齐）
@@ -57,22 +57,8 @@ ALERT_VEIL_ALPHA = 0.55
 FALLBACK_WIDTH = 560
 
 
-def solid_rgba_png(width: int, height: int,
-                   rgb: Sequence[int], alpha: int) -> bytes:
-    """生成 width×height 的纯色 RGBA PNG 字节（纯标准库）。"""
-    width = max(1, int(width))
-    height = max(1, int(height))
-    color = bytes((int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
-                   int(rgb[2]) & 0xFF, max(0, min(255, int(alpha)))))
-    raw = (b"\x00" + color * width) * height
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+# solid_rgba_png 已收敛到 diskflow/pngenc.py（本模块顶部导入后再导出，
+# 保持 main.py 的 __all__ 与既有测试的 app.solid_rgba_png 引用不变）。
 
 
 class _Block:
@@ -125,8 +111,7 @@ class PhotoCard(SliceCanvas):
         self._font_text = tkfont.Font(root=master, family=font_family,
                                       size=font_size + 1, weight="bold")
         self._blocks: list[_Block] = []
-        self._veil_key: tuple[int, int, bytes, int] | None = None
-        self._veil_image: Any = None
+        self._veil_images = VeilImage(self)
         self._sel_rects: list[int] = []
         self._sel_range: tuple[int, int, int, int] | None = None
         self._anchor: tuple[int, int] | None = None
@@ -196,20 +181,15 @@ class PhotoCard(SliceCanvas):
         return surface.image()
 
     def _paint_veil(self, width: int, height: int) -> None:
+        """在整卡上压一层半透明薄罩（图片由 pngenc.VeilImage 缓存，尺寸不变则复用）。"""
         rgb = tuple(self._spec.get("veil_rgb") or VEIL_RGB)
         alpha = self._spec.get("veil_alpha")
         if alpha is None:
             alpha = VEIL_ALPHA
-        level = int(round(max(0.0, min(1.0, float(alpha))) * 255))
-        if level <= 0:
+        photo = self._veil_images.image(width, height, rgb, alpha)
+        if photo is None:
             return
-        key = (width, height, bytes((rgb[0] & 0xFF, rgb[1] & 0xFF,
-                                     rgb[2] & 0xFF)), level)
-        if key != self._veil_key:
-            data = solid_rgba_png(width, height, rgb, level)
-            self._veil_image = tk.PhotoImage(master=self, data=data)
-            self._veil_key = key
-        self.create_image(0, 0, anchor="nw", image=self._veil_image)
+        self.create_image(0, 0, anchor="nw", image=photo)
 
     # -- 布局 --------------------------------------------------------------
 

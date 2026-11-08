@@ -5,14 +5,17 @@
 * 以「中文原文」作为查表键（gettext 风格）。源码里照旧直接写中文，需要英文时用 tr()
   包一层；中文永远是单一事实来源，新增文案不必先造 key，改文案也不会和 key 对不上。
 * 没收录的条目在英文界面下原样退回中文——宁可露出一句中文，也不能显示空串或裸 key。
-* tr() 的 lang 参数缺省时用模块级「当前语言」。GUI 在启动与切语言时调 set_language()
-  把它设成界面语言，这样数据层（history / parse / providers）里那些没有 lang 参数的
-  文案也会跟着界面一起变，不会出现「菜单是英文、状态列还是中文」的割裂。
+* tr() 的 lang 参数缺省时用「当前语言」。GUI 在启动与切语言时调 set_language() 把它
+  设成界面语言，这样数据层（history / parse / providers）里那些没有 lang 参数的文案
+  也会跟着界面一起变，不会出现「菜单是英文、状态列还是中文」的割裂。当前语言存在
+  ContextVar 里而不是模块全局，后台读盘线程用 bind_language() 把界面语言带进去。
 """
 
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+import contextvars
+from typing import Any, Iterator
 
 
 # ---------------------------------------------------------------------------
@@ -28,8 +31,15 @@ DEFAULT_LANG = LANG_ZH
 # 这样切换语言时菜单项本身不需要跟着翻译，也不会出现「English 被翻成英文」的怪事。
 LANG_LABELS = {LANG_ZH: "简体中文", LANG_EN: "English"}
 
-# 当前语言（进程级）。只有 GUI 会改它，测试默认是中文，所以既有断言全部不受影响。
-_current_lang = DEFAULT_LANG
+# 当前语言存在 ContextVar 里，不再用模块级可变全局。
+#
+# 为什么：读盘在后台线程里跑，数据层（parse / history / providers / delta）会在那个
+# 线程里调 tr()。若它读的是全局变量，主线程此刻切语言就可能让同一条消息的一半用
+# 中文、一半用英文拼出来；反过来后台线程也不该写这个全局。ContextVar 天然按执行
+# 上下文隔离：主线程设的值不会漏进别的线程，后台线程要跟着界面语言就用
+# bind_language() 显式把当前值带过去。
+_current_lang: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "diskflow_lang", default=DEFAULT_LANG)
 
 
 def normalize_lang(value: Any) -> str:
@@ -42,18 +52,32 @@ def normalize_lang(value: Any) -> str:
 
 
 def current_language() -> str:
-    return _current_lang
+    return _current_lang.get()
 
 
 def set_language(value: Any) -> str:
     """设置当前语言并返回规范化后的结果（供 GUI 与测试调用）。"""
-    global _current_lang
-    _current_lang = normalize_lang(value)
-    return _current_lang
+    lang = normalize_lang(value)
+    _current_lang.set(lang)
+    return lang
 
 
 def is_english(lang: Any = None) -> bool:
-    return normalize_lang(_current_lang if lang is None else lang) == LANG_EN
+    return normalize_lang(current_language() if lang is None else lang) == LANG_EN
+
+
+@contextlib.contextmanager
+def bind_language(lang: Any = None) -> Iterator[str]:
+    """在 with 块内把「当前语言」切成 lang，退出时还原。
+
+    给后台线程用：worker 启动时 bind_language(界面语言)，整个读盘过程里所有 tr()
+    都固定在同一个语言上，主线程随后再切语言也不会让本次结果串味。
+    """
+    token = _current_lang.set(normalize_lang(current_language() if lang is None else lang))
+    try:
+        yield current_language()
+    finally:
+        _current_lang.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +306,10 @@ _EN: dict[str, str] = {
         "Read {count} disks (smartctl: {path})",
     "读取失败：未找到 smartctl.exe": "Read failed: smartctl.exe not found",
     "读取失败：smartctl 执行超时": "Read failed: smartctl timed out",
+    "读取超时：{seconds} 秒内未返回，后台仍在尝试，可稍后手动刷新":
+        "Read timed out after {seconds}s; still retrying in the background",
+    "读取失败：本次读取总预算已用尽，已跳过该磁盘":
+        "Read failed: total read budget exhausted, disk skipped",
     "读取失败：smartctl 输出无法解析": "Read failed: unparsable smartctl output",
     "读取失败：smartctl 未返回磁盘信息":
         "Read failed: smartctl returned no disk information",

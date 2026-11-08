@@ -29,105 +29,16 @@ configure(text=...) 这些 gui 和测试都在用的接口。
 from __future__ import annotations
 
 import re
-import struct
 import tkinter as tk
-import zlib
 from tkinter import font as tkfont
 from typing import Any, Callable, Sequence
+
+from .pngenc import VeilImage, capsule_rgba_png, solid_rgba_png  # noqa: F401  两个 PNG 编码器对外再导出
 
 # 重排合成图的防抖：拖动窗口时 <Configure> 会连发几十次，每次重新解码整张壁纸
 # 要 100ms 量级，不防抖会让缩放明显卡顿。只延后「重新合成」，
 # 平移已经合成好的图（贴片）是纯坐标操作，可以立即做。
 RECOMPOSE_DELAY_MS = 140
-
-
-def solid_rgba_png(width: int, height: int,
-                   rgb: Sequence[int], alpha: int) -> bytes:
-    """生成 width×height 的纯色 RGBA PNG 字节（纯标准库，不依赖 Pillow）。
-
-    Tk 8.6 会对 RGBA 图片做真正的 alpha 合成（实测 50% 白压在纯蓝图片项上得到
-    (128,128,255)），所以「半透明薄罩」只能做成图片——canvas 的 rectangle 只支持
-    不透明色。photo_card 与 CardCanvas 共用这一个编码器。
-    """
-    width = max(1, int(width))
-    height = max(1, int(height))
-    color = bytes((int(rgb[0]) & 0xFF, int(rgb[1]) & 0xFF,
-                   int(rgb[2]) & 0xFF, max(0, min(255, int(alpha)))))
-    raw = (b"\x00" + color * width) * height
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
-
-
-def capsule_rgba_png(width: int, height: int, rgb: Sequence[int], alpha: int,
-                      radius: int = 0, orient: str = "vertical") -> bytes:
-    """生成一个半透明圆角胶囊的 RGBA PNG（滚动条滑块的半透明版本）。
-
-    solid_rgba_png 只能出直角矩形。滑块压在壁纸切片上时是个圆头粗条，用直角矩形
-    会把两端的圆角糊成方块，比不透明时更难看。这里按「到中轴线的距离」算每个像素
-    的覆盖率：中段满幅，两端是半径 radius 的半圆，边缘一像素做抗锯齿。
-
-    orient="vertical" 时胶囊沿 y 轴（上下两端圆），"horizontal" 时沿 x 轴。
-    半径默认取短边的一半（正圆头），并且绝不会超过短边的一半——否则画出来是椭圆。
-    """
-    width = max(1, int(width))
-    height = max(1, int(height))
-    vertical = str(orient) != "horizontal"
-    short_side = width if vertical else height
-    corner = int(radius) if radius else max(1, short_side // 2)
-    corner = max(1, min(corner, max(short_side // 2, 1)))
-    red = int(rgb[0]) & 0xFF
-    green = int(rgb[1]) & 0xFF
-    blue = int(rgb[2]) & 0xFF
-    peak = max(0, min(255, int(alpha)))
-    center_x = width / 2.0
-    center_y = height / 2.0
-    rows = []
-    for y in range(height):
-        if vertical:
-            # 竖直胶囊：两端（y 方向）收圆，中段 dy=0
-            if y < corner:
-                dy = corner - y - 0.5
-            elif y >= height - corner:
-                dy = y - (height - corner) + 0.5
-            else:
-                dy = 0.0
-        else:
-            dy = y + 0.5 - center_y
-        row = bytearray()
-        for x in range(width):
-            dx = x + 0.5 - center_x
-            if not vertical:
-                # 水平胶囊：两端（x 方向）收圆
-                if x < corner:
-                    dx = corner - x - 0.5
-                elif x >= width - corner:
-                    dx = x - (width - corner) + 0.5
-                else:
-                    dx = 0.0
-            distance = (dx * dx + dy * dy) ** 0.5
-            if distance <= corner - 0.5:
-                cover = 255
-            elif distance >= corner + 0.5:
-                cover = 0
-            else:
-                cover = int(round((corner + 0.5 - distance) * 255))
-            row += bytes((red, green, blue, peak * cover // 255))
-        rows.append(b"\x00" + bytes(row))
-    raw = b"".join(rows)
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
 class ShellSurface:
@@ -300,11 +211,16 @@ class SliceCanvas(tk.Canvas):
             if veil_rgb is not None else (255, 255, 255))
         self._veil_alpha = max(0.0, min(1.0, float(veil_alpha)))
         self._veil_item: Any = None
-        self._veil_key: tuple[int, int, bytes, int] | None = None
-        self._veil_image: Any = None
+        # 薄罩图缓存（P2-7：与 PhotoCard 共用同一份实现，不再各写一套）
+        self._veil_images = VeilImage(self)
         self._registered = False
         self.bind("<Configure>", self._on_configure, add="+")
         self.bind("<Map>", self._on_configure, add="+")
+        self._parent_repaint_id: Any = None
+        try:
+            self.master.bind("<Configure>", self._on_parent_configure, add="+")
+        except Exception:          # pragma: no cover - 容器尚未建立
+            pass
         if surface is not None:
             surface.register(self)
             self._registered = True
@@ -313,6 +229,29 @@ class SliceCanvas(tk.Canvas):
     def set_background(self, color: str) -> None:
         """纯色底（没有壁纸时可见；有壁纸时只在合成完成前闪一下）。"""
         self._flat_bg = str(color)
+        self._apply_flat_bg()
+
+    def _apply_flat_bg(self) -> None:
+        """把纯色底落到 Tk 的 -background 上，**值没变就一个字节都不发**。
+
+        这条「跳过同色 configure」是布局自激振荡的解药，不是微优化。
+        Canvas 收到 -background 的改动时走的是 ConfigureCanvas 分支，它会用自己
+        的 -width/-height 选项（默认 10c×7c = 378×265）回调 Tk_GeometryRequest；
+        pack 管理器随后又用子控件 bbox 回调一次 Tk_GeometryRequest。两次调用取值
+        不同（64 vs 265），谁最后调用谁说了算 —— 于是父容器的请求尺寸在 64 与
+        265 之间来回摆，装在它上面的数据区被反复挤到 60 高，布局一变又触发
+        重新合成，重新合成再 repaint 再 configure……实测 6 秒 89 个样本摆 9 次。
+
+        跳过同色之后 Tk 根本不进 ConfigureCanvas，几何请求只剩 pack 那条路径，
+        振荡消失（实测 168 个样本只剩 3 个状态，且都是启动瞬态）。
+        """
+        if not self._show_flat_bg:
+            return
+        try:
+            if str(self.cget("bg")) == str(self._flat_bg):
+                return
+        except Exception:       # pragma: no cover - 控件已销毁
+            return
         try:
             self.configure(bg=self._flat_bg)
         except Exception:       # pragma: no cover
@@ -331,6 +270,30 @@ class SliceCanvas(tk.Canvas):
     def _on_configure(self, _event: Any = None) -> None:
         self.repaint()
 
+    def _on_parent_configure(self, _event: Any = None) -> None:
+        """父容器被布局挪动时，画布自己收不到 <Configure>，切片会停在旧坐标。
+
+        典型场景：KPI 卡出现/消失、切换视图会把整块卡片区从 y=405 挪到
+        y=140，而画布在父容器里的位置与尺寸都没变 → 一个事件也收不到 →
+        切片只盖住上半截，下半截露出平色底（用户报的「卡片下方白带」）。
+        这里跟着父容器重画，并延后到空闲期，避开布局尚未收敛的过渡态。
+        """
+        if self._parent_repaint_id is not None:
+            return
+        try:
+            self._parent_repaint_id = self.after_idle(self._run_deferred_repaint)
+        except Exception:          # pragma: no cover - 控件已销毁
+            self._parent_repaint_id = None
+
+    def _run_deferred_repaint(self) -> None:
+        self._parent_repaint_id = None
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:          # pragma: no cover - 控件已销毁
+            return
+        self.repaint()
+
     def repaint(self) -> None:
         surface = self.shell_surface
         photo = surface.image() if surface is not None else None
@@ -342,11 +305,7 @@ class SliceCanvas(tk.Canvas):
                     pass
                 self._image_item = None
             self._drop_veil_item()
-            if self._show_flat_bg:
-                try:
-                    self.configure(bg=self._flat_bg)
-                except Exception:   # pragma: no cover
-                    pass
+            self._apply_flat_bg()
             return
         offset_x, offset_y = surface.offset_of(self)
         try:
@@ -386,9 +345,9 @@ class SliceCanvas(tk.Canvas):
 
         为什么要贴图片而不是画矩形：canvas 的 rectangle 只支持不透明色，
         半透明只能用 RGBA 图片（Tk 8.6 会做真正的 alpha 合成）。
+        图片本身由 pngenc.VeilImage 按尺寸+颜色缓存，尺寸没变时不重新编码。
         """
-        level = int(round(self._veil_alpha * 255))
-        if level <= 0:
+        if int(round(self._veil_alpha * 255)) <= 0:
             self._drop_veil_item()
             return
         try:
@@ -398,21 +357,22 @@ class SliceCanvas(tk.Canvas):
             return
         if width <= 1 or height <= 1:
             return                  # 还没映射出来，等 <Configure> 再来一次
-        key = (width, height, bytes(self._veil_rgb), level)
-        if key == self._veil_key and self._veil_item is not None:
+        if (self._veil_item is not None
+                and self._veil_images.matches(width, height, self._veil_rgb,
+                                              self._veil_alpha)):
             return                  # 尺寸与颜色都没变，复用现有 item
-        if key != self._veil_key:
-            try:
-                data = solid_rgba_png(width, height, self._veil_rgb, level)
-                self._veil_image = tk.PhotoImage(master=self, data=data)
-                self._veil_key = key
-            except Exception:       # pragma: no cover - 控件已销毁
-                self._drop_veil_item()
-                return
+        try:
+            photo = self._veil_images.image(width, height, self._veil_rgb,
+                                            self._veil_alpha)
+        except Exception:           # pragma: no cover - 控件已销毁
+            self._drop_veil_item()
+            return
+        if photo is None:
+            self._drop_veil_item()
+            return
         self._drop_veil_item()
         try:
-            self._veil_item = self.create_image(0, 0, anchor="nw",
-                                                image=self._veil_image)
+            self._veil_item = self.create_image(0, 0, anchor="nw", image=photo)
             # 压在切片之上、文字之下：文字 item 先建、薄罩后建会盖住文字，
             # 所以显式提到切片正上方一档。
             if self._image_item is not None:

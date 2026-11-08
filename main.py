@@ -110,6 +110,10 @@ from diskflow.delta import (  # noqa: F401
     _record_0e, DELTA_EPSILON_GB, _diff, summarize, any_media_alert,
 )
 
+from diskflow import atomicio  # noqa: F401
+from diskflow import pngenc  # noqa: F401
+from diskflow import wallpaper  # noqa: F401
+
 from diskflow.history import (  # noqa: F401
     HISTORY_FILENAME, SCHEMA_VERSION, SCHEMA_VERSION_LEGACY, REQUIRED_RECORD_FIELDS,
     HISTORY_TRIM_HOURS, HISTORY_BACKUP_PREFIX, HISTORY_RESET_PREFIX,
@@ -127,7 +131,8 @@ from diskflow.orchestrate import (  # noqa: F401
 
 from diskflow.i18n import (  # noqa: F401
     LANG_ZH, LANG_EN, LANG_ORDER, DEFAULT_LANG, LANG_LABELS,
-    normalize_lang, current_language, set_language, is_english, tr, tr_message,
+    normalize_lang, current_language, set_language, bind_language, is_english,
+    tr, tr_message,
     has_translation, untranslated, ERROR_PREFIX, ERROR_PREFIX_EN,
 )
 
@@ -153,10 +158,11 @@ from diskflow.wallpaper import (  # noqa: F401
     ALPHA_LEVELS, DEFAULT_ALPHA_LEVEL, CONVERSATION_RGB, CONVERSATION_ALPHA,
     CONTROL_RGB, CONTROL_ALPHA, normalize_alpha, alpha_pair, panel_coat, hex_rgb,
     merge_layers, alpha_lut, tint_planes, assemble, cover_geometry, ppm_bytes,
-    compose_ppm, compose_png_fallback, gdiplus_available,
+    compose_ppm, compose_png_fallback, gdiplus_available, shutdown_gdiplus,
 )
 
 from diskflow.shell_canvas import (  # noqa: F401
+    VeilImage,
     ShellSurface, SliceCanvas, CanvasLabel, CardCanvas, QuietButton,
     attach_backdrop, send_to_back, descendant_children, RECOMPOSE_DELAY_MS,
     capsule_rgba_png,
@@ -183,6 +189,7 @@ from diskflow.gui import (  # noqa: F401
     SlimScrollbar, SegButton, SORT_MENU_ITEMS, COLUMN_SPECS, TABLE_NATURAL_WIDTH,
     ROW_ALERT_TAG, ROW_MUTED_TAG, ROW_ZEBRA_TAG, ALERT_COLOR, MUTED_COLOR, BASE_FONT,
     SMARTCTL_INSTALL_HINT, KPI_SPECS, TOOL_SHORTCUTS, fmt_delta_compact, _default_geometry,
+    READ_WATCHDOG_SECONDS,
     STATUS_TEXT_LIMIT, _truncate, PAIR_SEPARATOR, TSV_PAIR_SEPARATOR, _pair,
     TREE_MENU_COPY_ROWS, TREE_MENU_COPY_CELL, TREE_MENU_SELECT_ALL, TREE_MENU_COPY_TABLE,
     SERIAL_MASK_CHARS, SERIAL_MASK_VISIBLE_PREFIX, SERIAL_EMPTY_TEXT,
@@ -231,7 +238,8 @@ __all__ = [
     "program_files_roots", "is_program_files_dir", "default_storage_dir",
     "records_from_snapshots", "latest_timestamp", "RunOutcome", "perform_run",
     "rebuild_rows", "LANG_ZH", "LANG_EN", "LANG_ORDER", "DEFAULT_LANG", "LANG_LABELS",
-    "normalize_lang", "current_language", "set_language", "is_english", "tr",
+    "normalize_lang", "current_language", "set_language", "bind_language",
+    "is_english", "tr",
     "tr_message", "has_translation", "untranslated", "ERROR_PREFIX", "ERROR_PREFIX_EN",
     "is_admin", "MSC_DISK_MANAGEMENT", "MSC_DEVICE_MANAGER", "MSC_FILENAMES",
     "open_management_console", "system32_msc_path", "TOOL_SHORTCUTS",
@@ -247,10 +255,11 @@ __all__ = [
     "normalize_alpha", "alpha_pair", "panel_coat", "hex_rgb", "merge_layers",
     "alpha_lut", "tint_planes", "assemble", "cover_geometry",
     "ppm_bytes", "compose_ppm", "compose_png_fallback", "gdiplus_available",
+    "shutdown_gdiplus", "wallpaper",
     "ShellSurface", "SliceCanvas", "CanvasLabel", "attach_backdrop",
     "send_to_back", "descendant_children", "RECOMPOSE_DELAY_MS",
     "CardCanvas", "QuietButton", "capsule_rgba_png",
-    "PhotoCard", "solid_rgba_png", "VEIL_RGB", "VEIL_ALPHA",
+    "PhotoCard", "solid_rgba_png", "VEIL_RGB", "VEIL_ALPHA", "VeilImage",
     "ALERT_VEIL_RGB", "ALERT_VEIL_ALPHA",
     "CARD_PAD_X", "CARD_PAD_Y", "METRIC_GAP_X", "METRIC_GAP_Y",
     "TITLE_GAP", "SUBTITLE_GAP",
@@ -263,11 +272,12 @@ __all__ = [
     "SlimScrollbar", "SegButton", "SORT_MENU_ITEMS", "COLUMN_SPECS",
     "TABLE_NATURAL_WIDTH", "ROW_ALERT_TAG", "ROW_MUTED_TAG", "ROW_ZEBRA_TAG",
     "ALERT_COLOR", "MUTED_COLOR", "BASE_FONT", "SMARTCTL_INSTALL_HINT", "KPI_SPECS",
+    "READ_WATCHDOG_SECONDS",
     "fmt_delta_compact", "STATUS_TEXT_LIMIT", "PAIR_SEPARATOR", "TSV_PAIR_SEPARATOR",
     "SERIAL_MASK_CHARS", "SERIAL_MASK_VISIBLE_PREFIX", "SERIAL_EMPTY_TEXT", "_mask_serial",
     "_serial_line", "WALLPAPER_PICK_LABEL", "WALLPAPER_CLEAR_LABEL", "WALLPAPER_ALPHA_LABEL",
     "TREE_MENU_COPY_ROWS", "TREE_MENU_COPY_CELL", "TREE_MENU_SELECT_ALL", "TREE_MENU_COPY_TABLE",
-    "DiskTrackerApp", "apply_window_icon", "create_app", "main",
+    "atomicio", "pngenc", "DiskTrackerApp", "apply_window_icon", "create_app", "main",
 ]
 
 

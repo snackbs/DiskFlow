@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import threading
 from typing import Any, Iterable, Sequence
@@ -235,6 +236,7 @@ def ppm_bytes(width: int, height: int, rgb: bytes | bytearray) -> bytes:
 
 _gdiplus_lock = threading.Lock()
 _gdiplus_module: Any = None
+_gdiplus_token: Any = None
 _gdiplus_tried = False
 
 
@@ -312,12 +314,43 @@ def _load_gdiplus() -> Any:
             proto("GdipBitmapUnlockBits",
                   [ctypes.c_void_p, ctypes.POINTER(_GpBitmapData)])
             proto("GdipDisposeImage", [ctypes.c_void_p])
-            lib._gdiplus_token = token          # 保住 token，进程退出前不能回收
+            proto("GdiplusShutdown", [ctypes.c_void_p], None)
+            # token 必须活着，GDI+ 才能用；进程退出前由 shutdown_gdiplus() 归还
+            global _gdiplus_token
+            _gdiplus_token = token
             _gdiplus_module = lib
             return lib
         except Exception:
             _gdiplus_module = None
             return None
+
+
+def shutdown_gdiplus() -> None:
+    """成对归还 GdiplusStartup（幂等，只在本进程退出时调用）。
+
+    为什么放在 atexit 而不是窗口关闭时：decode_cover 每次调用都会在 finally 里
+    释放自己创建的 bitmap/graphics，退出时不可能还有存活的 GDI+ 对象；而窗口
+    可能被反复销毁重建（切主题、GUI 测试），在窗口关闭时 shoutdown 会让下一次
+    解码拿到失效的 token 直接崩。注册在 atexit 上，只跑一次，且一定晚于所有
+    Tk 控件销毁（Tk 的 PhotoImage 是 Tcl 侧内存，不依赖 GDI+）。
+    """
+    global _gdiplus_module, _gdiplus_token, _gdiplus_tried
+    with _gdiplus_lock:
+        lib = _gdiplus_module
+        token = _gdiplus_token
+        _gdiplus_module = None
+        _gdiplus_token = None
+        # 关掉之后不再重开：能走到这里已经是进程退出路径了
+        _gdiplus_tried = True
+    if lib is None or token is None:
+        return
+    try:
+        lib.GdiplusShutdown(token)
+    except Exception:       # pragma: no cover - 退出路径不允许抛异常
+        pass
+
+
+atexit.register(shutdown_gdiplus)
 
 
 def gdiplus_available() -> bool:

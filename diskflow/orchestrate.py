@@ -66,7 +66,10 @@ def perform_run(provider: Any, store: HistoryStore,
 
     message = load.message
     if new_records:
-        store.save(list(load.records) + new_records)
+        # 用 append() 而不是 save(load.records + new)：在锁内重新读一次现状再追加。
+        # 用的是「本次运行前」的 load.records 去拼，就等于拿自己的旧快照整体覆盖，
+        # 期间别的实例写进去的读数会被抹掉（m31199 指出的 P0-1 后半）。
+        store.append(new_records)
         if load.migrated and not message:
             # 备份文件名里的 "<日期>" 是占位说明，不是真文件名，英文界面下也要跟着换
             message = tr("历史文件已升级为新格式（v2），旧文件备份为 {name}",

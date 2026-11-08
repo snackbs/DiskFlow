@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import platform
+import queue
 import threading
+import time
 import traceback
 import unicodedata
 from dataclasses import field
@@ -28,7 +30,6 @@ from .convert import (
     CAPACITY_UNKNOWN_TEXT,
     fmt_bytes_size,
     fmt_capacity,
-    fmt_delta,
     fmt_delta_gb,
     fmt_delta_short,
     fmt_size_short,
@@ -37,6 +38,8 @@ from .history import SCHEMA_VERSION, HistoryStore
 from .i18n import (
     LANG_LABELS,
     LANG_ORDER,
+    bind_language,
+    current_language,
     set_language,
     tr,
 )
@@ -273,6 +276,17 @@ class SlimScrollbar(_SCROLLBAR_BASE):   # type: ignore[misc,valid-type]
                 self._registered = True
             except Exception:               # pragma: no cover
                 self._registered = False
+        self._redraw()
+
+    def repaint(self) -> None:
+        """外壳合成层换图后，ShellSurface 会挨个调客户端的 repaint()。
+
+        这个方法名是那套协议的入口，不能省：ShellSurface._repaint_all() 是
+        `widget.repaint()` 直接调的，而异常被它 try/except 吞掉——本类只有
+        _redraw()、没有 repaint() 时不会报错，只会**静默地一直贴着旧图**。
+        表现就是右边滚动条那 10px 条带永远停在第一张合成图的状态上，与左侧
+        卡片区差着一整层的透明度，怎么切主题、怎么缩放都不动。
+        """
         self._redraw()
 
     def _paint_surface(self) -> None:
@@ -620,7 +634,11 @@ class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
             "sel_fg": theme["seg_sel_fg"],
             "hover_bg": theme["seg_hover_bg"],
             "hover_fg": theme["seg_hover_fg"],
-            "border": theme["seg_border"],
+            # 直接用 seg_border 的话，1px 描边在图片背景主题里跟浅色壁纸几乎同
+            # 亮度（#B9C6D6），远看等于没有框。这里跟「关于」按钮（_sync_button_
+            # styles 里同样是 mix_hex(seg_border, tree_fg, 0.45)）用同一档加深，
+            # 两侧的框粗细与深浅才一致。
+            "border": mix_hex(theme["seg_border"], theme["tree_fg"], 0.45),
             # 图片背景主题：未选中的按钮不铺底色，让壁纸直接透出来。
             "see_through": theme["seg_border"],
         }
@@ -795,6 +813,11 @@ MUTED_COLOR = "#808080"
 BASE_FONT = ("Microsoft YaHei UI", 9)
 SMARTCTL_INSTALL_HINT = ("未找到 smartctl.exe，请执行："
                          "winget install smartmontools.smartmontools")
+
+# 后台读盘的看门狗。正常情况下单盘 25 秒、整轮 90 秒总预算（providers.py），
+# 这里再兜一层：驱动挂死、杀软独占设备时 smartctl 可能连超时都不返回。到点先让
+# 界面恢复可操作并提示，轮询不取消——迟到的结果照样接收，用户不必重启程序。
+READ_WATCHDOG_SECONDS = 300.0
 
 # 「工具」菜单里的系统工具快捷入口：(要打开的 .msc, 名词, 菜单项文案)。
 # 这两项点下去只是叫 Windows 自己开一个自带工具，不读它的输出、不进表格也不写历史，
@@ -1018,6 +1041,9 @@ class DiskTrackerApp:
         self._sort_column: str | None = None
         self._sort_reverse = False
         self._busy = False
+        # 看门狗用：本轮回合的开始时间戳，以及是否已经提示过超时
+        self._run_started = 0.0
+        self._run_warned = False
         # 表格选区：iid -> DiskRow。复制选中行时按 iid 反查数据，顺序取屏幕顺序
         # （get_children 的顺序），不能按点选顺序或 iid 字典序，否则粘出来是乱序的。
         self._iid_to_row: dict[str, DiskRow] = {}
@@ -1081,9 +1107,14 @@ class DiskTrackerApp:
         # 第 7 套主题的自绘卡片（PhotoCard）。与 _card_shells 分开存：那些是常驻
         # 的 KPI 卡底座，这些是每轮 render_cards 重建、随时会被销毁的。
         self._photo_cards: list[Any] = []
+        # 最近一次真正参与合成的那组控件层矩形。布局变化时拿它做比较，
+        # 只有矩形真的变了才重合成——既省掉多余的 100ms 合成，也挡住
+        # 「Configure → 重合成 → 重绘 → 又 Configure」的自激循环。
+        self._shell_regions: tuple[tuple[int, int, int, int], ...] | None = None
 
         self._build_menubar()
         self._build_widgets()
+        self._watch_shell_layout()
         self.apply_theme(self.theme_key, persist=False)
         self.set_view(self.view_key, persist=False)
         if autostart:
@@ -1277,8 +1308,16 @@ class DiskTrackerApp:
         border = self.theme.get("card_border")
         veil = self.theme.get("card_veil")
         veil_alpha = float(self.theme.get("card_veil_alpha") or 0.0)
-        # 卡内文字画布必须叠与卡片同一层薄罩：它自己的切片取自「对话层」（比卡面暗
-        # 一档），不叠罩就会在卡片上留下两块更暗的实色条（实测 147 vs 卡面 175）。
+        # 卡内文字画布**必须**叠一次和卡片完全相同的薄罩，否则它们会盖住卡片的罩。
+        # 这里踩过一个反直觉的坑：CanvasLabel 是卡片的子控件，画在卡片之上，
+        # 它的矩形会把下面 CardCanvas 已经罩过的像素整块盖掉；它自己不罩，露出的
+        # 就是合成图的原始值（= 卡外缝隙那一层）。实测 KPI 卡边缘 170、文字行 140、
+        # 卡间缝隙 140 —— 文字行和缝隙同值，整张卡看上去只剩一圈亮边，用户报的
+        # 「KPI 中间的卡片分隔哪去了」就是这个。
+        # 早先的写法是 veil=None（理由是「两行字各带一条白底」），但那次量的 211
+        # 是标签取景错位叠了两遍的值；现在标签与卡片取的都是同一张整窗合成图、
+        # 叠的都是同一层 (card_veil, card_veil_alpha)，算下来 0.73×140+0.27×255
+        # = 171，与卡片边缘的 170 逐位吻合，接缝不可见。
         groups = ((self._shell_labels, win_bg, None, 0.0),
                   (self._card_labels, card_bg, veil, veil_alpha))
         for widgets, background, veil_rgb, veil_value in groups:
@@ -1667,7 +1706,11 @@ class DiskTrackerApp:
     # 是实色 Card.TFrame，垫一层只会让卡缝透出壁纸、显得斑驳，而且测试要数它的子控件。
     # kpi_frame 不在这里：它里面放的是自绘 CardCanvas，垫层要跟卡片一起挂/撤
     # （见 _sync_kpi_backdrop），混进这个元组会被 _sync_shell_surface 当普通容器处理。
-    _SHELL_TARGETS = ("outer", "head", "seg_frame", "status_bar", "top_row", "bottom")
+    # bottom 刻意不在这个元组里：它本身已经是自绘卡片（CardCanvas + 27% 白罩），
+    # 再挂一层切片垫层会 place 到卡片内部、把卡片自己那层白罩整个盖掉，
+    # 表现就是「说明行自带一条白横带、和汇总行不在同一块底板上」。
+    # 它的透图交给 CardCanvas.set_surface（见 _sync_shell_surface）。
+    _SHELL_TARGETS = ("outer", "head", "seg_frame", "status_bar", "top_row")
     # 除上面这批外壳容器外，还要单独垫切片的三块：
     #   kpi_frame  —— 四张 KPI 卡之间的 10px 缝隙露的是它的底色；
     #   cards_inner—— 双列视图最后一行不满时，右边那一大片露的是它的底色；
@@ -1726,8 +1769,27 @@ class DiskTrackerApp:
         # 早先这里把 kpi_frame 当控件层铺了一遍，缝隙被垫到和卡面一样亮
         # （实测卡面 184.7 / 缝隙 184.7），于是四张卡连成一片，看着就是
         # 「KPI 中间的卡片分隔没了」。
-        for name in ("table_frame", "bottom"):
-            rect = self._client_rect(getattr(self, name, None))
+        #	cards_frame 必须进列：卡片视图下数据区整块在这里，它右侧那条
+        # 10px 滚动条 + 窗口留白如果留在对话层，就会和左边的卡面拉出一条
+        # 28 个亮度单位的竖向接缝（实测卡面 x<=1137 是 195,199,206，x>=1138
+        # 骤降到 176,180,195 且 std≈0）。用户看到的正是「滚动条左边红色细线
+        # 处有明显的透明度不一」——那条红线只是恰好压在分界线上。
+        #	注意 _client_rect 只看尺寸、不看窗口管理状态：切到表格视图时
+        # cards_frame 已经 pack_forget，仍能量出它上一帧的矩形，于是那条本该
+        # 属于对话层的竖带会被垫成控件层。所以这里必须自己判「这个容器现在
+        # 是不是还挂在窗口上」——用 winfo_manager() 而不是 winfo_ismapped()：
+        # 后者要等窗口真正映射到屏幕才有值，建窗后第一次合成时全都返回 0，
+        # 会把数据区漏掉；winfo_manager() 在 pack 之后就立刻返回 "pack"。
+        for name in ("table_frame", "cards_frame"):
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            try:
+                if not widget.winfo_manager():
+                    continue
+            except Exception:               # pragma: no cover - 控件已销毁
+                continue
+            rect = self._client_rect(widget)
             if rect is not None:
                 # _client_rect 给的是 (x, y, w, h)，而 assemble 要的是半开区间
                 # (x0, y0, x1, y1)。直接把 w/h 当 x1/y1 传进去，蒙层只会铺到
@@ -1760,6 +1822,7 @@ class DiskTrackerApp:
             return None
         tree_bg = str(self.theme.get("tree_bg") or "#E6E9F0")
         regions = self._panel_regions(width, height)
+        self._shell_regions = tuple(regions)
         key = (path, width, height, int(self.panel_alpha), tree_bg, tuple(regions))
         cached = self._wallpaper_cache
         if cached.get("key") == key and cached.get("photo"):
@@ -1891,6 +1954,11 @@ class DiskTrackerApp:
                     card.set_surface(None)
                 except Exception:           # pragma: no cover - 控件已销毁
                     pass
+            # 卡片区那块滚动画布自己就是切片客户端（不是套在里面的垫层），
+            # 摘掉后必须把 _flat_bg 一起改回窗口色：SliceCanvas 的 _flat_bg
+            # 只在构造与 set_background 时更新，apply_theme 里那句原生
+            # configure(bg=...) 改不到它，留着就会在 repaint 时弹回纯白。
+            self._sync_cards_canvas(None, win_bg)
             return
         if self._shell is None:
             self._shell = ShellSurface(self.root)
@@ -1982,10 +2050,35 @@ class DiskTrackerApp:
                 card.set_surface(self._shell)
             except Exception:               # pragma: no cover - 控件已销毁
                 pass
+        # 卡片区滚动画布：它底下的 inner 只有内容那么高，视口比内容高时
+        # 剩下的一整条露的就是这块画布自己的底色（用户截图里那条 61px 高的
+        # 纯 #EEF2FA 横带）。它不是 _SHELL_EXTRA_BACKDROPS 那类「容器里垫一层
+        # 子画布」的容器 —— 它自己就是画布，所以这里单独挂，不能进元组。
+        self._sync_cards_canvas(self._shell, win_bg)
         try:
             self._shell.invalidate()
         except Exception:                   # pragma: no cover
             pass
+
+    def _sync_cards_canvas(self, surface: Any, background: str) -> None:
+        """把卡片区滚动画布挂上/摘下外壳切片层。
+
+        它和 _SHELL_EXTRA_BACKDROPS 里那几个容器不是一类：那些是「容器自己
+        露出底色，往里垫一层铺满的子画布」；而 self.cards_canvas 本身就是
+        画布，只能自己贴自己那块合成图。混进元组会让 _sync_extra_backdrop
+        在这个画布里再塞一个 canvas。
+        """
+        canvas = getattr(self, "cards_canvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas.set_surface(surface)
+            # set_background 才是同时改 _flat_bg 与显示底色的入口。
+            # apply_theme / render_cards 里的 configure(bg=...) 改不到 _flat_bg。
+            canvas.set_background(background)
+        except Exception:               # pragma: no cover - 控件已销毁
+            pass
+
 
     def _sync_extra_backdrop(self, name: str, background: str) -> None:
         """给 _SHELL_EXTRA_BACKDROPS 里的某个容器挂上（或重新挂上）切片垫底。
@@ -2012,6 +2105,40 @@ class DiskTrackerApp:
         except Exception:               # pragma: no cover
             pass
 
+    def _watch_shell_layout(self) -> None:
+        """盯住会挪动控件层矩形的几个容器，布局一变就安排重合成。
+
+        只靠 apply_theme / set_view 里那几次 _schedule_shell_refresh 是不够的：
+        那几次跑在 120ms 的定时器上，而 KPI 卡的显隐、视图切换、窗口缩放都会让
+        Tk 在**之后**才把新几何算出来。实测过一次典型的错位：合成图是在
+        cards_frame 还在 y=354 时按旧矩形算的，等 Tk 把它挪到 y=140 时已经没人
+        再触发合成了，于是画布上贴的整张图里卡片区仍然属于对话层——表现就是
+        「右边滚动条那条带子比卡面暗一截」这种竖向接缝，而且怎么刷主题都不消失。
+
+        绑在容器自己身上（而不是等根窗口的 <Configure>）是因为容器在父级里
+        位置变了、尺寸没变时，它自己只会收到 <Configure>，根窗口尺寸根本没变。
+        """
+        self._shell_layout_widgets: list[Any] = []
+        for name in ("body", "cards_frame", "table_frame", "kpi_frame", "bottom"):
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            try:
+                widget.bind("<Configure>", self._on_shell_layout, add="+")
+            except Exception:               # pragma: no cover - 控件已销毁
+                continue
+            self._shell_layout_widgets.append(widget)
+        try:
+            self.root.bind("<Configure>", self._on_shell_layout, add="+")
+        except Exception:                   # pragma: no cover - 窗口已销毁
+            pass
+
+    def _on_shell_layout(self, _event: Any = None) -> None:
+        """容器布局变化：去抖后重算一次控件层矩形（真的变了才会重合成）。"""
+        if self._shell is None:
+            return
+        self._schedule_shell_refresh()
+
     def _schedule_shell_refresh(self, delay: int = 120) -> None:
         """布局稳定后再重算一次控件层矩形。
 
@@ -2034,10 +2161,23 @@ class DiskTrackerApp:
             self._shell_refresh_id = None
 
     def _run_shell_refresh(self) -> None:
-        """重算控件层矩形，并让外壳切片与自绘表格各贴一次新图。"""
+        """重算控件层矩形，并让外壳切片与自绘表格各贴一次新图。
+
+        矩形跟上一张合成图用的那组完全一样时直接返回：合成一次要 ~100ms，
+        而 <Configure> 在拖窗口时会连发几十次，不去重会拖到手感发涩。
+        """
         self._shell_refresh_id = None
         if self._shell is None:
             return
+        try:
+            width = int(self.root.winfo_width())
+            height = int(self.root.winfo_height())
+        except Exception:                   # pragma: no cover - 窗口已销毁
+            return
+        if width > 4 and height > 4:
+            regions = tuple(self._panel_regions(width, height))
+            if regions == getattr(self, "_shell_regions", None):
+                return
         self._invalidate_wallpaper()
         try:
             self._shell.invalidate()
@@ -2815,6 +2955,10 @@ class DiskTrackerApp:
         widgets.extend(getattr(self, "_photo_cards", []))
         widgets.extend(getattr(self, "_card_shells", []))
         widgets.extend(getattr(self, "_card_labels", []))
+        # cards_canvas 刻意不在这里：它的切片贴在自己的 (0,0)，不随内层 Frame
+        # 滚动而位移，本来就不需要重贴；而本函数是从 yscrollcommand 回调里调的，
+        # 在里面 configure(bg=...) 会再触发一次 yview 回调 —— 实测会死循环，
+        # 窗口直接卡住（update_idletasks 永不返回）。它的重贴交给 <Configure>。
         for widget in widgets:
             try:
                 widget.repaint()
@@ -3185,6 +3329,8 @@ class DiskTrackerApp:
         if self._busy:
             return
         self._busy = True
+        self._run_started = time.monotonic()
+        self._run_warned = False
         self.refresh_button.configure(state="disabled")
         self._sync_refresh_button()
         # 刷新是把整张表换掉，旧的「已复制 / 已选中 / 请先用右键」说的是刷新前那份数据，
@@ -3192,30 +3338,42 @@ class DiskTrackerApp:
         self._clear_action()
         self.source_text = tr("读取中…")
         self.smartctl_label.configure(text=self._source_label_text())
-        self.status_queue: list[RunOutcome | Exception] = []
+        # 后台线程与界面之间只通过 queue.Queue 交接数据，线程里不碰任何 Tk 对象。
+        # 早先是在 worker 的 finally 里直接调 self.root.after(60, self._poll)——
+        # Tk 不是线程安全的，那个调用在部分机器上会让整个进程静默卡死（窗口还在，
+        # 但不再响应）。现在轮询完全由主线程发起，worker 只管把结果塞进队列。
+        self.status_queue: queue.Queue = queue.Queue()
+        # 语言在派活之前就定下来：读盘过程中用户可能切语言，worker 里的 tr()
+        # 不能跟着变，否则同一批行的状态列会一半中文一半英文。
+        worker_lang = current_language()
 
         def worker() -> None:
             try:
-                outcome = perform_run(self.provider, self.store, now=self.now_func(),
-                                      resolver=self.resolver)
+                with bind_language(worker_lang):
+                    outcome = perform_run(self.provider, self.store, now=self.now_func(),
+                                          resolver=self.resolver)
             except Exception as exc:  # 不让后台线程把异常带进主循环
                 traceback.print_exc()
-                self.status_queue.append(exc)
+                self.status_queue.put(exc)
             else:
-                self.status_queue.append(outcome)
-            finally:
-                try:
-                    self.root.after(60, self._poll)
-                except Exception:
-                    pass
+                self.status_queue.put(outcome)
 
         threading.Thread(target=worker, daemon=True, name="disk-reader").start()
+        self.root.after(60, self._poll)
 
     def _poll(self) -> None:
-        if not self.status_queue:
+        try:
+            item = self.status_queue.get_nowait()
+        except queue.Empty:
+            # 看门狗：worker 卡在系统调用里时界面不能永远停在「读取中…」。
+            # 只提示一次，并且继续轮询，迟到的结果仍然会被 apply_outcome 接住。
+            if (self._busy and not self._run_warned
+                    and time.monotonic() - self._run_started > READ_WATCHDOG_SECONDS):
+                self._run_warned = True
+                self._set_error(tr("读取超时：{seconds} 秒内未返回，后台仍在尝试，可稍后手动刷新",
+                                   seconds=int(READ_WATCHDOG_SECONDS)))
             self.root.after(60, self._poll)
             return
-        item = self.status_queue.pop()
         self._busy = False
         self.refresh_button.configure(state="normal")
         self._sync_refresh_button()
@@ -3560,7 +3718,9 @@ class DiskTrackerApp:
         path = self.store.path
         try:
             if not path.exists():
-                self.store.save([])
+                # 用 append([]) 而不是 save([])：前者先在锁内看一眼现状再补空文件，
+                # 万一「判断不存在」与「写」之间另一个实例刚写完，也不会被整份覆盖成空。
+                self.store.append([])
             if platform.system() == "Windows":
                 os.startfile(str(path))  # type: ignore[attr-defined]
             else:

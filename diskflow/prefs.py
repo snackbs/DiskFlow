@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from . import atomicio
 from .history import default_storage_dir
 from .i18n import DEFAULT_LANG, normalize_lang
 from .theme import THEME_SYSTEM, normalize_theme_key
@@ -62,11 +63,13 @@ class SettingsStore:
         data = dict(DEFAULT_SETTINGS)
         try:
             raw = self.path.read_text(encoding="utf-8")
-        except OSError:
+        except atomicio.TEXT_READ_ERRORS:
+            # 不存在 / 没权限 / 不是 UTF-8（手改成 GBK 之类）：一律静默回落默认值。
+            # 偏好丢了只是界面回到默认，用户重新点一下就有；这里不该弹任何错误。
             return data
         try:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             return data
         if not isinstance(payload, dict):
             return data
@@ -103,21 +106,23 @@ class SettingsStore:
         # GUI 每次只保存自己动过的那一个键（_save_setting("theme", ...) 这类），
         # 若从默认值起步，存「显示序列号」就会把用户之前选的主题、背景图、
         # 不透明度一起抹回默认——用户看到的是「设置自己变回去了」。
-        merged = self.load()
-        for key, value in (data or {}).items():
-            if isinstance(key, str):
-                merged[key] = value
-        merged["theme"] = normalize_theme_key(merged.get("theme"))
-        merged["view"] = normalize_view_key(merged.get("view"))
-        merged["show_serial"] = merged.get("show_serial") is True
-        merged["show_gib"] = merged.get("show_gib") is True
-        merged["lang"] = normalize_lang(merged.get("lang"))
-        wallpaper = merged.get("wallpaper")
-        merged["wallpaper"] = wallpaper.strip() if isinstance(wallpaper, str) else ""
-        merged["panel_alpha"] = normalize_alpha(merged.get("panel_alpha", DEFAULT_ALPHA_LEVEL))
-        self.directory.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(merged, ensure_ascii=False, indent=2)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, self.path)
+        # 「读 → 合并 → 写」整段必须串行：两个线程/两个实例同时保存不同键时，
+        # 后写的那次不能拿自己读到的旧快照覆盖掉先写那次刚存进去的键。
+        # 注意 merged 必须从 self.load() 起手（读磁盘现状），不能从 DEFAULT_SETTINGS
+        # 起手，否则每次保存都会把用户没动过的偏好抹回默认。
+        with atomicio.file_lock(self.path):
+            merged = self.load()
+            for key, value in (data or {}).items():
+                if isinstance(key, str):
+                    merged[key] = value
+            merged["theme"] = normalize_theme_key(merged.get("theme"))
+            merged["view"] = normalize_view_key(merged.get("view"))
+            merged["show_serial"] = merged.get("show_serial") is True
+            merged["show_gib"] = merged.get("show_gib") is True
+            merged["lang"] = normalize_lang(merged.get("lang"))
+            wallpaper = merged.get("wallpaper")
+            merged["wallpaper"] = wallpaper.strip() if isinstance(wallpaper, str) else ""
+            merged["panel_alpha"] = normalize_alpha(merged.get("panel_alpha", DEFAULT_ALPHA_LEVEL))
+            text = json.dumps(merged, ensure_ascii=False, indent=2)
+            atomicio.write_text(self.path, text)
         return self.path

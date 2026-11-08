@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
 import re
 import shutil
 import sys
+import threading
+import time
 import tkinter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -777,6 +781,116 @@ def test_locate_smartctl_never_raises_when_missing():
     assert located is None or Path(located).is_file()
 
 
+# --- 读盘总预算（P2-5）---------------------------------------------------
+# --scan-open 与每块盘的 -x -a 是串行的，异常盘会挂到单盘超时才返回；
+# 盘一多，最坏耗时就是 N × 单盘超时，窗口长时间停在「读取中…」。
+# 这里给 read_all 一个总预算：到点后不再启动新的盘，直接给出明确的失败行，
+# 保证界面一定能恢复，且失败的盘在表格里能看到原因。
+
+
+def _scan_payload(*names):
+    return json.dumps({"devices": [{"name": name, "type": "scsi"} for name in names]})
+
+
+def _slow_provider(devices, *, sleep=0.02, total_timeout=0.12,
+                   per_device_timeout=5.0, calls=None):
+    """造一个「每块盘都要等一会儿」的 provider，用于验证总预算。"""
+
+    def run(args):
+        if calls is not None:
+            calls.append(list(args))
+        if "--scan-open" in args:
+            return 0, _scan_payload(*devices), ""
+        time.sleep(sleep)
+        # 返回解析得了的最小 payload（失败盘也行，这里只关心行数与耗时）
+        return 0, json.dumps({"device": {"name": "/dev/x", "type": "scsi"}}), ""
+
+    return app.SmartctlProvider(smartctl_path="smartctl.exe", run_command=run,
+                                total_timeout=total_timeout,
+                                per_device_timeout=per_device_timeout)
+
+
+def test_provider_total_budget_stops_reading_new_disks():
+    """总预算用尽后不再读新盘，但每块盘都仍有一行结果（带跳过原因）。"""
+    devices = [f"/dev/sd{letter}" for letter in "abcdefgh"]
+    provider = _slow_provider(devices, sleep=0.05, total_timeout=0.12)
+    started = time.monotonic()
+    rows = provider._read_devices(devices)
+    elapsed = time.monotonic() - started
+
+    assert len(rows) == len(devices), "每块盘都必须有一行，不能凭空消失"
+    skipped = [row for row in rows if row.error and "总预算" in row.error]
+    assert skipped, f"预算用尽后必须有跳过行，实际 error={[r.error for r in rows]}"
+    assert all(row.device_path in devices for row in rows)
+    # 硬上界：预算 + 最多一块盘的超时（这里 5s 是单盘上限，但实际只睡 0.05s）
+    assert elapsed < 2.0, f"总耗时 {elapsed:.2f}s 超出预算保护范围"
+
+
+def test_provider_total_budget_none_means_unlimited():
+    """total_timeout=None 时不限总预算（既有行为，供测试/特殊场景使用）。"""
+    devices = ["/dev/sda", "/dev/sdb", "/dev/sdc"]
+    provider = _slow_provider(devices, sleep=0.0, total_timeout=None)
+    rows = provider._read_devices(devices)
+    assert len(rows) == 3
+    assert not [row for row in rows if row.error and "总预算" in row.error]
+
+
+def test_provider_per_device_timeout_is_clamped_to_remaining_budget(monkeypatch):
+    """单盘超时不能超过剩余预算，否则最后一块盘又会长挂。"""
+    provider = app.SmartctlProvider(smartctl_path="smartctl.exe",
+                                    run_command=lambda args: (0, "{}", ""),
+                                    total_timeout=10.0, per_device_timeout=25.0)
+    seen: list[float | None] = []
+
+    def fake_read_device(device, timeout=None):
+        seen.append(timeout)
+        return app.DiskSnapshot(device_path=device, model="M", serial=device)
+
+    monkeypatch.setattr(provider, "read_device", fake_read_device)
+    # 把剩余预算压到 4 秒：单盘超时 25s 必须被 clamp 到 4s，而不是原样传下去
+    ticks = iter([0.0, 6.0, 6.0])
+    monkeypatch.setattr(app.providers.time, "monotonic", lambda: next(ticks, 6.0))
+    rows = provider._read_devices(["/dev/a"])
+
+    assert len(rows) == 1
+    assert seen and seen[0] is not None
+    assert 3.0 <= seen[0] <= 4.5, f"单盘超时应被 clamp 到剩余预算附近，实际 {seen[0]}"
+
+
+def test_provider_budget_failure_row_reaches_the_table(tk_root, tmp_path):
+    """预算用尽的盘在界面上是「读取失败」行，不是静默少一行。"""
+    devices = ["/dev/sda", "/dev/sdb", "/dev/sdc"]
+
+    def run(args):
+        if "--scan-open" in args:
+            return 0, _scan_payload(*devices), ""
+        device = args[-1]
+        index = devices.index(device)
+        time.sleep(0.05 if index == 0 else 0.0)
+        # 型号/序列号必须各不相同，否则三块盘会折叠成同一个 key
+        payload = {"device": {"name": device, "type": "scsi"},
+                   "model_name": f"Budget Test {index}",
+                   "serial_number": f"SN-B{index}"}
+        return 0, json.dumps(payload), ""
+
+    provider = app.SmartctlProvider(smartctl_path="smartctl.exe", run_command=run,
+                                    total_timeout=0.02, per_device_timeout=0.01)
+    store = _gui_store(tmp_path)
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=store,
+                                autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8),
+                                settings=app.SettingsStore(tmp_path / "pref"),
+                                theme=app.THEME_LEDGER)
+    window.run_pipeline_sync()
+    by_device = {row.device_path: row for row in window.rows}
+    for device in devices:
+        assert device in by_device, f"{device} 必须有行，实际 {sorted(by_device)}"
+    failed = [row for row in window.rows if row.failed]
+    assert failed, f"预算用尽必须有失败行，实际 {[(r.device_path, r.status_text) for r in window.rows]}"
+    assert all("读取失败" in (row.status_text or "") for row in failed)
+    window.root.destroy()
+
+
 # ---------------------------------------------------------------------------
 # 5. 历史存储单测
 # ---------------------------------------------------------------------------
@@ -874,6 +988,33 @@ def test_history_reset_backs_up_old_file_and_rebuilds_empty_baseline(tmp_path):
     assert len(store.load().records) == 1
 
 
+def test_history_reset_holds_the_lock_across_backup_and_clear(tmp_path):
+    """「改名备份 → 写空历史」两步都必须在锁内完成。
+
+    否则这两步之间另一个实例 append 的新读数会被随后那次「写空」抹掉。
+    这里不需要真的并发：只要在 reset 期间观察锁文件在不在即可。
+    """
+    store = _store(tmp_path)
+    store.save([_reading("2026-04-30T08:00:00+08:00", 10.0, 20.0)])
+    lock_path = store.path.with_name(store.path.name + app.atomicio.LOCK_SUFFIX)
+    observed: list[bool] = []
+    original = app.atomicio.write_text
+
+    def spy(path, text, *args, **kwargs):
+        # 真正写空历史的那一刻，锁文件必须还在（说明仍在 file_lock 里）
+        observed.append(lock_path.exists())
+        return original(path, text, *args, **kwargs)
+
+    app.atomicio.write_text, restore = spy, app.atomicio.write_text
+    try:
+        backup = store.reset()
+    finally:
+        app.atomicio.write_text = restore
+    assert backup is not None and backup.exists()
+    assert observed == [True], "写空历史时锁必须还持着"
+    assert store.load().records == []
+
+
 def test_history_reset_without_existing_file_returns_none(tmp_path):
     """本来就没有历史文件时，重置不报错、不产生备份，只建空基线。"""
     store = _store(tmp_path)
@@ -884,6 +1025,54 @@ def test_history_reset_without_existing_file_returns_none(tmp_path):
     assert store.path.exists()
     assert store.load().records == []
     assert not list(store.path.parent.glob(app.HISTORY_RESET_PREFIX + "*.json"))
+
+
+def test_history_write_probe_uses_a_unique_name_per_call(tmp_path):
+    """写探测的临时文件名必须每次唯一（同一进程两个线程会同时探测）。
+
+    旧实现用 `.write_probe-{pid}.tmp`：同进程的两个线程探测同一目录时拿到同名
+    文件，先完成的那一方删掉文件，另一方随即 FileNotFoundError → 误判
+    「目录不可写」→ 历史被写到 %LOCALAPPDATA%，同一次运行的数据分家。
+    """
+    directory = tmp_path / "app"
+    seen: list[str] = []
+    original = app.atomicio.temp_path_for
+
+    def spy(path):
+        result = original(path)
+        seen.append(result.name)
+        return result
+
+    app.atomicio.temp_path_for, restore = spy, app.atomicio.temp_path_for
+    try:
+        assert app.HistoryStore._default_probe(directory) is True
+        assert app.HistoryStore._default_probe(directory) is True
+    finally:
+        app.atomicio.temp_path_for = restore
+    assert len(seen) == 2
+    assert seen[0] != seen[1], "两次探测不能共用同一个临时文件名"
+    assert not list(directory.glob("*probe*")), "探测完要清干净"
+
+
+def test_history_resolve_dir_is_stable_under_concurrent_probes(tmp_path):
+    """多个线程同时 resolve_dir()：必须都落在同一个目录，不能有人误判不可写。"""
+    primary = tmp_path / "app"
+    fallback = tmp_path / "localappdata" / app.APP_STORAGE_ID
+    primary.mkdir(parents=True, exist_ok=True)
+    resolved: list[Path] = []
+
+    def probe():
+        resolved.append(app.HistoryStore(primary_dir=primary,
+                                         fallback_dir=fallback).resolve_dir())
+
+    threads = [threading.Thread(target=probe) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+    assert len(resolved) == 8
+    assert set(resolved) == {primary}, "并发探测不该有人被挤到 fallback 目录"
 
 
 def test_history_falls_back_to_localappdata_when_primary_unwritable(tmp_path):
@@ -1044,6 +1233,60 @@ class _FakeProvider:
     def read_all(self):
         return app.ProviderResult(snapshots=list(self._snapshots), smartctl_path=None,
                                   status=self._status, ok=True)
+
+
+class _BarrierProvider:
+    """读盘前先卡在同一个屏障上，逼两次 perform_run 真正并发行进。
+
+    和 :1736 的 _BlockingProvider 不是一回事：那个用 Event 卡住单个 worker
+    测看门狗，这个用 Barrier 让两条线程同时越过「读盘」这一步。
+    """
+
+    def __init__(self, snapshots, barrier):
+        self._snapshots = list(snapshots)
+        self._barrier = barrier
+
+    def read_all(self):
+        self._barrier.wait(timeout=30)
+        return app.ProviderResult(snapshots=list(self._snapshots), smartctl_path=None,
+                                  status="blocking provider", ok=True)
+
+
+def test_end_to_end_two_runs_started_together_both_get_recorded(tmp_path):
+    """两个实例同时启动记录：两次读到的旧历史一样空，但两条读数都得留下。
+
+    这是 m31199 指的 P0-1 后半的端到端形态：旧实现里 perform_run 是
+    「锁外 load → 锁内 save(load + new)」，两边各拿一份空快照整体写回，
+    后写的把先写的挤掉，历史里只剩一条。
+    """
+    store = _store(tmp_path)
+    barrier = threading.Barrier(2)
+    providers = [
+        _BarrierProvider([app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                                            model="Sample NVMe SSD 1TB", serial="N1SAMPLE0001",
+                                            read_bytes=1000 * 512000, write_bytes=2000 * 512000,
+                                            media_errors=0)], barrier),
+        _BarrierProvider([app.DiskSnapshot(device_path="/dev/nvme1", protocol="NVMe",
+                                            model="Sample NVMe SSD 2TB", serial="N2SAMPLE0002",
+                                            read_bytes=3000 * 512000, write_bytes=4000 * 512000,
+                                            media_errors=0)], barrier),
+    ]
+    outcomes: list = []
+
+    def run(provider):
+        outcomes.append(app.perform_run(provider, store,
+                                        now=datetime(2026, 5, 2, 10, 30, tzinfo=TZ8)))
+
+    threads = [threading.Thread(target=run, args=(item,)) for item in providers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+
+    assert len(outcomes) == 2
+    serials = sorted(record["serial"] for record in store.load().records)
+    assert serials == ["N1SAMPLE0001", "N2SAMPLE0002"], "两次运行的读数都得留下"
 
 
 def test_end_to_end_media_error_increase_triggers_alert(tmp_path):
@@ -1452,6 +1695,155 @@ def test_gui_refresh_button_text_follows_busy_state(tk_root, tmp_path):
         window.root.destroy()
 
 
+def _wait_until_idle(window, timeout=30.0):
+    """等后台读盘结束；超时就把所有线程的栈打出来，别只留一句 assert。"""
+    deadline = time.monotonic() + timeout
+    while window._busy and time.monotonic() < deadline:
+        window.root.update()
+        time.sleep(0.02)
+    if window._busy:
+        import faulthandler
+        import io
+        buf = io.StringIO()
+        faulthandler.dump_traceback(file=buf)
+        raise AssertionError("后台读盘超时未完成，线程栈：" + nl + buf.getvalue())
+    return True
+
+def test_gui_background_read_only_touches_tk_from_the_main_thread(tk_root, tmp_path):
+    """后台读盘时，所有 Tk 调用都必须发生在主线程（P0-2 的回归）。
+
+    旧实现让 worker 线程自己去调 `root.after(60, self._poll)`——Tk 不是线程安全的，
+    这在部分机器上会让进程静默卡死（窗口还在但不响应）。这里把 root.after 包一层，
+    记录每次调用发生在哪个线程，跑完一遍真实的后台刷新后全量比对。
+    """
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    calls = []
+    original_after = window.root.after
+
+    def spy_after(*args, **kwargs):
+        calls.append(threading.current_thread().name)
+        return original_after(*args, **kwargs)
+
+    window.root.after = spy_after
+    try:
+        window.refresh_async()
+        assert window._busy is True
+        assert window.refresh_button.cget("text") == "读取中…"
+        _wait_until_idle(window)
+    finally:
+        window.root.after = original_after
+
+    assert calls, "主线程必须自己发起轮询"
+    assert set(calls) == {"MainThread"}, f"只有主线程能用 Tk，实际 {set(calls)}"
+    # 真实跑完一轮之后，表格里必须已经有数据（不是把结果塞进队列就不管了）。
+    # _gui_store 里还留着一条「本次已消失」的历史盘，所以行数 = fixture 盘数 + 1。
+    assert len(window.tree.get_children()) == 4
+    assert "Sample NVMe SSD 1TB" in "".join(window.tree.item(iid, "values")[0]
+                                             for iid in window.tree.get_children())
+    window.root.destroy()
+
+
+def test_gui_poll_keeps_the_language_of_the_run_it_started(tk_root, tmp_path):
+    """读盘途中切语言：本次结果仍按启动时的语言生成，不会中英混排。"""
+    window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
+                                store=_gui_store(tmp_path), autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    try:
+        window.refresh_async()
+        # worker 已经带着启动时的语言跑起来了，这里立刻切成英文
+        window.set_language(app.LANG_EN, persist=False)
+        _wait_until_idle(window)
+        # 结果落地后按新语言重绘，界面上不能出现「Reading… 刷新记录」这类混排
+        assert window.refresh_button.cget("text") == "Refresh"
+        assert window.prev_label.cget("text").startswith("Last record: ")
+    finally:
+        window.set_language(app.LANG_ZH, persist=False)
+        window.root.destroy()
+
+
+
+class _BlockingProvider:
+    """read_all() 卡住直到 release 被 set：模拟驱动挂死时 smartctl 连超时都不返回。
+
+    注意返回的必须是 provider 的结果对象（有 .status/.snapshots），不是 RunOutcome——
+    参数注入的是数据层，编排层 perform_run 仍由窗口自己跑。
+    """
+
+    def __init__(self, inner: Any, release: threading.Event) -> None:
+        self.inner = inner
+        self.release = release
+        self.started = threading.Event()
+
+    def read_all(self) -> Any:
+        self.started.set()
+        self.release.wait(30)
+        return self.inner.read_all()
+
+
+def _blocking_window(tk_root, tmp_path, release, monkeypatch):
+    """造一个「worker 会挂住」的窗口，返回 (window, provider)。"""
+    # tk_root 只能被一个 DiskTrackerApp 用，二次构造会撞 bad window path，
+    # 所以不建参照窗口：包一层 fixture provider，放行后照样返回真实结果。
+    provider = _BlockingProvider(app.FixturesProvider(FIXTURES), release)
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=_gui_store(tmp_path),
+                                autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    # 看门狗读的是 gui 模块里的全局量，app 只是把它转出去，patch app 不生效
+    monkeypatch.setattr("diskflow.gui.READ_WATCHDOG_SECONDS", 0.0)
+    return window, provider
+
+
+def test_gui_read_watchdog_recovers_a_stuck_worker(tk_root, tmp_path, monkeypatch):
+    """worker 卡死在系统调用里时，看门狗必须提示超时，但不能丢掉迟到的结果。
+
+    真实场景：驱动挂死 / 杀软独占设备，subprocess 的 timeout 都拦不住。这里用
+    一个会阻塞的 provider 复现，阈值压到 0 秒。
+    """
+    release = threading.Event()
+    window, provider = _blocking_window(tk_root, tmp_path, release, monkeypatch)
+    try:
+        window.refresh_async()
+        assert provider.started.wait(10), "worker 没起来"
+        assert window._busy is True
+        deadline = time.monotonic() + 20
+        while not window._run_warned and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
+        assert window._run_warned is True, "看门狗没有触发"
+        assert "读取超时" in window.error_label.cget("text")
+        assert window._busy is True, "看门狗只提示，不假装这一轮已经结束"
+        # 迟到的结果仍然要落地
+        release.set()
+        _wait_until_idle(window)
+        assert len(window.tree.get_children()) > 0
+        assert window.error_label.cget("text") == ""
+    finally:
+        release.set()
+        window.root.destroy()
+
+
+def test_gui_read_watchdog_rearms_every_run(tk_root, tmp_path, monkeypatch):
+    """看门狗按回合计数：上一轮提示过，下一轮开始时必须复位。"""
+    release = threading.Event()
+    window, provider = _blocking_window(tk_root, tmp_path, release, monkeypatch)
+    try:
+        window.refresh_async()
+        assert provider.started.wait(10)
+        deadline = time.monotonic() + 20
+        while not window._run_warned and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
+        assert window._run_warned is True
+        release.set()
+        _wait_until_idle(window)
+        window.refresh_async()
+        assert window._run_warned is False, "新一轮必须先复位，否则第二次卡住不会再提示"
+    finally:
+        release.set()
+        window.root.destroy()
+
 def test_gui_sorting_does_not_crash(tk_root, tmp_path):
     store = _gui_store(tmp_path)
     window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
@@ -1789,14 +2181,123 @@ def test_changelog_sections_follow_fixed_order():
         )
 
 
-def test_gui_layer_does_not_call_smartctl():
-    """GUI 层不得出现 smartctl 调用：类里不应引用 subprocess。"""
+def _module_ast(module: object) -> ast.Module:
+    """把模块的源文件解析成 AST（比纯字符串扫描稳：注释与文档串不会假阳性）。"""
     import inspect
 
-    source = inspect.getsource(app.DiskTrackerApp)
-    assert "subprocess" not in source
-    assert "smartctl -a" not in source
-    assert "smartctl.exe" not in source.replace("smartctl.exe，请执行", "")
+    return ast.parse(inspect.getsource(module))
+
+
+def _imported_module_names(tree: ast.Module) -> set[str]:
+    """模块里所有 `import x.y` / `from x import y` 引入的模块名（含前缀）。"""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module)
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def _dotted_name(node: ast.AST) -> str:
+    """把 `a.b.c` 形式的属性链还原成 "a.b.c"；还原不出就返回空串。"""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    else:
+        return ""
+    return ".".join(reversed(parts))
+
+
+def _called_dotted_names(tree: ast.Module) -> set[str]:
+    """模块里所有被调用目标的点分名（`os.system` 这种）；裸调用记原名。"""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            else:
+                dotted = _dotted_name(func)
+                if dotted:
+                    names.add(dotted)
+    return names
+
+
+def test_gui_layer_does_not_call_smartctl():
+    """GUI 层不得出现 smartctl 调用：整个 diskflow.gui 模块（不只是那个类）。"""
+    tree = _module_ast(app.gui)
+
+    # 1) 不许 import 任何能起进程的模块（subprocess / os.system / ctypes 起进程）
+    forbidden_imports = {"subprocess", "shlex", "os2", "popen2", "commands"}
+    imported = _imported_module_names(tree)
+    assert not (imported & forbidden_imports), (
+        f"diskflow/gui.py 不应 import {sorted(imported & forbidden_imports)}"
+    )
+
+    # 2) 不许调用能起进程的函数（含间接封装）。按「点分名」比对，避免误伤：
+    #    platform.system() / self.tk.call() 都是正常用法，只有 os.system、
+    #    os.popen、subprocess.* 这类才是起进程。
+    #    os.startfile 也放行：它只用于「打开历史文件」，不开子进程读盘。
+    forbidden_calls = {
+        "os.system", "os.popen", "os.popen2", "os.popen3", "os.popen4",
+        "os.spawnv", "os.spawnl", "os.spawnve", "os.spawnle",
+        "os.execv", "os.execl", "os.execve", "os.execle",
+        "subprocess.run", "subprocess.Popen", "subprocess.call",
+        "subprocess.check_call", "subprocess.check_output",
+        "win32process.CreateProcess", "ctypes.windll",
+    }
+    used = _called_dotted_names(tree)
+    assert not (used & forbidden_calls), (
+        f"diskflow/gui.py 不应调用 {sorted(used & forbidden_calls)}；"
+        "读盘只能走注入的 provider"
+    )
+
+    # 3) 代码里不许出现 smartctl 命令行（含字符串常量 —— 文案只允许整句提示语）
+    literals = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    for text in literals:
+        lowered = text.lower()
+        assert "smartctl -a" not in lowered
+        assert "--json" not in lowered
+        assert "physicaldrive" not in lowered
+
+    # 4) 契约：provider 一律由外部注入；GUI 里只允许 __init__ 的默认值兜底
+    #    （`provider if provider is not None else SmartctlProvider()`），
+    #    读盘动作本身必须走 self.provider。
+    PROVIDERS = {"SmartctlProvider", "FixturesProvider"}
+    constructed: list[str] = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in PROVIDERS):
+                constructed.append(f"{func.name}:{node.func.id}")
+    assert all(site.startswith("__init__:") for site in constructed), (
+        f"只有 __init__ 允许构造默认 provider，实际出现在：{constructed}"
+    )
+    assert len(constructed) <= 1, f"默认 provider 只应有 1 处兜底，实际 {constructed}"
+
+    # 5) 读盘调用必须落在 self.provider 上（不允许绕过注入点直接调模块级函数）
+    provider_methods = {"read_all", "scan_devices", "read_device", "resolve_path"}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in provider_methods):
+            raise AssertionError(
+                f"读盘方法 {node.func.id}() 被裸调用，必须走 self.provider"
+            )
 
 
 def test_smartctl_calls_are_confined_to_provider_class():
@@ -3073,6 +3574,40 @@ def test_parse_disk_geometry_and_volume_extents():
     assert app.parse_volume_extents(bytes(8)) == []
 
 
+def test_binary_parsers_never_raise_on_truncated_buffers():
+    """P2-6：任何长度/任何垃圾字节都必须返回空值而不是抛异常（Windows API 会返回短缓冲）。"""
+    import struct
+
+    # 长度 0..40 的全零缓冲：三个解析器都必须安全兜底
+    for size in range(0, 41):
+        raw = bytes(size)
+        parsed = app.parse_storage_descriptor(raw)
+        assert parsed["model"] == "" and parsed["serial"] == "" and parsed["bus_type"] == 0
+        assert app.parse_disk_geometry(raw) is None
+        assert app.parse_volume_extents(raw) == []
+
+    # 描述符里的字符串偏移指到缓冲之外：只能得到空串，不能越界读
+    overrun = bytearray(40)
+    struct.pack_into("<I", overrun, 12, 0xFFFFFFF0)
+    struct.pack_into("<I", overrun, 16, 0xFFFFFFF1)
+    struct.pack_into("<I", overrun, 24, 0xFFFFFFF2)
+    struct.pack_into("<I", overrun, 28, 17)
+    parsed = app.parse_storage_descriptor(bytes(overrun))
+    assert parsed["model"] == "" and parsed["serial"] == ""
+    assert parsed["bus_type"] == 17, "BusType 本身在缓冲内，仍要读出来"
+
+    # extents 声明了天文数字条记录，但缓冲只有一条：读到边界就停，不能读越界
+    greedy = bytearray(8 + 24)
+    struct.pack_into("<I", greedy, 0, 0xFFFFFFFF)
+    struct.pack_into("<I", greedy, 8, 3)
+    assert app.parse_volume_extents(bytes(greedy)) == [3]
+
+    # 几何缓冲刚好够读 DiskSize；负数与 0 都表示"拿不到容量"
+    exact = bytearray(app.GEOMETRY_DISK_SIZE_OFFSET + 8)
+    struct.pack_into("<q", exact, app.GEOMETRY_DISK_SIZE_OFFSET, -1)
+    assert app.parse_disk_geometry(bytes(exact)) is None
+    assert app.parse_disk_geometry(bytes(app.GEOMETRY_DISK_SIZE_OFFSET + 7)) is None
+
 def test_models_close_and_capacities_close_tolerances():
     """型号归一化后相等或互为前缀算同一块盘；容量允许 2 GiB / 2% 的差异。"""
     assert app.models_close("Acme SK500 960GB", "ACME  SK500  960GB")
@@ -4075,6 +4610,268 @@ def test_language_preference_is_persisted_and_normalized(tmp_path):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# 15. 写盘可靠性：唯一临时名 + fsync + 跨进程锁（P0-1）
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_leaves_no_temp_file_behind(tmp_path):
+    """正常写完：目标文件在、目录里不留 .tmp 残渣。"""
+    target = tmp_path / "history.json"
+    app.atomicio.write_text(target, "hello")
+    assert target.read_text(encoding="utf-8") == "hello"
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != target.name]
+    assert leftovers == [], f"写完不该留下任何临时文件，实际 {leftovers}"
+
+
+def test_atomic_write_temp_name_is_unique_per_write(tmp_path):
+    """临时名必须带 pid + uuid：固定叫 xxx.tmp 会让并发写互相截断。"""
+    target = tmp_path / "history.json"
+    first = app.atomicio.temp_path_for(target)
+    second = app.atomicio.temp_path_for(target)
+    assert first != second
+    assert first.parent == target.parent          # 必须同目录，跨盘 replace 不原子
+    assert first.name.endswith(".tmp")
+    assert app.atomicio.temp_path_for(target) != app.atomicio.temp_path_for(target)
+
+
+def test_atomic_write_cleans_up_temp_file_when_replace_fails(tmp_path, monkeypatch):
+    """写盘失败也要把临时文件删掉，不能给用户目录里留半截 .tmp。"""
+    target = tmp_path / "history.json"
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app.atomicio.os, "replace", boom)
+    with pytest.raises(OSError):
+        app.atomicio.write_text(target, "x")
+    assert [p.name for p in tmp_path.iterdir()] == []
+    assert not target.exists()
+
+
+def test_file_lock_serializes_two_writers(tmp_path):
+    """锁被占着时第二个拿不到；释放之后立刻能拿到。"""
+    target = tmp_path / "history.json"
+    with app.atomicio.file_lock(target) as first:
+        assert first is True
+        with app.atomicio.file_lock(target, timeout=0.0) as second:
+            assert second is False, "同一把锁不该被同时拿到两次"
+    with app.atomicio.file_lock(target, timeout=0.0) as third:
+        assert third is True, "释放后必须能立刻重新拿到"
+    assert not (tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)).exists()
+
+
+def test_file_lock_takes_over_a_stale_lock_file(tmp_path, monkeypatch):
+    """上一个进程崩掉留下的锁文件（年龄超过阈值）要被接管，不能永久卡住。"""
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+    lock.write_text("", encoding="utf-8")
+    stale = time.time() - (app.atomicio.LOCK_STALE_SECONDS + 5)
+    import os as _os
+    _os.utime(lock, (stale, stale))
+    with app.atomicio.file_lock(target, timeout=0.0) as acquired:
+        assert acquired is True
+
+
+def test_file_lock_disabled_is_a_no_op(tmp_path):
+    """enabled=False 时不建锁文件（测试与只读场景用）。"""
+    target = tmp_path / "history.json"
+    with app.atomicio.file_lock(target, enabled=False) as acquired:
+        assert acquired is False
+    assert [p.name for p in tmp_path.iterdir()] == []
+
+
+def test_history_save_uses_the_atomic_writer(tmp_path, monkeypatch):
+    """history.save 必须走 atomicio.write_text（拿到 fsync + 唯一临时名）。"""
+    store = _store(tmp_path)
+    calls = []
+    original = app.atomicio.write_text
+
+    def spy(path, text, encoding="utf-8"):
+        calls.append(Path(path).name)
+        return original(path, text, encoding=encoding)
+
+    monkeypatch.setattr(app.atomicio, "write_text", spy)
+    store.save([{"timestamp": "2026-04-30T08:00:00+08:00", "key": "A|1",
+                 "model": "A", "serial": "1", "read_gb": 1.0, "write_gb": 2.0}])
+    assert calls == [app.HISTORY_FILENAME]
+    assert store.load().records[0]["read_gb"] == 1.0
+
+
+def test_history_concurrent_appends_keep_every_record(tmp_path):
+    """两个线程各自 append 记录：一条都不能丢（P0-1 后半的回归用例）。
+
+    旧实现是「锁外 load → 锁内 save(load.records + new)」，锁只罩住写盘那一步。
+    两个实例并发时各读各的旧快照、各拼一份全量列表，串行写盘的结果还是
+    「后写的把先写的整份覆盖掉」——文件是好的，但少了一半读数。
+    append() 把「读现状 → 追加 → 写回」整段放进锁内，24 条必须全在。
+    """
+    primary = tmp_path / "app"
+    fallback = tmp_path / "localappdata" / app.APP_STORAGE_ID
+    def fresh():
+        return app.HistoryStore(primary_dir=primary, fallback_dir=fallback)
+
+    def write(count, base):
+        store = fresh()
+        for index in range(count):
+            minute = base + index
+            store.append([{"timestamp": f"2026-04-30T{minute // 60:02d}:{minute % 60:02d}:00+08:00",
+                           "key": f"K{base}|{index}", "model": f"M{base}", "serial": str(index),
+                           "read_gb": float(index), "write_gb": float(index)}])
+
+    threads = [threading.Thread(target=write, args=(12, base)) for base in (0, 90)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+    result = fresh().load()
+    assert result.recovered is False, f"并发写不该把文件写坏：{result.message}"
+    keys = sorted(record["key"] for record in result.records)
+    assert len(keys) == 24, f"两个线程各写 12 条，一条都不能少，实际 {len(keys)} 条"
+    assert len(set(keys)) == 24
+
+
+def test_history_append_merges_with_what_is_already_on_disk(tmp_path):
+    """append() 必须读磁盘现状再追加，不能拿调用方手里的旧列表整体覆盖。"""
+    store = _store(tmp_path)
+    store.save([_reading("2026-04-30T08:00:00+08:00", 5.0, 6.0, key="A|1")])
+    # 另一个实例在这之后又写了一条（模拟用户同时开了第二个窗口）
+    other = _store(tmp_path)
+    other.append([_reading("2026-04-30T09:00:00+08:00", 7.0, 8.0, key="B|2")])
+    # 本实例手里的 load 还是只有 A 的旧快照，append 后两条都得在
+    store.append([_reading("2026-04-30T10:00:00+08:00", 9.0, 10.0, key="C|3")])
+    keys = sorted(record["key"] for record in _store(tmp_path).load().records)
+    assert keys == ["A|1", "B|2", "C|3"]
+
+
+def test_history_append_returns_the_merged_records(tmp_path):
+    """append() 的返回值是写完之后的完整列表（含别人的记录）。"""
+    store = _store(tmp_path)
+    store.save([_reading("2026-04-30T08:00:00+08:00", 5.0, 6.0, key="A|1")])
+    result = store.append([_reading("2026-04-30T09:00:00+08:00", 7.0, 8.0, key="B|2")])
+    assert isinstance(result, app.HistoryLoadResult)
+    assert [record["key"] for record in result.records] == ["A|1", "B|2"]
+    assert result.recovered is False
+    assert result.path == store.path
+
+
+def test_history_append_backs_up_a_legacy_file_before_rewriting(tmp_path):
+    """v1 老文件走 append() 也要先备份再升级，不能把旧数据直接冲掉。"""
+    primary = tmp_path / "app"
+    primary.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(FIXTURES / "history_single.json", primary / app.HISTORY_FILENAME)
+    store = app.HistoryStore(primary_dir=primary,
+                             fallback_dir=tmp_path / "localappdata" / app.APP_STORAGE_ID)
+    before = len(store.load().records)
+    assert before >= 1
+    store.append([_reading("2026-05-02T10:30:00+08:00", 7000.0, 8000.0, key="A|1")])
+    backups = sorted(primary.glob(f"{app.HISTORY_BACKUP_PREFIX}*.json"))
+    assert len(backups) == 1, "升级前必须留一份原始文件"
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == app.SCHEMA_VERSION
+    assert len(store.load().records) > before
+
+
+def test_history_save_does_not_corrupt_under_interleaving(tmp_path):
+    """两个 store 交错写同一份文件：最终文件必须是完整 JSON（任意一方的内容）。"""
+    primary = tmp_path / "app"
+    fallback = tmp_path / "localappdata" / app.APP_STORAGE_ID
+    left = app.HistoryStore(primary_dir=primary, fallback_dir=fallback)
+    right = app.HistoryStore(primary_dir=primary, fallback_dir=fallback)
+    record = {"timestamp": "2026-04-30T08:00:00+08:00", "key": "K|1",
+              "model": "K", "serial": "1", "read_gb": 5.0, "write_gb": 6.0}
+    for _ in range(6):
+        left.save([record])
+        right.save([record, dict(record, read_gb=7.0)])
+    payload = json.loads(left.path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == app.SCHEMA_VERSION
+    assert not list(left.path.parent.glob("*.tmp"))
+    assert not list(left.path.parent.glob(".*.tmp"))
+
+
+def test_settings_save_serializes_read_merge_write(tmp_path):
+    """settings.save 的「读→合并→写」必须在同一把锁里（P0-1 的 TOCTOU）。"""
+    store = app.SettingsStore(directory=tmp_path / "app")
+    store.save({"theme": app.THEME_DARK})
+    store.save({"show_serial": True})
+    store.save({"wallpaper": "C:/x.png"})
+    assert store.load()["theme"] == app.THEME_DARK
+    assert store.load()["show_serial"] is True
+    assert store.load()["wallpaper"] == "C:/x.png"
+
+
+def test_settings_concurrent_saves_keep_both_keys(tmp_path):
+    """两个线程各存一个不同的键：两边的改动都要留在文件里。"""
+    directory = tmp_path / "app"
+    def save(payload):
+        app.SettingsStore(directory=directory).save(payload)
+
+    threads = [threading.Thread(target=save, args=({"theme": app.THEME_DARK},)),
+               threading.Thread(target=save, args=({"show_gib": True},))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    data = app.SettingsStore(directory=directory).load()
+    assert data["theme"] == app.THEME_DARK
+    assert data["show_gib"] is True
+    assert not list(directory.glob("*.tmp"))
+
+
+def test_history_non_utf8_file_is_backed_up_and_rebuilt(tmp_path):
+    """非 UTF-8 的 history.json 不能抛 UnicodeDecodeError（P1-3）。"""
+    store = _store(tmp_path)
+    path = store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe{\"schema_version\": 2}")
+    result = store.load()
+    assert result.recovered is True
+    assert result.records == []
+    assert result.backup_path is not None and result.backup_path.exists()
+    assert "已备份" in result.message
+
+
+def test_settings_non_utf8_file_falls_back_to_defaults(tmp_path):
+    """非 UTF-8 的 settings.json 静默回落默认值，不抛异常。"""
+    directory = tmp_path / "app"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / app.SETTINGS_FILENAME).write_bytes(b"\xff\xfe{}")
+    data = app.SettingsStore(directory=directory).load()
+    assert data == app.DEFAULT_SETTINGS
+
+
+def test_background_read_does_not_leak_language_into_main_thread(tmp_path):
+    """后台线程里 bind_language 不改变主线程的当前语言（P0-2）。"""
+    app.set_language(app.LANG_ZH)
+    seen = {}
+
+    def worker():
+        with app.bind_language(app.LANG_EN):
+            seen["inside"] = app.current_language()
+            seen["text"] = app.tr("刷新记录")
+        seen["after"] = app.current_language()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=10)
+    assert seen["inside"] == app.LANG_EN
+    assert seen["text"] == "Refresh"
+    assert seen["after"] == app.LANG_ZH
+    assert app.current_language() == app.LANG_ZH
+
+
+def test_bind_language_restores_even_when_the_body_raises():
+    """with 块里抛异常也要还原语言，不能把界面永久卡在英文。"""
+    app.set_language(app.LANG_ZH)
+    with pytest.raises(RuntimeError):
+        with app.bind_language(app.LANG_EN):
+            assert app.current_language() == app.LANG_EN
+            raise RuntimeError("boom")
+    assert app.current_language() == app.LANG_ZH
+
 # ---------------------------------------------------------------------------
 # 16. 安装包（Inno Setup）与安装版存储位置（v0.8.x）
 # ---------------------------------------------------------------------------
@@ -4423,6 +5220,39 @@ def test_compose_ppm_blends_the_fixture_wallpaper():
     # 面板区等效不透明度更高 -> 更靠近控件层色 (250,251,253)，整体更亮
     assert sum(left) >= sum(right)
 
+
+def test_gdiplus_shutdown_is_paired_and_idempotent():
+    """P2-6：GdiplusStartup 必须有配对的 Shutdown，且重复调用不能抛异常。"""
+    startup_source = inspect.getsource(app.wallpaper._load_gdiplus)
+    assert "GdiplusStartup" in startup_source
+    assert '"GdiplusShutdown"' in startup_source, "函数指针签名要在启动时就绑好"
+    assert "atexit" in inspect.getsource(app.wallpaper)
+
+    # 没启动过就直接 shutdown 不能崩；窗口反复销毁重建时也走这条路
+    saved = (app.wallpaper._gdiplus_module, app.wallpaper._gdiplus_token,
+             app.wallpaper._gdiplus_tried)
+    try:
+        app.wallpaper._gdiplus_module = None
+        app.wallpaper._gdiplus_token = None
+        app.wallpaper._gdiplus_tried = False
+        app.shutdown_gdiplus()
+        app.shutdown_gdiplus()
+        assert app.wallpaper._gdiplus_module is None
+        assert app.wallpaper._gdiplus_token is None
+    finally:
+        (app.wallpaper._gdiplus_module, app.wallpaper._gdiplus_token,
+         app.wallpaper._gdiplus_tried) = saved
+
+    # 真正启动过之后 shutdown：token 必须归还并清空，且重复调用不抛
+    if app.gdiplus_available():
+        app.shutdown_gdiplus()
+        assert app.wallpaper._gdiplus_module is None
+        assert app.wallpaper._gdiplus_token is None
+        app.shutdown_gdiplus()
+        # 真关掉之后本进程内就不能再用 GDI+ 解码了；重新拉起一次，
+        # 保证后面的壁纸用例还能跑（Startup/Shutdown 支持循环调用，已实测）
+        app.wallpaper._gdiplus_tried = False
+        assert app.gdiplus_available() is True, "启动-关闭-再启动必须能恢复"
 
 def test_compose_ppm_returns_none_for_unreadable_wallpaper(tmp_path):
     """图被删/路径失效只能退化成纯色，不能抛异常。"""
@@ -5056,7 +5886,11 @@ def test_gui_shell_targets_exclude_the_covered_containers(tk_root, tmp_path):
     window = _photo_window(tk_root, tmp_path)
     names = [name for name, _ in window._shell_containers()]
     assert names == list(app.DiskTrackerApp._SHELL_TARGETS)
-    assert len(names) == 6
+    assert len(names) == 5
+    # bottom 是自绘卡片（CardCanvas + 27% 白罩），不是普通外壳容器：给它垫一层
+    # 无罩的子切片画布会把卡片自己的白罩整块盖住，界面上就是「说明行自带一条
+    # 白横带、和汇总行不在同一块底板上」。它的透图走 CardCanvas.set_surface。
+    assert "bottom" not in names
     # kpi_frame 走独立的 _shell_backdrops["kpi_frame"]（它里面是自绘卡片，
     # 垫层要跟卡片一起挂/撤，不能混进这张通用表），body / table_frame /
     # cards_frame 被子控件完全盖住，垫了也看不见
@@ -5100,14 +5934,16 @@ def test_gui_panel_regions_uses_the_control_layer_rects(tk_root, tmp_path):
     # 是实层，下面一条会突然回落到对话层。
     window._client_rect = lambda widget: (10, 20, 100, 40)
     regions = window._panel_regions(800, 600)
-    # 只剩数据区与底栏两块。
+    # 只剩数据区一块（表格视图下 cards_frame 没挂，量到的也是 None）。
+    # 底栏不铺：它本身是 CardCanvas，自带 27% 白罩，再垫一层控件层只会更亮
+    # 且与上面四张 KPI 卡（都在对话层上）拉开色差。
     # status_bar 不铺——它只有一行提示文字，单独铺一层控件层会让那行在壁纸上
     # 显出一条浅色横带。
     # kpi_frame 也不铺：参照图里 KPI 带是「对话层 + 卡片自己那层白罩」，卡间
     # 缝隙露出的是对话层（L≈150）而不是卡面（L≈178 = 0.73*150 + 0.27*255）。
     # 把整条 KPI 带垫成控件层，缝隙会被垫到和卡面一样亮（实测两者都是 184.7），
     # 四张卡连成一片，用户看到的正是「卡片中间的分隔没了」。
-    assert len(regions) == 2
+    assert len(regions) == 1
     assert regions[0] == (10, 20, 110, 60)
     window.root.destroy()
 
@@ -5506,3 +6342,12 @@ def test_mix_hex_clamps_and_falls_back(tk_root):
     assert app.mix_hex("#F2F5FA", "#EEF2FA", 0.0) == "#F2F5FA"
     # 坏输入回落成灰，不抛异常
     assert re.fullmatch(r"#[0-9A-F]{6}", app.mix_hex("nope", "#FFFFFF", 0.5))
+
+def test_budget_and_noise_strings_are_translated():
+    """本轮新增的失败原因与提示必须已收录英文，英文界面不能露中文。"""
+    for text in ("读取失败：本次读取总预算已用尽，已跳过该磁盘",):
+        assert app.has_translation(text), text
+    english = app.tr("读取失败：本次读取总预算已用尽，已跳过该磁盘", app.LANG_EN)
+    assert "budget" in english.lower(), english
+    assert "读取失败" not in english
+
