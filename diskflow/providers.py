@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from .config import APP_ICON_DIRNAME, APP_ICON_FILENAME, PROJECT_DIR, SMARTCTL_EXE
-from .i18n import tr
+from .i18n import LocalizedMessage, tr
 from .models import DiskSnapshot, ProviderResult
 from .parse import parse_smartctl_payload
 
@@ -209,16 +209,17 @@ class SmartctlProvider:
         if not path:
             return ProviderResult(
                 smartctl_path=None, ok=False,
-                status=tr("未找到 smartctl.exe（可执行 winget install smartmontools.smartmontools）"))
+                # 状态文案别在这里翻：界面可能切语言，交给 LocalizedMessage 现取
+                status=LocalizedMessage("未找到 smartctl.exe（可执行 winget install smartmontools.smartmontools）"))
         devices = self.scan_devices()
         if not devices:
             return ProviderResult(smartctl_path=path, ok=False,
-                                  status=tr("未发现可用磁盘（可能需要管理员权限）"))
+                                  status=LocalizedMessage("未发现可用磁盘（可能需要管理员权限）"))
         snapshots = self._read_devices(devices)
         return ProviderResult(
             snapshots=snapshots, smartctl_path=path,
-            status=tr("已读取 {count} 块磁盘（smartctl: {path}）",
-                      count=len(snapshots), path=path))
+            status=LocalizedMessage("已读取 {count} 块磁盘（smartctl: {path}）",
+                                    {"count": len(snapshots), "path": path}))
 
     def _read_devices(self, devices: Sequence[str]) -> list[DiskSnapshot]:
         """逐块读取，但受整次读取的总预算约束（P2-5）。

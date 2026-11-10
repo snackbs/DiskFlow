@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 
@@ -180,6 +181,8 @@ _EN: dict[str, str] = {
     "数据源：读取中…": "Data source: reading…",
     "数据源：读取异常": "Data source: read error",
     "读取中…": "Reading…",
+    # 看门狗超时后「数据源」那一行：这一轮已经放开界面了，但 worker 还在后台跑
+    "读取超时，后台仍在尝试": "Read timed out; still retrying in the background",
     # ---- 底部条 ----
     "刷新记录": "Refresh",
     "关于": "About",
@@ -487,6 +490,44 @@ def tr(text: str, lang: Any = None, **kwargs: Any) -> str:
         except (KeyError, IndexError, ValueError):
             return translated
     return translated
+
+
+@dataclass(frozen=True)
+class LocalizedMessage:
+    """一条**还没决定用哪种语言显示**的文案：中文原文键 + 占位符参数。
+
+    为什么不能只存成品字符串：GUI 底部的黄色提示行与「数据源：」要在切语言时原地
+    重画，而 tr() 一调就把当时的语言焊死在字符串里了，切回中文只能靠重新启动。
+    于是这里只留「键 + 参数」，真正取文案时再调用 text()，界面语言变了它就跟着变。
+
+    key 一定是用中文原文作键（与 tr() 的查表方式一致）；查不到英文时退回中文。
+    """
+
+    key: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def text(self, lang: Any = None) -> str:
+        """按目标语言拼出成品文案（lang 缺省为当前语言）。
+
+        参数值本身也可以是 LocalizedMessage（例如「旧文件备份为 {name}」里的 name
+        还嵌着「<日期>」这段说明文字）：先按同一目标语言把内层拼好再代入，
+        否则外层跟着语言翻了、嵌在参数里的那一截仍是派活时那门语言。
+        """
+        if self.params:
+            params = {
+                name: (value.text(lang) if isinstance(value, LocalizedMessage) else value)
+                for name, value in self.params.items()
+            }
+        else:
+            params = {}
+        return tr(self.key, lang, **params)
+
+    def __str__(self) -> str:
+        return self.text()
+
+    def __bool__(self) -> bool:
+        # 让 "if message:" 这类判断与空字符串一致：没有键就等于没有话说
+        return bool(self.key.strip())
 
 
 ERROR_PREFIX = "读取失败："

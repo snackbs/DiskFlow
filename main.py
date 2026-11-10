@@ -184,6 +184,8 @@ from diskflow.prefs import (  # noqa: F401
     SETTINGS_FILENAME, DEFAULT_SETTINGS, SettingsStore,
 )
 
+from diskflow import tkthread  # noqa: F401
+
 from diskflow.gui import (  # noqa: F401
     _SCROLLBAR_BASE, _LABEL_BASE, SCROLL_GUTTER, CARD_RESIZE_DELAY_MS, CARD_GAP,
     SlimScrollbar, SegButton, SORT_MENU_ITEMS, COLUMN_SPECS, TABLE_NATURAL_WIDTH,

@@ -24,6 +24,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Any, Sequence
 
+from . import fontcache
+
 # 一格超过这么多字符就不再逐字符画：item 数量与字符数成正比，
 # 实测 1000 个 item 要 120ms，长型号不值得为「选半个型号名」付这个代价。
 CHAR_SPLIT_LIMIT = 32
@@ -237,8 +239,11 @@ class CanvasTable(tk.Canvas):
         # 所以同一个控件上再 bind 一个 <Button-3> 永远不会被触发，只能由这里转出去。
         self.context_menu: Any = None
 
-        self._font = tkfont.Font(family=font_family, size=font_size)
-        self._head_font = tkfont.Font(family=font_family, size=font_size, weight="bold")
+        # 字体走 fontcache：本进程创建的 Font 一旦被 GC（可能发生在 worker 线程），
+        # __del__ 会跨线程调 Tcl 的 font delete，把线程卡住。缓存对象永不回收。
+        self._font = fontcache.cached_font(self, family=font_family, size=font_size)
+        self._head_font = fontcache.cached_font(self, family=font_family, size=font_size,
+                                                weight="bold")
 
         self.bind("<Configure>", lambda _e: self.redraw())
         self.bind("<Button-1>", self._on_press)
@@ -441,8 +446,8 @@ class CanvasTable(tk.Canvas):
         self.redraw()
 
     def set_fonts(self, family: str, size: int) -> None:
-        self._font = tkfont.Font(family=family, size=size)
-        self._head_font = tkfont.Font(family=family, size=size, weight="bold")
+        self._font = fontcache.cached_font(self, family=family, size=size)
+        self._head_font = fontcache.cached_font(self, family=family, size=size, weight="bold")
         self._layout_dirty = True
         self.redraw()
 

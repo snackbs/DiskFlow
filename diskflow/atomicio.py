@@ -107,6 +107,10 @@ def _is_stale(lock_path: Path) -> bool:
 
     只按年龄判断，不看 pid：倒不是因为 pid 难取，而是 pid 会被系统复用，
     拿它判断「持有者还活着没有」反而更容易误判成活锁。
+
+    时间一律走**墙钟**：mtime 是文件系统给的墙钟，拿它跟 time.monotonic()
+    相减没有意义（monotonic 的原点是开机时刻，跟纪元时间差了成千上万秒，
+    会让所有锁瞬间被判成"过期"）。等待用的 deadline 才用 monotonic。
     """
     try:
         age = time.time() - lock_path.stat().st_mtime
@@ -122,16 +126,98 @@ def _discard(lock_path: Path) -> None:
         pass
 
 
-def _acquire(lock_path: Path, timeout: float) -> int | None:
-    """抢锁，成功返回文件描述符，失败返回 None。"""
+def _new_token() -> str:
+    """本次抢锁的唯一标识，写进锁文件正文。"""
+    return f"{os.getpid()}:{uuid.uuid4().hex}"
+
+
+def _read_token(lock_path: Path) -> str:
+    try:
+        return lock_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _recreate_lock(lock_path: Path, token: str) -> None:
+    """在不支持硬链接的文件系统上重建锁文件（目标已存在就放弃）。"""
+    try:
+        handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return                            # 别人已经建好了，让它赢
+    try:
+        os.write(handle, token.encode("utf-8"))
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+
+
+def _restore_lock(taken: Path, lock_path: Path) -> None:
+    """把误拿到的别人的锁放回原位，但**只在原位仍然空着的时候**。
+
+    不能用 os.replace：目标位置要是已经被第三方新建了锁，POSIX 的 replace 会
+    静默覆盖它（Windows 上才抛异常），等于替对方把锁删了——第三个人立刻也能
+    进来，锁就白做了。这里改用 os.link 做「目标不存在才成功」的放回：成功则
+    两个名字指向同一份内容，删掉自己那一份即可；FileExistsError 说明别人已经
+    抢先建好，放弃手上这份，不动对方的锁。
+    """
+    token = _read_token(taken)
+    try:
+        os.link(taken, lock_path)
+    except FileExistsError:
+        pass                              # 有人抢先重建了锁，就让它赢
+    except OSError:
+        _recreate_lock(lock_path, token)  # FAT/exFAT、部分网络盘不支持硬链接
+    _discard(taken)
+
+
+def _release(lock_path: Path, token: str) -> None:
+    """只删自己那把锁。
+
+    早先这里是无条件 unlink：A 抢到锁 → 超过 LOCK_STALE_SECONDS 还在写 →
+    B 把它判成"过期"删掉并抢走 → A 写完后把 **B 的锁**删了 → C 立刻也以为
+    没人持锁。三个人一起写同一个文件，正是这把锁要防的事。
+
+    读 token 与 unlink 之间仍有窗口：读的时候还是自己的锁，真删之前被 B 接管。
+    这个窗口关不死（判过期和删除本来就是两步），但可以用一次原子性的
+    **改名拿走**把它压到最小：先把锁文件改成本进程独占的临时名，再看拿走的是不是
+    自己那把。若已被 B 换了新锁，拿到的就是 B 的锁——原样改回去，不动它。
+    """
+    if _read_token(lock_path) != token:
+        return
+    taken = lock_path.with_name(f"{lock_path.name}.{uuid.uuid4().hex}.release")
+    try:
+        os.replace(lock_path, taken)      # 原子：拿到手的要么是我的锁，要么什么都没拿到
+    except OSError:
+        return                            # 锁已经不在了（别人接管/进程退出），不追着删
+    if _read_token(taken) != token:
+        # 改名和接管撞上了：拿过来的是别人新建的锁，放回去，别把人家踢掉。
+        _restore_lock(taken, lock_path)
+        return
+    _discard(taken)
+
+
+# 接管过期锁最多试几次。stale 判定在极端情况下会连续成立（锁文件存在但
+# stat 一直失败，比如被杀毒软件短暂占住），旧实现在那个分支里既不查
+# deadline 也不 sleep，会变成一个烧 CPU 的死循环。
+MAX_STALE_TAKEOVERS = 3
+
+
+def _acquire(lock_path: Path, timeout: float) -> tuple[int, str] | None:
+    """抢锁，成功返回 (文件描述符, token)，失败返回 None。"""
     deadline = time.monotonic() + max(0.0, timeout)
+    takeovers = 0
     while True:
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if _is_stale(lock_path):
+            if _is_stale(lock_path) and takeovers < MAX_STALE_TAKEOVERS:
                 # 上一个进程写完没来得及删（崩了 / 被杀了），直接接管
+                takeovers += 1
                 _discard(lock_path)
                 continue
             if time.monotonic() >= deadline:
@@ -140,6 +226,22 @@ def _acquire(lock_path: Path, timeout: float) -> int | None:
         except OSError:
             # 目录不可写、锁文件被杀毒软件占住等等：直接降级成无锁写
             return None
+        else:
+            token = _new_token()
+            try:
+                os.write(handle, token.encode("utf-8"))
+            except OSError:
+                # 锁文件已经建出来了，却没写上自己的 token：这份锁既证明不了是自己
+                # 的，释放时也删不掉（_release 比对 token 不通过），只能卡在那儿等
+                # LOCK_STALE_SECONDS 到期——期间所有实例都被挡在门外。宁可当场
+                # 降级成无锁写，也不留一把谁也不认识的空锁。
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+                _discard(lock_path)
+                return None
+            return handle, token
 
 
 @contextlib.contextmanager
@@ -155,20 +257,22 @@ def file_lock(path: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT,
         yield False
         return
     lock_path = _lock_path(path)
-    handle = _acquire(lock_path, timeout)
-    acquired = handle is not None
+    got = _acquire(lock_path, timeout)
+    acquired = got is not None
     try:
         yield acquired
     finally:
-        if acquired:
+        if got is not None:
+            handle, token = got
             try:
-                os.close(handle)        # type: ignore[arg-type]
+                os.close(handle)
             except OSError:
                 pass
-            _discard(lock_path)
+            _release(lock_path, token)
 
 
 __all__ = [
     "LOCK_SUFFIX", "DEFAULT_LOCK_TIMEOUT", "LOCK_RETRY_SECONDS", "LOCK_STALE_SECONDS",
-    "TEXT_READ_ERRORS", "temp_path_for", "write_text", "read_text", "file_lock",
+    "MAX_STALE_TAKEOVERS", "TEXT_READ_ERRORS", "temp_path_for", "write_text", "read_text",
+    "file_lock",
 ]

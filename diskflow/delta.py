@@ -222,7 +222,13 @@ def _diff(current: float | None, previous: float | None) -> float | None:
 
 
 def summarize(rows: Sequence[DiskRow]) -> dict[str, float]:
-    """底部汇总：本次读增/写增、历史读增/写增（只累加有增量的健康行）。"""
+    """底部汇总：本次读增/写增、历史读增/写增（只累加有增量的健康行）。
+
+    负增量不计入汇总：它代表「这块盘的计数器被重置/换过主控」，行内仍然保留这个
+    负数好让用户看见「疑似计数重置」，但如果把它加进总数，一块盘回退 900 GB 就能
+    把其他盘真实的正增量抵掉，汇总行出现负数——那既不是用户的真实增量，也没有
+    任何可操作含义。
+    """
     totals = {"read_delta": 0.0, "write_delta": 0.0,
               "hist_read_delta": 0.0, "hist_write_delta": 0.0}
     for row in rows:
@@ -232,7 +238,7 @@ def summarize(rows: Sequence[DiskRow]) -> dict[str, float]:
                            ("hist_read_delta", "hist_read_delta_gb"),
                            ("hist_write_delta", "hist_write_delta_gb")):
             value = getattr(row, attr)
-            if value is not None:
+            if value is not None and value > 0:
                 totals[name] += value
     return totals
 

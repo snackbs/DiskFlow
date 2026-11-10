@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from .config import HEALTH_NOT_AVAILABLE
 from .convert import bytes_to_gb
-from .i18n import tr
+from .i18n import LocalizedMessage, tr
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,9 @@ def disk_key(model: str, serial: str, device_path: str = "") -> str:
 class ProviderResult:
     snapshots: list[DiskSnapshot] = field(default_factory=list)
     smartctl_path: str | None = None
-    status: str = "未读取"
+    # 「数据源：」那行的内容。真 provider 给 LocalizedMessage（切语言能重拼），
+    # 测试与外部实现给裸字符串也能用（界面原样显示）。
+    status: str | LocalizedMessage = "未读取"
     ok: bool = True
 
 

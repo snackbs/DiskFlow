@@ -21,6 +21,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from typing import Any, Callable
 
+from . import fontcache
 from .canvas_surface import CharRun, fit_text
 from .pngenc import capsule_rgba_png, solid_rgba_png  # noqa: F401  对外再导出
 from .pngenc import VeilImage
@@ -102,14 +103,16 @@ class PhotoCard(SliceCanvas):
         self._palette = dict(palette)
         self._on_copy = on_copy
         self._flat_bg = background
-        self._font_small = tkfont.Font(root=master, family=font_family,
-                                       size=max(7, font_size - 1))
-        self._font_title = tkfont.Font(root=master, family=font_family,
-                                       size=font_size + 1, weight="bold")
-        self._font_value = tkfont.Font(root=master, family=num_family,
-                                       size=font_size + 1, weight="bold")
-        self._font_text = tkfont.Font(root=master, family=font_family,
-                                      size=font_size + 1, weight="bold")
+        # 字体走 fontcache：一个卡片视图一次建四个，滚动时反复重建；直接建的
+        # Font 被 GC 时（可能落在 worker 线程）会跨线程调 Tcl，把线程卡住。
+        self._font_small = fontcache.cached_font(master, family=font_family,
+                                                 size=max(7, font_size - 1))
+        self._font_title = fontcache.cached_font(master, family=font_family,
+                                                 size=font_size + 1, weight="bold")
+        self._font_value = fontcache.cached_font(master, family=num_family,
+                                                 size=font_size + 1, weight="bold")
+        self._font_text = fontcache.cached_font(master, family=font_family,
+                                                size=font_size + 1, weight="bold")
         self._blocks: list[_Block] = []
         self._veil_images = VeilImage(self)
         self._sel_rects: list[int] = []

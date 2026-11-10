@@ -19,7 +19,7 @@ from typing import Any, Callable, Sequence
 
 from . import atomicio
 from .config import APP_STORAGE_ID, PROJECT_DIR
-from .i18n import tr
+from .i18n import LocalizedMessage, tr
 from .models import DiskSnapshot, disk_key
 from .timefmt import parse_timestamp, timestamp_seconds
 
@@ -152,10 +152,14 @@ class HistoryLoadResult:
     def __init__(self, records: list[dict] | None = None, recovered: bool = False,
                  message: str = "", path: Path | None = None,
                  backup_path: Path | None = None,
-                 migrated: bool = False) -> None:
+                 migrated: bool = False,
+                 message_obj: "LocalizedMessage | None" = None) -> None:
         self.records = records or []
         self.recovered = recovered
         self.message = message
+        # message 是「读的时候按当时语言拼好的成品」（诊断、日志、__repr__ 用），
+        # message_obj 才是原件：界面底部那行要跟着切语言，只能留键 + 参数。
+        self.message_obj = message_obj
         self.path = path
         self.backup_path = backup_path
         self.migrated = migrated      # True = 读到了旧格式（v1），已就地转成 v2
@@ -292,36 +296,43 @@ class HistoryStore:
     def load(self) -> HistoryLoadResult:
         path = self.path
         if not path.exists():
+            obj = LocalizedMessage("首次运行：将建立基线记录")
             return HistoryLoadResult(records=[], recovered=False,
-                                     message=tr("首次运行：将建立基线记录"), path=path)
+                                     message=obj.text(), path=path, message_obj=obj)
         try:
             raw = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             # 非 UTF-8（手改时存成了 GBK / UTF-16、被别的工具写过）：内容已经
             # 解析不出来，按「损坏」处理——备份原文件再重建，别让异常冒到界面层。
             backup = self._backup_broken(path)
+            obj = LocalizedMessage("history.json 已损坏，已备份为 {name} 并重建基线",
+                                   {"name": backup.name})
             return HistoryLoadResult(
                 records=[], recovered=True, path=path, backup_path=backup,
-                message=tr("history.json 已损坏，已备份为 {name} 并重建基线", name=backup.name))
+                message=obj.text(), message_obj=obj)
         except atomicio.TEXT_READ_ERRORS as exc:
+            obj = LocalizedMessage("历史文件读取失败（{error}），已重建基线", {"error": exc})
             return HistoryLoadResult(
-                records=[], recovered=True, path=path,
-                message=tr("历史文件读取失败（{error}），已重建基线", error=exc))
+                records=[], recovered=True, path=path, message=obj.text(), message_obj=obj)
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             backup = self._backup_broken(path)
+            obj = LocalizedMessage("history.json 已损坏，已备份为 {name} 并重建基线",
+                                   {"name": backup.name})
             return HistoryLoadResult(
                 records=[], recovered=True, path=path, backup_path=backup,
-                message=tr("history.json 已损坏，已备份为 {name} 并重建基线", name=backup.name))
+                message=obj.text(), message_obj=obj)
 
         records, problem = validate_history(data)
         if problem:
             backup = self._backup_broken(path)
+            obj = LocalizedMessage(
+                "history.json 字段异常（{problem}），已备份为 {name} 并重建基线",
+                {"problem": problem, "name": backup.name})
             return HistoryLoadResult(
                 records=[], recovered=True, path=path, backup_path=backup,
-                message=tr("history.json 字段异常（{problem}），已备份为 {name} 并重建基线",
-                           problem=problem, name=backup.name))
+                message=obj.text(), message_obj=obj)
         migrated = _history_schema_version(data) < SCHEMA_VERSION
         return HistoryLoadResult(records=records, recovered=False, path=path, message="",
                                  migrated=migrated)
@@ -387,8 +398,9 @@ class HistoryStore:
         看到的就是「上一次的记录莫名其妙没了」，而且事后完全无法复现。
         锁必须罩住整段，不能只罩写盘（那是 P0-1 原来只修了一半的地方）。
 
-        返回值里的 records 是**写完之后的完整列表**（含别人的记录），
-        调用方要拿它做「本次之前」的判断时得用自己先前 load() 的那份。
+        返回值里的 records 是**写完之后的完整列表**（含别人的记录）。调用方要拿它
+        当「本次之前」的基准时，砍掉自己刚追加的那批尾部（`records[:-len(new_records)]`）
+        即可——那份比调用方在锁外 load() 到的更新，别的实例在你读完之后写进去的读数都在里面。
         """
         path = self.path
         try:
@@ -401,7 +413,8 @@ class HistoryStore:
             self._write_locked(path, merged)
         return HistoryLoadResult(
             records=merged, recovered=load.recovered, message=load.message,
-            path=load.path, backup_path=load.backup_path, migrated=load.migrated)
+            path=load.path, backup_path=load.backup_path, migrated=load.migrated,
+            message_obj=load.message_obj)
 
     def reset(self) -> Path | None:
         """重置历史文件：先把现有文件改名备份，再写一份空历史。

@@ -34,10 +34,12 @@ from .convert import (
     fmt_delta_short,
     fmt_size_short,
 )
+from . import fontcache, tkthread
 from .history import SCHEMA_VERSION, HistoryStore
 from .i18n import (
     LANG_LABELS,
     LANG_ORDER,
+    LocalizedMessage,
     bind_language,
     current_language,
     set_language,
@@ -553,7 +555,9 @@ class SegButton(_SEG_BASE):   # type: ignore[misc,valid-type]
         elif isinstance(spec, str):
             self._font = tkfont.nametofont(spec)
         else:
-            self._font = tkfont.Font(font=spec)
+            # 走缓存：本方法每次切主题/换字体都会重跑，直接建 Font 会不断留下
+            # 待销毁对象，回收若落在 worker 线程就会卡在 Tcl 的跨线程 call 上。
+            self._font = fontcache.font_for(self, spec)
 
     def _fit(self) -> None:
         """按文字宽度 + 内边距定宽、按行高定高：pack 时只占文字大小。"""
@@ -1030,6 +1034,11 @@ class DiskTrackerApp:
         self.tk = tk
         self.ttk = ttk
         self.root = root
+        # Tk 对象的析构（Variable / Image / Font 的 __del__）都会调 Tcl。它们一旦
+        # 被 worker 线程回收就会跨线程调 Tcl，那个调用要等主线程进 mainloop 才执行，
+        # 线程就卡在那里。装好这层后，跨线程的析构改为排队，由 _poll 里的 drain()
+        # 在主线程执行。重复调用无副作用（多窗口共用一套）。
+        tkthread.install()
         self.provider = provider if provider is not None else SmartctlProvider()
         self.store = store if store is not None else HistoryStore()
         self.settings = (settings if settings is not None
@@ -1044,6 +1053,9 @@ class DiskTrackerApp:
         # 看门狗用：本轮回合的开始时间戳，以及是否已经提示过超时
         self._run_started = 0.0
         self._run_warned = False
+        # 刷新世代号：每发起一轮刷新 +1。后台线程的结果只属于它被派出去的那一轮，
+        # 世代号对不上就整支轮询停掉（见 _poll），免得旧结果盖掉新结果。
+        self._run_generation = 0
         # 表格选区：iid -> DiskRow。复制选中行时按 iid 反查数据，顺序取屏幕顺序
         # （get_children 的顺序），不能按点选顺序或 iid 字典序，否则粘出来是乱序的。
         self._iid_to_row: dict[str, DiskRow] = {}
@@ -1085,7 +1097,8 @@ class DiskTrackerApp:
         # 诊断信息要按语言重新拼标签，直接读 Label 上的成品串会把前缀翻两遍。
         self.prev_stamp_text = "—"
         self.cur_stamp_text = "—"
-        self.source_text = tr("未检测")
+        # 可能是路径（原样显示），也可能是 LocalizedMessage（切语言后再取文案）
+        self.source_text: str | LocalizedMessage = LocalizedMessage("未检测")
         self._card_rows: list[Any] = []
         self._card_columns = 0
         self._cards_width = -1          # 上一次同步给内部 Frame 的宽度
@@ -1128,8 +1141,38 @@ class DiskTrackerApp:
             return dict(DEFAULT_SETTINGS)
 
     # ---------- 菜单栏 ----------
+    def _menu_vars(self) -> dict[str, Any]:
+        """菜单要用的 Tk 变量，**整个进程只建一次**，重建菜单时只改值。
+
+        切语言要重建整条菜单（Tk 没有批量改标签的接口），而重建菜单若顺手
+        新建一批 StringVar/BooleanVar，旧的就成了垃圾：`Variable.__del__` 会调
+        `info exists`，这也是一次跨线程 Tcl 调用。回收一旦落在读盘 worker 线程，
+        就会卡在那里等主线程进 mainloop——和字体对象是同一个坑。
+        变量本来就只承载「当前选中值」，没有跟着菜单销毁的必要。
+        """
+        variables = getattr(self, "_menu_vars_cache", None)
+        if variables is None:
+            tk = self.tk
+            variables = {
+                "theme": tk.StringVar(master=self.root, value=self.theme_key),
+                "serial": tk.BooleanVar(master=self.root, value=self.show_serial),
+                "gib": tk.BooleanVar(master=self.root, value=self.show_gib),
+                "alpha": tk.IntVar(master=self.root, value=self.panel_alpha),
+                "lang": tk.StringVar(master=self.root, value=self.lang),
+            }
+            self._menu_vars_cache = variables
+        else:
+            # 重建菜单不代表状态回退：值仍以窗口当前的属性为准。
+            variables["theme"].set(self.theme_key)
+            variables["serial"].set(self.show_serial)
+            variables["gib"].set(self.show_gib)
+            variables["alpha"].set(self.panel_alpha)
+            variables["lang"].set(self.lang)
+        return variables
+
     def _build_menubar(self) -> None:
         tk = self.tk
+        menu_vars = self._menu_vars()
         menubar = tk.Menu(self.root, tearoff=False)
 
         file_menu = tk.Menu(menubar, tearoff=False)
@@ -1141,7 +1184,7 @@ class DiskTrackerApp:
         file_menu.add_command(label=tr("退出(X)"), accelerator="Alt+F4", command=self.close)
 
         view_menu = tk.Menu(menubar, tearoff=False)
-        self._theme_var = tk.StringVar(master=self.root, value=self.theme_key)
+        self._theme_var = menu_vars["theme"]
         for key in THEME_ORDER:
             view_menu.add_radiobutton(label=tr(THEME_LABELS[key]), value=key,
                                       variable=self._theme_var,
@@ -1173,13 +1216,13 @@ class DiskTrackerApp:
         # 序列号属于设备身份信息，默认隐藏；勾选后表格首列、卡片副标题、
         # 复制（含 TSV 与单格）一起显示真实序列号。放在「工具」而不是「硬盘」，
         # 因为它只影响显示，不影响读取与记录。
-        self._serial_var = tk.BooleanVar(master=self.root, value=self.show_serial)
+        self._serial_var = menu_vars["serial"]
         tools_menu.add_checkbutton(label=tr("显示序列号"), variable=self._serial_var,
                                    command=self.toggle_serial)
         # 容量后面括号里的系统口径（894.25 GiB）：同一块盘标称 1 TB、系统里
         # 却写 931 GB，两个数并排对普通用户常常只是噪音，所以默认关掉。
         # 同样只影响显示，history.json 里存的一直是字节数与 GB 数值。
-        self._gib_var = tk.BooleanVar(master=self.root, value=self.show_gib)
+        self._gib_var = menu_vars["gib"]
         tools_menu.add_checkbutton(label=tr("显示系统口径容量"), variable=self._gib_var,
                                    command=self.toggle_gib)
         tools_menu.add_separator()
@@ -1190,7 +1233,7 @@ class DiskTrackerApp:
         # 透明度做成子菜单而不是滑杆：滑杆每次拖动都会重算整屏像素，
         # 五档离散值既省 CPU，也让「回到默认观感」有确定的落点。
         alpha_menu = tk.Menu(tools_menu, tearoff=False)
-        self._alpha_var = tk.IntVar(master=self.root, value=self.panel_alpha)
+        self._alpha_var = menu_vars["alpha"]
         for level in _wallpaper.ALPHA_LEVELS:
             alpha_menu.add_radiobutton(
                 label=tr("不透明度 {value}%", value=level), value=level,
@@ -1214,7 +1257,7 @@ class DiskTrackerApp:
         # 语言菜单：两个语言项都用母语写法（中文项写「简体中文」、英文项写 English），
         # 名词本身不走 tr()，切完语言菜单项不会自己变成另一种语言。
         lang_menu = tk.Menu(menubar, tearoff=False)
-        self._lang_var = tk.StringVar(master=self.root, value=self.lang)
+        self._lang_var = menu_vars["lang"]
         for code in LANG_ORDER:
             lang_menu.add_radiobutton(label=LANG_LABELS[code], value=code,
                                       variable=self._lang_var,
@@ -1379,7 +1422,10 @@ class DiskTrackerApp:
         # 免得一句全绿的话里夹着「1 块读取失败」，颜色语义自相矛盾。
         self.fail_label = self._shell_label(self.status_bar, text="", style="Muted.TLabel")
         self.fail_label.pack(side="left", padx=(0, 12))
+        # hint_parts 是**当前语言**下的成品串（诊断/测试读它），
+        # hint_messages 才是真身：只存键 + 参数，切语言时整行重放（见 _render_hints）。
         self.hint_parts: list[str] = []
+        self.hint_messages: list[LocalizedMessage] = []
         self.hint_label = self._shell_label(self.status_bar, text="", style="Hint.TLabel")
         self.hint_label.pack(side="left")
         # 操作失败（复制到剪贴板失败、打开目录失败、请先用右键……）接在黄字后面，
@@ -2280,27 +2326,59 @@ class DiskTrackerApp:
 
     def _source_label_text(self) -> str:
         """「数据源：xxx」整行文案；原始值单独存着，切语言才能重拼（见 diagnostics_text）。"""
-        return tr("数据源：{value}", value=self.source_text)
+        return tr("数据源：{value}", value=self._source_value_text())
+
+    def _source_value_text(self) -> str:
+        """「数据源：」后面那截：路径原样显示，内置状态按**当前**语言取文案。"""
+        source = self.source_text
+        if isinstance(source, LocalizedMessage):
+            return source.text(self.lang)
+        return str(source or "")
 
     def _refresh_admin_label(self) -> None:
         admin = is_admin()
         self.admin_label.configure(text=tr("权限：管理员") if admin
                                    else tr("权限：未以管理员运行"))
         if not admin:
-            self._append_hint(tr("未以管理员运行，部分磁盘可能读取失败。"))
+            self._append_message(LocalizedMessage("未以管理员运行，部分磁盘可能读取失败。"))
 
     def _append_hint(self, text: str) -> None:
         """追加一条**系统状态**提示（未提权 / 缺 smartctl / 历史文件异常……）。
 
         这类提示描述的是环境，不是某次点击的结果，所以按去重累积：同一句只留一条，
         反复刷新也不会越堆越长。
+
+        传进来的是**已经翻好**的字符串，切语言时无法再翻一遍，所以它只是
+        _append_message 的便捷入口（键就是这串原文，查得到词条就跟着语言变）。
         """
         text = (text or "").strip()
         if not text:
             return
-        if text not in self.hint_parts:
-            self.hint_parts.append(text)
-        self.hint_label.configure(text="  ".join(self.hint_parts))
+        self._append_message(LocalizedMessage(text))
+
+    def _append_message(self, message: LocalizedMessage | str) -> None:
+        """追加一条结构化提示：只存「键 + 参数」，显示时才按当前语言拼。
+
+        外部 provider / 测试可能直接给成品字符串，这里统一包一层：查得到词条就
+        照样跟着语言变，查不到就原样显示。
+        """
+        if isinstance(message, str):
+            message = LocalizedMessage(message)
+        if not message:
+            return
+        if message not in self.hint_messages:
+            self.hint_messages.append(message)
+        self._render_hints()
+
+    def _render_hints(self) -> None:
+        """按当前语言重画整条提示行（切语言时也走这里，旧语言不残留）。"""
+        parts: list[str] = []
+        for message in self.hint_messages:
+            text = message.text(self.lang).strip()
+            if text and text not in parts:
+                parts.append(text)
+        self.hint_parts = parts
+        self.hint_label.configure(text="  ".join(parts))
 
     def _set_action(self, text: str) -> None:
         """设置绿色操作反馈（复制成功、全选……）：覆盖式，只留最新一条。
@@ -2664,6 +2742,9 @@ class DiskTrackerApp:
         self.smartctl_label.configure(text=self._source_label_text())
         self.prev_label.configure(text=tr("上次记录：{stamp}", stamp=self.prev_stamp_text))
         self.cur_label.configure(text=tr("本次记录：{stamp}", stamp=self.cur_stamp_text))
+        # 黄色提示行只存了键，这里按新语言整行重放；_refresh_admin_label 刚追加过的那条
+        # 已经在表里，去重后不会重复。
+        self._render_hints()
         self._refresh_tree_menu_labels()
 
         # 3) 数据层文案 + 4) 底部汇总：有上次结果就原地重算，没有就只换静态文案
@@ -3046,12 +3127,11 @@ class DiskTrackerApp:
         取不到字体时退回粗估，绝不因为度量失败让界面崩掉。
         """
         try:
-            import tkinter.font as tkfont
-
-            metrics = tkfont.Font(root=self.root, font=font)
+            # 度量走 Tcl 直查（font measure / font metrics），不建 Font 对象：
+            # 一张卡片要问两次，卡片视图每帧几十次，旧的每问一次建一个对象。
             if text is None:
-                return int(metrics.metrics("linespace"))
-            return int(metrics.measure(text))
+                return fontcache.linespace(self.root, font)
+            return fontcache.measure(self.root, font, text)
         except Exception:
             if text is None:
                 return (self.base_font[1] + 4) * 2
@@ -3331,18 +3411,23 @@ class DiskTrackerApp:
         self._busy = True
         self._run_started = time.monotonic()
         self._run_warned = False
+        # 新一轮 = 新世代 + 新队列。旧一轮的轮询与结果从这一刻起都算过期：
+        # 看门狗放过手之后，那个卡住的 worker 迟早会返回，它带回来的是一份旧数据，
+        # 落进新一轮刚画好的表里就是灾难（行数是新的，数值是旧的）。
+        self._run_generation += 1
+        generation = self._run_generation
         self.refresh_button.configure(state="disabled")
         self._sync_refresh_button()
         # 刷新是把整张表换掉，旧的「已复制 / 已选中 / 请先用右键」说的是刷新前那份数据，
         # 留着只会误导，所以绿红两条一起清掉；黄色系统提示（未提权、缺 smartctl）不清。
         self._clear_action()
-        self.source_text = tr("读取中…")
+        self.source_text = LocalizedMessage("读取中…")
         self.smartctl_label.configure(text=self._source_label_text())
         # 后台线程与界面之间只通过 queue.Queue 交接数据，线程里不碰任何 Tk 对象。
         # 早先是在 worker 的 finally 里直接调 self.root.after(60, self._poll)——
         # Tk 不是线程安全的，那个调用在部分机器上会让整个进程静默卡死（窗口还在，
         # 但不再响应）。现在轮询完全由主线程发起，worker 只管把结果塞进队列。
-        self.status_queue: queue.Queue = queue.Queue()
+        status_queue: queue.Queue = queue.Queue()
         # 语言在派活之前就定下来：读盘过程中用户可能切语言，worker 里的 tr()
         # 不能跟着变，否则同一批行的状态列会一半中文一半英文。
         worker_lang = current_language()
@@ -3354,38 +3439,81 @@ class DiskTrackerApp:
                                           resolver=self.resolver)
             except Exception as exc:  # 不让后台线程把异常带进主循环
                 traceback.print_exc()
-                self.status_queue.put(exc)
+                status_queue.put(exc)
             else:
-                self.status_queue.put(outcome)
+                status_queue.put(outcome)
 
         threading.Thread(target=worker, daemon=True, name="disk-reader").start()
-        self.root.after(60, self._poll)
+        # worker_lang 一并交给轮询：结果回来时若界面语言已经变了，就用它判断要不要重拼。
+        self.root.after(60, lambda: self._poll(generation, status_queue, worker_lang))
 
-    def _poll(self) -> None:
+    def _check_watchdog(self) -> None:
+        """worker 卡在系统调用里时，真的把界面放开，而不是只在红字里说一句。
+
+        旧实现只把「读取超时……可稍后手动刷新」写进红字，按钮却仍是 disabled、
+        _busy 也还是 True——用户照着提示去点，发现根本点不动。现在超时即复位忙碌态，
+        用户随时能再刷新一次；上一轮的结果如果迟到，因为没开新一轮、世代号没变，
+        仍然会在这一支轮询里落地。
+        """
+        if self._run_warned or not self._busy:
+            return
+        if time.monotonic() - self._run_started <= READ_WATCHDOG_SECONDS:
+            return
+        self._run_warned = True
+        self._busy = False
+        # 顶部「数据源」也必须跟着改：这一行是 refresh_async 写的「读取中…」，
+        # 而它只有 apply_outcome 才会更新。worker 真卡死时，按钮已经恢复成「刷新记录」、
+        # 上面却一直写着「数据源：读取中…」——用户以为还在读，其实这一轮早就放弃提示了。
+        self.source_text = LocalizedMessage("读取超时，后台仍在尝试")
+        self.smartctl_label.configure(text=self._source_label_text())
+        self.refresh_button.configure(state="normal")
+        self._sync_refresh_button()
+        self._set_error(tr("读取超时：{seconds} 秒内未返回，后台仍在尝试，可稍后手动刷新",
+                           seconds=int(READ_WATCHDOG_SECONDS)))
+
+    def _poll(self, generation: int, status_queue: queue.Queue,
+              worker_lang: str | None = None) -> None:
+        """主线程轮询队列。generation 是派出这一轮时的世代号。
+
+        世代号对不上说明用户已经重新发起刷新：旧 worker 的结果属于旧数据，
+        直接停止续期，让这一支自然消失。
+
+        worker_lang 是派活时定下的语言：读盘途中用户可能切语言，结果回来时行内
+        文案还停在旧语言上，得靠这个值判断要不要重拼（见 apply_outcome）。
+        """
+        # worker 线程里被回收的 Tk 对象（变量/图像/字体）不会当场调 Tcl，
+        # 而是排进 tkthread 的队列；在主线程这一支轮询里替它们收尾。
+        tkthread.drain()
+        if generation != self._run_generation:
+            return
         try:
-            item = self.status_queue.get_nowait()
+            item = status_queue.get_nowait()
         except queue.Empty:
             # 看门狗：worker 卡在系统调用里时界面不能永远停在「读取中…」。
             # 只提示一次，并且继续轮询，迟到的结果仍然会被 apply_outcome 接住。
-            if (self._busy and not self._run_warned
-                    and time.monotonic() - self._run_started > READ_WATCHDOG_SECONDS):
-                self._run_warned = True
-                self._set_error(tr("读取超时：{seconds} 秒内未返回，后台仍在尝试，可稍后手动刷新",
-                                   seconds=int(READ_WATCHDOG_SECONDS)))
-            self.root.after(60, self._poll)
+            self._check_watchdog()
+            self.root.after(60, lambda: self._poll(generation, status_queue, worker_lang))
             return
         self._busy = False
         self.refresh_button.configure(state="normal")
         self._sync_refresh_button()
         if isinstance(item, Exception):
-            self.source_text = tr("读取异常")
+            self.source_text = LocalizedMessage("读取异常")
             self.smartctl_label.configure(text=self._source_label_text())
             self._set_ok(None)
             self._set_error(tr("读取失败：{error}", error=item))
             return
-        self.apply_outcome(item)
+        self.apply_outcome(item, worker_lang=worker_lang)
 
-    def apply_outcome(self, outcome: RunOutcome) -> RunOutcome:
+    def apply_outcome(self, outcome: RunOutcome, worker_lang: str | None = None) -> RunOutcome:
+        """把一次运行的结果铺到界面上。worker_lang 是算出这批行时用的语言。
+
+        DiskRow 的状态列、0E 列是 build_rows 当场拼好的成品串，拼的时候用的是
+        worker 线程那门语言。用户在「读取中…」期间切了语言，这些行一落地就把旧
+        语言写回表格：表头是英文、状态列还是中文。发现对不上就按当前语言重算一遍。
+        """
+        if worker_lang is not None and worker_lang != current_language() and outcome.snapshots:
+            outcome.rows = rebuild_rows(outcome)
         self._clear_action()
         self.clear_rows()
         self.rows = list(outcome.rows)
@@ -3400,12 +3528,13 @@ class DiskTrackerApp:
         self.cur_label.configure(
             text=tr("本次记录：{stamp}", stamp=self.cur_stamp_text)
         )
-        # 有路径就显示 smartctl 路径，没有就显示数据源状态
-        # （status 本身在 providers.read_all 里已按当前语言生成，不再二次翻译）
+        # 有路径就显示 smartctl 路径（路径原样，不翻译），没有就显示数据源状态。
+        # status 现在带「键 + 参数」一起回来，切语言时能重拼；只给了裸字符串的
+        # 调用方（测试/外部 provider）也能用，str 原样显示。
         self.source_text = outcome.smartctl_path or outcome.provider_status
         self.smartctl_label.configure(text=self._source_label_text())
         if outcome.smartctl_path is None and outcome.provider_status:
-            self._append_hint(tr(SMARTCTL_INSTALL_HINT))
+            self._append_message(LocalizedMessage(SMARTCTL_INSTALL_HINT))
 
         totals = outcome.totals
         if outcome.baseline:
@@ -3429,7 +3558,7 @@ class DiskTrackerApp:
         )
         self._set_ok(outcome)
         if outcome.history_message:
-            self._append_hint(outcome.history_message)
+            self._append_message(outcome.history_message)
         self.note_label.configure(
             text=self._history_note_text(outcome.history_path, baseline=outcome.baseline)
         )
@@ -3446,6 +3575,12 @@ class DiskTrackerApp:
     # ---------- 菜单动作 ----------
     def close(self) -> None:
         """关闭窗口即退出：不留后台线程、不写服务、不设自启。"""
+        # 销毁解释器之前先把排队的 Tk 清理动作放掉：一旦 Tcl 解释器没了，
+        # 这些动作只会抛出 TclError，白白留一堆没人执行的闭包。
+        try:
+            tkthread.drain()
+        except Exception:                   # pragma: no cover - 解释器已在收尾
+            pass
         try:
             self.root.destroy()
         except Exception:
@@ -3470,14 +3605,44 @@ class DiskTrackerApp:
         return [self._iid_to_row[iid] for iid in self.tree.get_children()
                 if iid in chosen and iid in self._iid_to_row]
 
-    def _copy_text(self, text: str, hint: str) -> bool:
+    def _sync_clipboard(self) -> bool:
+        """把剪贴板内容立刻交给窗口系统。返回窗口是否还活着。
+
+        Tk 的剪贴板是「按需供数」的：clipboard_append() 只是登记，真正把内容交出去
+        发生在下一次事件循环里。用户在复制后马上切到别的程序粘贴时，如果本进程没再
+        跑过事件循环，粘出来的就是空的（或在 Linux 上直接失效）。update() 强制把
+        这一轮事件（含 SelectionRequest）处理完，代价只有几毫秒。
+
+        必须用 update() 而不是 update_idletasks()：后者只跑空闲回调，
+        不会处理别的程序发来的剪贴板请求，等于没同步。
+        """
+        try:
+            self.root.update()
+        except Exception:  # noqa: BLE001 - 窗口已销毁时装不上就算了
+            return False
+        return True
+
+    def _copy_text(self, text: str, hint: str, *,
+                   failure_hint: str = "复制到剪贴板失败：{error}") -> bool:
+        """复制 → 立刻同步 → 绿字反馈，整段都在保护里。
+
+        update() 是一次完整的事件泵：用户可能正是在这一瞬间关掉了窗口，紧接着的
+        任何 configure() 都会抛 TclError。所以「同步 → 写反馈」不能拆到 try 外面，
+        否则复制明明成功了，反而抛出一串没人处理的异常。两个复制出口共用这一条
+        路径，免得一处包了、一处没包。
+        """
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-        except Exception as exc:
-            self._set_error(tr("复制到剪贴板失败：{error}", error=exc))
+            if not self._sync_clipboard():
+                return False
+            self._set_action(hint)
+        except Exception as exc:  # noqa: BLE001 - 窗口已销毁时反馈也写不了
+            try:
+                self._set_error(tr(failure_hint, error=exc))
+            except Exception:
+                pass
             return False
-        self._set_action(hint)
         return True
 
     def copy_selection(self) -> None:
@@ -3626,12 +3791,8 @@ class DiskTrackerApp:
         ))
 
     def copy_diagnostics(self) -> None:
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(self.diagnostics_text())
-            self._set_action(tr("已复制诊断信息到剪贴板。"))
-        except Exception as exc:
-            self._set_error(tr("复制诊断信息失败：{error}", error=exc))
+        self._copy_text(self.diagnostics_text(), tr("已复制诊断信息到剪贴板。"),
+                        failure_hint="复制诊断信息失败：{error}")
 
     def show_source_status(self) -> None:
         from tkinter import messagebox
@@ -3709,9 +3870,11 @@ class DiskTrackerApp:
             self._set_error(tr("重置历史文件失败：{error}", error=exc))
             return
         if backup is None:
-            self._append_hint(tr("历史文件已重置（旧文件未能备份，可能已被占用）。"))
+            self._append_message(
+                LocalizedMessage("历史文件已重置（旧文件未能备份，可能已被占用）。"))
         else:
-            self._append_hint(tr("历史文件已重置，旧文件备份为 {name}。", name=backup.name))
+            self._append_message(
+                LocalizedMessage("历史文件已重置，旧文件备份为 {name}。", {"name": backup.name}))
         self.refresh_async()
 
     def open_history_file(self) -> None:

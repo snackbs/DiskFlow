@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import ast
+import gc
 import hashlib
 import inspect
 import json
+import queue
 import re
 import shutil
 import sys
@@ -204,6 +206,44 @@ def test_delta_interval_and_history_totals():
     totals = app.summarize(rows)
     assert totals["read_delta"] == pytest.approx(NVME_READ_GB - 6000.0)
     assert totals["hist_write_delta"] == pytest.approx(NVME_WRITE_GB - 7000.0)
+
+
+def test_summarize_never_adds_a_negative_delta_into_the_totals():
+    """计数器回退（换主控/固件重置）时，汇总行不能跟着变成负数。
+
+    行内要保留负数，用户才看得见「疑似计数重置」；但汇总一旦把它加进去，
+    一块盘回退 900 GB 就能把另一块盘真实的正增量抵掉，底部出现一个既不真、
+    也无法操作的负总数。回退的那一路必须整个跳过。
+    """
+    history = [_history_record(NVME_KEY, "Sample NVMe SSD 1TB", "N1SAMPLE0001",
+                               9000.0, 9000.0, "2026-04-30T08:00:00+08:00")]
+    rolled_back = app.DiskSnapshot(
+        device_path="/dev/nvme0", protocol="NVMe",
+        model="Sample NVMe SSD 1TB", serial="N1SAMPLE0001",
+        read_bytes=int(10 * 1024 ** 3), write_bytes=int(20 * 1024 ** 3), media_errors=0,
+    )
+    rolled_back._now_hint = "2026-05-02T10:30:00+08:00"
+    healthy = app.DiskSnapshot(
+        device_path="/dev/nvme1", protocol="NVMe", model="Sample NVMe SSD 1TB",
+        serial="N1SAMPLE0002", read_bytes=int(500 * 1024 ** 3),
+        write_bytes=int(700 * 1024 ** 3), media_errors=0,
+    )
+    healthy_history = _history_record(app.disk_key("Sample NVMe SSD 1TB", "N1SAMPLE0002"),
+                                      "Sample NVMe SSD 1TB", "N1SAMPLE0002", 100.0, 200.0,
+                                      "2026-04-30T08:00:00+08:00")
+    healthy._now_hint = "2026-05-02T10:30:00+08:00"
+
+    rows = app.build_rows(history + [healthy_history], [rolled_back, healthy])
+    back = {row.key: row for row in rows}[rolled_back.key]
+    assert back.read_delta_gb is not None and back.read_delta_gb < 0
+    assert "疑似计数重置" in back.status_text, "行内仍要提示计数器回退"
+
+    totals = app.summarize(rows)
+    for name, value in totals.items():
+        assert value >= 0, f"{name} 出现负数：{value}"
+    # 回退的那块盘整个跳过，没有把健康盘的正增量抵掉
+    assert totals["read_delta"] == pytest.approx(400.0)
+    assert totals["write_delta"] == pytest.approx(500.0)
 
 
 def test_build_rows_carries_capacity_into_disk_rows():
@@ -981,6 +1021,87 @@ def test_history_missing_fields_are_backed_up(tmp_path):
     assert list(path.parent.glob("history.corrupt-*.json"))
 
 
+def test_perform_run_surfaces_a_history_file_rebuilt_inside_the_lock(tmp_path, monkeypatch):
+    """锁内才发现「历史文件坏了」，提示不能丢。
+
+    perform_run 先 load 一次算基线，再 append 写回；期间文件可能被别的程序写坏。
+    append 在锁内重新读、发现损坏、备份并重建基线——这件事只通过它的返回值
+    传得出来。旧实现整个丢掉返回值，用户看到的是一份好端端的空历史：上一次
+    的读数像是被程序自己删了，还找不到任何解释。
+    """
+    store = _store(tmp_path)
+    snap = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe", model="M", serial="S",
+                            read_bytes=10 * 1024 ** 3, write_bytes=20 * 1024 ** 3,
+                            media_errors=0)
+    store.save(app.records_from_snapshots([snap], datetime(2026, 4, 30, 8, 0, tzinfo=TZ8)))
+    assert store.load().records
+
+    # 让「读第一次」之后文件变成坏 JSON，模拟另一个进程在两次读之间写坏
+    original_append = app.HistoryStore.append
+
+    def append_after_corruption(self, new_records):
+        self.path.write_text("{ 这不是 JSON", encoding="utf-8")
+        return original_append(self, new_records)
+
+    monkeypatch.setattr(app.HistoryStore, "append", append_after_corruption)
+
+    outcome = app.perform_run(app.FixturesProvider(FIXTURES), store,
+                              now=datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    assert outcome.history_message, "文件被损坏重建这件事必须有提示"
+    text = outcome.history_message.text() if hasattr(outcome.history_message, "text") \
+        else str(outcome.history_message)
+    assert "已备份" in text
+    assert list(store.path.parent.glob("history.corrupt-*.json")), "坏文件应该被备份下来"
+
+
+def test_perform_run_uses_the_baseline_it_finds_inside_the_lock(tmp_path, monkeypatch):
+    """锁内才发现「别的实例刚写了一条」，本次增量要跟那条比，不是跟锁外那份比。
+
+    两次 load 之间另一个实例（另一个窗口、另一个进程）完全可能追加读数。锁外那份
+    快照此时已经过期：拿它当「上一次」，界面上的「距上次 / 本次增量」就和文件里
+    真正的前一条记录对不上——用户翻历史核对会发现数字说不通，而且没有任何提示。
+    append() 返回的就是锁内合并后的完整列表，砍掉本次这批才是真正的基准。
+    """
+    store = _store(tmp_path)
+    early = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                             model="Sample NVMe SSD 1TB", serial="N1SAMPLE0001",
+                             read_bytes=int(10 * 1024 ** 3),
+                             write_bytes=int(20 * 1024 ** 3), media_errors=0)
+    store.save(app.records_from_snapshots([early], datetime(2026, 4, 30, 8, 0, tzinfo=TZ8)))
+
+    # 模拟「另一个实例在我们 load 之后、append 之前写进了一条读数」
+    other = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                             model="Sample NVMe SSD 1TB", serial="N1SAMPLE0001",
+                             read_bytes=int(30 * 1024 ** 3),
+                             write_bytes=int(40 * 1024 ** 3), media_errors=0)
+    original_append = app.HistoryStore.append
+
+    def append_after_another_instance_wrote(self, new_records):
+        # 用 append 而不是 save：save 是整份覆盖，会把 4/30 那条也抹掉，
+        # 那样测的就不是「基准过期」，而是「数据被覆盖」了。
+        original_append(self, app.records_from_snapshots(
+            [other], datetime(2026, 5, 1, 8, 0, tzinfo=TZ8)))
+        return original_append(self, new_records)
+
+    monkeypatch.setattr(app.HistoryStore, "append", append_after_another_instance_wrote)
+
+    mine = app.DiskSnapshot(device_path="/dev/nvme0", protocol="NVMe",
+                            model="Sample NVMe SSD 1TB", serial="N1SAMPLE0001",
+                            read_bytes=int(60 * 1024 ** 3),
+                            write_bytes=int(80 * 1024 ** 3), media_errors=0)
+    outcome = app.perform_run(_FakeProvider([mine]), store,
+                              now=datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+
+    assert outcome.previous_stamp == "2026-05-01T08:00:00+08:00", \
+        "上一次记录必须是锁内看到的那条，不是锁外读到的旧快照"
+    assert outcome.baseline is False
+    assert len(outcome.records) == 2, "基准里要包含别的实例写进去的那条"
+    row = outcome.rows[0]
+    assert row.read_delta_gb == pytest.approx(30.0), "本次增量要跟锁内那条比"
+    assert row.write_delta_gb == pytest.approx(40.0)
+    assert outcome.totals["read_delta"] == pytest.approx(30.0)
+
+
 def test_history_reset_backs_up_old_file_and_rebuilds_empty_baseline(tmp_path):
     """重置历史：旧文件改名备份（不删），新文件是空基线，仍能正常追加。"""
     store = _store(tmp_path)
@@ -1737,6 +1858,21 @@ def _thread_dump() -> str:
     return nl.join(chunks)
 
 
+def _wait_until_worker_done(window, timeout=30.0):
+    """等「disk-reader」线程真的退出（不看 _busy）。
+
+    看门狗触发之后 _busy 会被复位，界面上已经是「可以再点一次刷新」了，但那个
+    卡住的 worker 仍在跑。要验证「迟到的结果照样落地」，就得等线程本身结束。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(t.name == "disk-reader" and t.is_alive() for t in threading.enumerate()):
+            return True
+        window.root.update()
+        time.sleep(0.02)
+    return False
+
+
 def _wait_until_idle(window, timeout=30.0):
     """等后台读盘结束；超时就把所有线程的栈打出来，别只留一句 assert。"""
     deadline = time.monotonic() + timeout
@@ -1786,7 +1922,11 @@ def test_gui_background_read_only_touches_tk_from_the_main_thread(tk_root, tmp_p
 
 
 def test_gui_poll_keeps_the_language_of_the_run_it_started(tk_root, tmp_path):
-    """读盘途中切语言：本次结果仍按启动时的语言生成，不会中英混排。"""
+    """读盘途中切语言：结果落地时整屏统一按新语言重绘，不留旧语言的成品串。
+
+    难点在表格正文：DiskRow 的状态列 / 0E 列是 build_rows 在 worker 那门语言下
+    拼好的成品字符串，apply_outcome 如果照单全收，表头翻了、状态列还是中文。
+    """
     window = app.DiskTrackerApp(tk_root, provider=app.FixturesProvider(FIXTURES),
                                 store=_gui_store(tmp_path), autostart=False,
                                 now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
@@ -1798,6 +1938,10 @@ def test_gui_poll_keeps_the_language_of_the_run_it_started(tk_root, tmp_path):
         # 结果落地后按新语言重绘，界面上不能出现「Reading… 刷新记录」这类混排
         assert window.refresh_button.cget("text") == "Refresh"
         assert window.prev_label.cget("text").startswith("Last record: ")
+        statuses = [window.tree.item(iid, "values")[7] for iid in window.tree.get_children()]
+        assert statuses, "表格里得有行，否则这条断言等于没跑"
+        for status in statuses:
+            assert not re.search(r"[\u4e00-\u9fff]", str(status)), status
     finally:
         window.set_language(app.LANG_ZH, persist=False)
         window.root.destroy()
@@ -1836,10 +1980,13 @@ def _blocking_window(tk_root, tmp_path, release, monkeypatch):
 
 
 def test_gui_read_watchdog_recovers_a_stuck_worker(tk_root, tmp_path, monkeypatch):
-    """worker 卡死在系统调用里时，看门狗必须提示超时，但不能丢掉迟到的结果。
+    """worker 卡死在系统调用里时，看门狗必须提示超时，并且真的把界面放开。
 
     真实场景：驱动挂死 / 杀软独占设备，subprocess 的 timeout 都拦不住。这里用
     一个会阻塞的 provider 复现，阈值压到 0 秒。
+
+    超时之后界面必须回到可用状态：只把红字写上去、按钮还锁着，用户照着
+    「可稍后手动刷新」去点却发现点不动，那提示本身就是谎话。
     """
     release = threading.Event()
     window, provider = _blocking_window(tk_root, tmp_path, release, monkeypatch)
@@ -1853,10 +2000,21 @@ def test_gui_read_watchdog_recovers_a_stuck_worker(tk_root, tmp_path, monkeypatc
             time.sleep(0.02)
         assert window._run_warned is True, "看门狗没有触发"
         assert "读取超时" in window.error_label.cget("text")
-        assert window._busy is True, "看门狗只提示，不假装这一轮已经结束"
-        # 迟到的结果仍然要落地
+        assert window._busy is False, "看门狗必须让这一轮结束，否则刷新按钮永远点不动"
+        assert str(window.refresh_button.cget("state")) == "normal"
+        assert window.refresh_button.cget("text") == "刷新记录"
+        # 顶部「数据源」这一行由 refresh_async 写成「读取中…」，只有 apply_outcome
+        # 会再改它。看门狗若不跟着改，worker 真卡死时按钮已恢复、上面却永远写着
+        # 「数据源：读取中…」，用户会以为还在读。
+        assert "读取中" not in window.smartctl_label.cget("text")
+        assert "读取超时" in window.smartctl_label.cget("text")
+        # 迟到的结果仍然要落地（这一轮还没被新一轮顶掉，世代号没变）
         release.set()
-        _wait_until_idle(window)
+        assert _wait_until_worker_done(window), "worker 没结束"
+        deadline = time.monotonic() + 20
+        while not window.tree.get_children() and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
         assert len(window.tree.get_children()) > 0
         assert window.error_label.cget("text") == ""
     finally:
@@ -1877,12 +2035,136 @@ def test_gui_read_watchdog_rearms_every_run(tk_root, tmp_path, monkeypatch):
             time.sleep(0.02)
         assert window._run_warned is True
         release.set()
+        assert _wait_until_worker_done(window), "worker 没结束"
         _wait_until_idle(window)
         window.refresh_async()
         assert window._run_warned is False, "新一轮必须先复位，否则第二次卡住不会再提示"
     finally:
         release.set()
         window.root.destroy()
+
+class _FirstCallBlocksProvider:
+    """第一次 read_all() 卡住，之后每次立刻返回不同的快照。
+
+    这样「超时 → 用户重新刷新（第二轮成功）→ 旧 worker 才姗姗回来」这条真实路径
+    才能在同一个窗口里走完；只用 Event 卡住一个 provider 的话，第二轮根本没有数据。
+    """
+
+    def __init__(self, first, later, release: threading.Event) -> None:
+        self._first = list(first)
+        self._later = list(later)
+        self.release = release
+        self.started = threading.Event()
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def read_all(self) -> Any:
+        with self._lock:
+            self.calls += 1
+            calls = self.calls
+        if calls == 1:
+            self.started.set()
+            self.release.wait(30)
+            snapshots = self._first
+        else:
+            snapshots = self._later
+        return app.ProviderResult(snapshots=list(snapshots), smartctl_path=None,
+                                  status=f"blocking provider #{calls}", ok=True)
+
+
+def test_gui_stale_run_result_is_dropped(tk_root, tmp_path, monkeypatch):
+    """卡住那一轮的结果迟到之后，不能覆盖用户重新刷新出来的新表。
+
+    走的是完整链路：看门狗超时放开界面 → 用户真的又点了一次刷新（第二轮立刻成功）→
+    第一轮那个卡住的 worker 这才返回，带回的是旧数据。它的世代号已经对不上，
+    整支轮询早就停掉了，结果只能进那个没人听的旧队列。
+    """
+    release = threading.Event()
+    first = app.FixturesProvider(FIXTURES).read_all().snapshots
+    later = [app.DiskSnapshot(device_path="/dev/nvme9", protocol="NVMe",
+                              model="Second Wave NVMe", serial="SN2WAVE",
+                              read_bytes=42 * 1024 ** 3, write_bytes=64 * 1024 ** 3,
+                              media_errors=0)]
+    provider = _FirstCallBlocksProvider(first, later, release)
+    window = app.DiskTrackerApp(tk_root, provider=provider, store=_gui_store(tmp_path),
+                                autostart=False,
+                                now_func=lambda: datetime(2026, 5, 2, 10, 30, tzinfo=TZ8))
+    monkeypatch.setattr("diskflow.gui.READ_WATCHDOG_SECONDS", 0.0)
+    try:
+        window.refresh_async()
+        assert provider.started.wait(10), "worker 没起来"
+        first_generation = window._run_generation
+        deadline = time.monotonic() + 20
+        while not window._run_warned and time.monotonic() < deadline:
+            window.root.update()
+            time.sleep(0.02)
+        assert window._run_warned is True, "看门狗没有触发，后面这条路径就走不到了"
+        assert window._busy is False
+
+        # 用户照提示又点了一次刷新：第二轮立刻拿到数据并落地
+        window.refresh_async()
+        assert window._run_generation > first_generation, "新一轮必须换世代号"
+        _wait_until_idle(window)
+        time.sleep(0.05)
+        window.root.update()
+        shown = [window.tree.item(iid, "values")[0] for iid in window.tree.get_children()]
+        assert any("Second Wave NVMe" in str(cell) for cell in shown), shown
+
+        # 现在才放走第一轮那个卡住的 worker：它的结果必须被丢掉
+        release.set()
+        assert _wait_until_worker_done(window), "旧 worker 没结束"
+        for _ in range(200):
+            window.root.update()
+            time.sleep(0.01)
+        shown = [window.tree.item(iid, "values")[0] for iid in window.tree.get_children()]
+        assert any("Second Wave NVMe" in str(cell) for cell in shown), shown
+        assert not any("Sample NVMe SSD 1TB" in str(cell) for cell in shown), shown
+    finally:
+        release.set()
+        window.root.destroy()
+
+
+def test_tk_finalizers_never_run_tcl_from_a_worker_thread(tk_root):
+    """worker 线程里被回收的 Tk 对象不能在那一线程调 Tcl。
+
+    现场：读盘 worker 在 json.dumps 里触发 GC，回收了主线程建的 StringVar，
+    它的 __del__ 跨线程调「info exists」，Tcl 把这次调用排队等 mainloop，
+    worker 就死在那里（伴随 RuntimeError: main thread is not in main loop）。
+    现在跨线程的析构只入队，由主线程 drain() 代跑。
+    """
+    import tkinter.font as tkfont
+
+    tkthread = app.tkthread
+    assert tkthread.install() is True, "有 Tk 的环境里必须装得上"
+
+    def build() -> list[object]:
+        # 三类会调 Tcl 的对象各来一个，全部在主线程创建
+        return [
+            tkinter.StringVar(master=tk_root, value="deferred"),
+            tkfont.Font(root=tk_root, family="TkDefaultFont", size=9),
+            tkinter.PhotoImage(master=tk_root, width=2, height=2),
+        ]
+
+    victims = build()
+    base = tkthread.pending()
+    collected: list[BaseException] = []
+
+    def drop() -> None:
+        try:
+            victims.clear()
+            gc.collect()
+        except BaseException as exc:        # pragma: no cover - 只是收集证据
+            collected.append(exc)
+
+    worker = threading.Thread(target=drop, name="gc-worker")
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "worker 线程不该卡在 Tk 析构里"
+    assert not collected, f"worker 里不该抛异常：{collected}"
+    # 主线程来收尾，队列要能清空
+    tkthread.drain()
+    assert tkthread.pending() <= base
+
 
 def test_gui_sorting_does_not_crash(tk_root, tmp_path):
     store = _gui_store(tmp_path)
@@ -4597,6 +4879,13 @@ def test_gui_language_switch_updates_menus_headers_and_rows(tk_root, tmp_path):
         assert window.cur_label.cget("text") == \
             "This record: 2026-05-02 10:30:00 (UTC+8)"
         assert window.admin_label.cget("text").startswith("Privilege: ")
+        # 4b) 黄色提示行与「数据源」也要跟着切：旧实现把当时翻好的成品串存进
+        # hint_parts，切语言时没人重算，英文界面上会留一条中文提示。
+        assert window.smartctl_label.cget("text").startswith("Data source: ")
+        if not app.is_admin():
+            assert window.hint_parts, "未提权时必须有黄色提示"
+            assert not any("未以管理员运行" in part for part in window.hint_parts), \
+                f"英文界面残留中文提示：{window.hint_parts}"
         # 5) 数据层重算：状态列跟着语言变（新盘 / 旧盘 / 失败 / 消失四种都要翻）
         rows = [window.tree.item(iid, "values") for iid in window.tree.get_children()]
         statuses = [values[7] for values in rows]
@@ -4622,6 +4911,10 @@ def test_gui_language_switch_updates_menus_headers_and_rows(tk_root, tmp_path):
         assert any(text.startswith("读取失败") for text in statuses)
         assert "历史总读增" in window.summary_label.cget("text")
         assert "本次记录：" in window.cur_label.cget("text")
+        assert window.smartctl_label.cget("text").startswith("数据源：")
+        if not app.is_admin():
+            assert any("未以管理员运行" in part for part in window.hint_parts), \
+                f"切回中文后提示行没复原：{window.hint_parts}"
     finally:
         window.set_language(app.LANG_ZH, persist=False)
         window.root.destroy()
@@ -4713,6 +5006,134 @@ def test_file_lock_takes_over_a_stale_lock_file(tmp_path, monkeypatch):
     _os.utime(lock, (stale, stale))
     with app.atomicio.file_lock(target, timeout=0.0) as acquired:
         assert acquired is True
+
+
+def test_file_lock_release_never_steals_a_lock_it_does_not_own(tmp_path):
+    """A 的锁被判过期、B 接管之后，A 收尾时不能把 B 的锁删掉。
+
+    无条件 unlink 的老实现在这里会把互斥彻底废掉：A 删掉 B 的锁之后，C 立刻
+    也能拿到锁，于是三个写者同时写同一份 history.json——正是这把锁要防的事。
+    """
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+    with app.atomicio.file_lock(target, timeout=0.0):
+        # 持锁期间（还没退出 with）模拟「超时被别人接管」：换掉锁文件正文
+        lock.write_text("someone-else:abc", encoding="utf-8")
+    assert lock.exists(), "不是自己那把锁就不能删"
+    assert lock.read_text(encoding="utf-8") == "someone-else:abc"
+
+
+def test_file_lock_release_never_clobbers_a_lock_someone_rebuilt(tmp_path, monkeypatch):
+    """放回误拿到的锁时，原位要是被第三方新建了锁，绝不能把它覆盖掉。
+
+    老实现用 os.replace(taken, lock_path) 放回：POSIX 上目标存在就静默覆盖，
+    第三方那把锁连同它的 token 一起没了，第四个人立刻也能进来。注释当时写着
+    「让它赢」，代码干的是「把它踢掉」。
+    """
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+    real_replace = app.atomicio.os.replace
+    fired = []
+
+    def racing_replace(src, dst):
+        real_replace(src, dst)
+        if not str(dst).endswith(".release") or fired:
+            return
+        fired.append(1)
+        # 我们的改名拿走的其实是 B 接管后的锁；紧接着 C 抢先建了一把新锁
+        Path(dst).write_text("took-over:bbb", encoding="utf-8")
+        Path(src).write_text("third:ccc", encoding="utf-8")
+
+    monkeypatch.setattr(app.atomicio.os, "replace", racing_replace)
+    with app.atomicio.file_lock(target, timeout=0.0) as acquired:
+        assert acquired is True
+    assert fired, "没有走到「拿到的不是自己那把」这条路"
+    assert lock.read_text(encoding="utf-8") == "third:ccc", \
+        "第三方重建的锁被覆盖掉了"
+    assert [p.name for p in tmp_path.iterdir()] == ["history.json.lock"], \
+        "不该留下 .release 残留"
+
+
+def test_lock_restore_falls_back_when_hardlinks_are_unavailable(tmp_path, monkeypatch):
+    """FAT/exFAT 这类不支持硬链接的盘上，放回锁要退化成「重建」而不是直接丢。"""
+    taken = tmp_path / "history.json.lock.dead.release"
+    taken.write_text("took-over:bbb", encoding="utf-8")
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+
+    def no_link(src, dst):
+        raise OSError("hardlinks unsupported on this filesystem")
+
+    monkeypatch.setattr(app.atomicio.os, "link", no_link)
+    app.atomicio._restore_lock(taken, lock)
+    assert lock.read_text(encoding="utf-8") == "took-over:bbb"
+    assert not taken.exists()
+
+def test_file_lock_takeover_does_not_spin_forever(tmp_path, monkeypatch):
+    """stale 判定卡在「一直成立」时，接管次数要有上限，不能烧 CPU 死循环。
+
+    旧实现里 stale 分支既不查 deadline 也不 sleep，锁文件若一直处在「存在但
+    stat 失败」的状态（杀软短暂占住、网络盘抖动），这一圈会无限转下去。
+
+    必须把锁文件先建出来：全新目录里第一次 os.open 就会成功，根本进不了
+    FileExistsError 分支，那这条用例对死循环毫无约束力。也要把 _discard 打成
+    空操作，否则第一轮接管就把锁删了、循环照常收敛，同样测不到上限。
+    """
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+    lock.write_text("stuck:token", encoding="utf-8")
+    calls = []
+
+    def always_stale(lock_path):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(app.atomicio, "_is_stale", always_stale)
+    monkeypatch.setattr(app.atomicio, "_discard", lambda lock_path: None)
+    with app.atomicio.file_lock(target, timeout=0.0) as acquired:
+        assert acquired is False, "上限定死后必须放弃，而不是继续转"
+    assert calls, "_is_stale 一次都没被调用，说明压根没走进接管分支"
+    assert len(calls) == app.atomicio.MAX_STALE_TAKEOVERS + 1
+
+
+def test_file_lock_takeover_limit_follows_the_constant(tmp_path, monkeypatch):
+    """上限确实读的是 MAX_STALE_TAKEOVERS，而不是别处写死的数字。
+
+    这条是上一条的反证：只断言「不超过 3 次」的话，把常量改大或删掉上限时
+    用例照样通过，死循环会重新悄无声息地回来。
+    """
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+    lock.write_text("stuck:token", encoding="utf-8")
+    calls = []
+
+    def always_stale(lock_path):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(app.atomicio, "_is_stale", always_stale)
+    monkeypatch.setattr(app.atomicio, "_discard", lambda lock_path: None)
+    monkeypatch.setattr(app.atomicio, "MAX_STALE_TAKEOVERS", 7)
+    with app.atomicio.file_lock(target, timeout=0.0) as acquired:
+        assert acquired is False
+    assert len(calls) == 8, "接管次数应当跟着常量走"
+
+
+def test_file_lock_degrades_when_the_token_cannot_be_written(tmp_path, monkeypatch):
+    """写不进持有者标记时，当场降级为无锁，而不是留下一把空锁。
+
+    空锁既证明不了主人是谁，释放时也删不掉（_release 比对 token 不通过），
+    只能卡在那儿等 LOCK_STALE_SECONDS 到期——期间所有实例都被挡在门外。
+    """
+    target = tmp_path / "history.json"
+    lock = tmp_path / ("history.json" + app.atomicio.LOCK_SUFFIX)
+
+    def boom(fd, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app.atomicio.os, "write", boom)
+    with app.atomicio.file_lock(target, timeout=0.0) as acquired:
+        assert acquired is False, "写不进标记就当没拿到锁"
+    assert not lock.exists(), "不能把空锁留在磁盘上"
 
 
 def test_file_lock_disabled_is_a_no_op(tmp_path):

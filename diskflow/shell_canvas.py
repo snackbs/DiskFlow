@@ -33,6 +33,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Any, Callable, Sequence
 
+from . import fontcache
 from .pngenc import VeilImage, capsule_rgba_png, solid_rgba_png  # noqa: F401  两个 PNG 编码器对外再导出
 
 # 重排合成图的防抖：拖动窗口时 <Configure> 会连发几十次，每次重新解码整张壁纸
@@ -493,7 +494,9 @@ class CanvasLabel(SliceCanvas):
         elif isinstance(spec, str):
             self._font = tkfont.nametofont(spec)
         else:
-            self._font = tkfont.Font(font=spec)
+            # 复用缓存对象：每次换字体/主题都会走到这里，新建的 Font 一旦被回收
+            # （可能发生在 worker 线程）就会跨线程调 Tcl，把调用方卡住。
+            self._font = fontcache.font_for(self, spec)
         self.itemconfigure(self._text_item, font=self._font)
 
     def _text_width(self) -> int:
@@ -656,7 +659,7 @@ class QuietButton(SliceCanvas):
         elif isinstance(spec, str):
             self._font = tkfont.nametofont(spec)
         else:
-            self._font = tkfont.Font(font=spec)
+            self._font = fontcache.font_for(self, spec)
 
     def _fit(self) -> None:
         """按文字宽度 + 内边距定宽、按行高定高。
