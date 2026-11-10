@@ -6757,6 +6757,66 @@ def test_gui_bottom_bar_is_a_card_surface(tk_root, tmp_path):
         window.root.destroy()
 
 
+def test_gui_card_labels_keep_the_card_color_after_apply_theme(tk_root, tmp_path):
+    """切主题后卡里的字必须还是卡片色，不能被刷成窗口色。
+
+    深色专业主题 win_bg=#1E2227、card_bg=#262C33，两者差得够远：一旦摘切片那条
+    分支用 _all_shell_labels() 统一刷 win_bg，四张 KPI 卡里就各浮出一块更暗的
+    矩形，四周只剩一圈亮边；底栏那两行字底下同样一道暗带。浅色主题是
+    #FFFFFF vs #F4F7FA 这类近白差异，肉眼看不出来，所以只能在用例里断言。
+    """
+    window = _photo_window(tk_root, tmp_path)
+    try:
+        for key in (app.THEME_DARK, app.THEME_LEDGER):
+            window.apply_theme(key, persist=False)
+            theme = app.THEMES[key]
+            card_bg = str(theme["card_bg"])
+            win_bg = str(theme["win_bg"])
+            assert card_bg != win_bg, "这两个主题必须真的有两种底色，否则用例测不出东西"
+            bad = [(widget.cget("text"), str(widget.cget("bg")))
+                   for widget in window._card_labels
+                   if str(widget.cget("bg")) != card_bg]
+            assert not bad, f"{key} 主题下卡内标签没拿到卡片色：{bad}"
+            bad = [(widget.cget("text"), str(widget.cget("bg")))
+                   for widget in window._shell_labels
+                   if str(widget.cget("bg")) != win_bg]
+            assert not bad, f"{key} 主题下外壳标签没拿到窗口色：{bad}"
+    finally:
+        window.root.destroy()
+
+
+def test_gui_card_labels_recover_after_leaving_the_photo_theme(tk_root, tmp_path):
+    """图片背景主题挂过切片，切回实色主题后卡内底色不能残留窗口色。"""
+    window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)
+    try:
+        window.apply_theme(app.THEME_PHOTO, persist=False)
+        window.apply_theme(app.THEME_DARK, persist=False)
+        dark = app.THEMES[app.THEME_DARK]
+        for widget in window._card_labels:
+            assert str(widget.cget("bg")) == str(dark["card_bg"])
+            # 切片也真的摘掉了，否则下半截会贴旧图的碎片
+            assert widget.shell_surface is None
+        # 再回到图片背景主题，卡里的字照样走卡片色 + 罩层
+        window.apply_theme(app.THEME_PHOTO, persist=False)
+        photo = app.THEMES[app.THEME_PHOTO]
+        for widget in window._card_labels:
+            assert str(widget.cget("bg")) == str(photo["card_bg"])
+    finally:
+        window.root.destroy()
+
+
+def test_gui_about_button_fills_with_the_card_color(tk_root, tmp_path):
+    """「关于」按钮坐在底栏卡片里，兜底色必须是卡片色而不是窗口色。"""
+    window = _photo_window(tk_root, tmp_path)
+    try:
+        for key in (app.THEME_DARK, app.THEME_LEDGER, app.THEME_PHOTO):
+            window.apply_theme(key, persist=False)
+            theme = app.THEMES[key]
+            assert str(window.about_button.cget("bg")) == str(theme["card_bg"])
+    finally:
+        window.root.destroy()
+
+
 def test_gui_about_button_gets_a_deeper_border(tk_root, tmp_path):
     """关于按钮的描边要明显深于 seg_border，否则「一个框」看不出来。"""
     window = _photo_window(tk_root, tmp_path, theme=app.THEME_PHOTO)

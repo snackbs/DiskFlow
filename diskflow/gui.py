@@ -1340,9 +1340,24 @@ class DiskTrackerApp:
         self._card_labels.append(widget)
         return widget
 
-    def _all_shell_labels(self) -> list[Any]:
-        """全部自绘文字控件：10 个窗体外壳 + 卡片里那几行字。"""
-        return list(self._shell_labels) + list(self._card_labels)
+    def _card_background(self) -> str:
+        """卡片色。卡内的字与卡上的按钮都用它，不能退回窗口色。"""
+        win_bg = str(self.theme.get("win_bg") or "#FFFFFF")
+        return str(self.theme.get("card_bg") or win_bg)
+
+    def _shell_label_palette(self) -> list[tuple[Any, str]]:
+        """外壳文字控件与它**各自该用的底色**：卡里的字用卡片色，其余用窗口色。
+
+        摘切片与挂切片两条分支都必须走这一张表。早先摘切片那条把两组标签并成
+        一张表再统一刷 win_bg，于是每次切主题都把 _apply_shell_theme 刚设好的
+        card_bg 覆盖掉：深色专业主题下四张 KPI 卡里各浮出一块比卡片更暗
+        的矩形，四周只剩一圈亮边；底栏那两行字底下同样一道暗带。浅色主题是
+        #FFFFFF vs #F4F7FA 这类近白差异，肉眼看不出来，所以一直没被发现。
+        """
+        win_bg = str(self.theme.get("win_bg") or "#FFFFFF")
+        card_bg = self._card_background()
+        return ([(widget, win_bg) for widget in self._shell_labels]
+                + [(widget, card_bg) for widget in self._card_labels])
 
     def _apply_shell_theme(self) -> None:
         """把当前主题的配色刷到外壳 CanvasLabel 上（CanvasLabel 不认识 ttk style）。"""
@@ -1941,12 +1956,14 @@ class DiskTrackerApp:
                     canvas.set_background(win_bg)
                 except Exception:           # pragma: no cover
                     pass
-            # 文字控件也要摘掉切片：留着会继续贴旧图的碎片，切回浅色主题就花了
-            for widget in self._all_shell_labels():
+            # 文字控件也要摘掉切片：留着会继续贴旧图的碎片，切回浅色主题就花了。
+            # 底色按 _shell_label_palette 分组给：卡里的字这里是卡片色，统一刷
+            # win_bg 会把上面 _apply_shell_theme 刚设好的 card_bg 抹掉。
+            for widget, background in self._shell_label_palette():
                 try:
                     if isinstance(widget, CanvasLabel):
                         widget.set_surface(None)
-                        widget.set_background(win_bg)
+                        widget.set_background(background)
                 except Exception:           # pragma: no cover
                     pass
             # 卡片区内层垫层
@@ -1963,12 +1980,13 @@ class DiskTrackerApp:
                     button.set_surface(None)
                 except Exception:           # pragma: no cover
                     pass
-            # 底部「关于」按钮（自绘 QuietButton）同理
+            # 底部「关于」按钮（自绘 QuietButton）同理。底色用卡片色：它坐在
+            # 底栏那张卡片上，刷成窗口色会在卡片里留一块更暗的方块。
             if QuietButton is not None and isinstance(
                     getattr(self, "about_button", None), QuietButton):
                 try:
                     self.about_button.set_surface(None)
-                    self.about_button.set_background(win_bg)
+                    self.about_button.set_background(self._card_background())
                 except Exception:           # pragma: no cover
                     pass
             # 三条细滚动条也要摘：它们的轨道是 Canvas 底，留着会贴旧图
@@ -2037,13 +2055,13 @@ class DiskTrackerApp:
                 button.set_background(str(self.theme.get("win_bg") or "#FFFFFF"))
             except Exception:               # pragma: no cover
                 pass
-        # 底部「关于」按钮：自绘按钮自己不铺底色时是纯色，挂上切片才透得出壁纸
+        # 底部「关于」按钮：自绘按钮自己不铺底色时是纯色，挂上切片才透得出壁纸。
+        # 兜底色用卡片色——它坐在底栏那张卡片上，用窗口色会在卡片里留一块暗方块。
         if QuietButton is not None and isinstance(
                 getattr(self, "about_button", None), QuietButton):
             try:
                 self.about_button.set_surface(self._shell)
-                self.about_button.set_background(
-                    str(self.theme.get("win_bg") or "#FFFFFF"))
+                self.about_button.set_background(self._card_background())
             except Exception:           # pragma: no cover
                 pass
         # 三条细滚动条：轨道同样是画布底，不贴切片的话整窗最右侧会漏一条
@@ -2074,9 +2092,8 @@ class DiskTrackerApp:
             self._sync_extra_backdrop(extra_name, win_bg)
         # 10 个外壳文字控件也挂到同一张合成图上：文字控件自己那块也要贴壁纸，
         # 否则它们会在切片层上面留下一小块一小块的实色补丁。
-        # KPI 卡里的两行字同理，底色用卡片色而不是窗口色。
-        card_bg = str(self.theme.get("card_bg") or win_bg)
-        for widget, background in [(w, win_bg) for w in self._shell_labels] +                                   [(w, card_bg) for w in self._card_labels]:
+        # 底色按 _shell_label_palette 分组给：KPI 卡里的字用卡片色而不是窗口色。
+        for widget, background in self._shell_label_palette():
             try:
                 if isinstance(widget, CanvasLabel):
                     widget.set_background(background)
@@ -2522,8 +2539,11 @@ class DiskTrackerApp:
                 # 单拿一条出来框住一个按钮时几乎看不见（用户说的「加个更有辨识
                 # 度的框」）。往正文色方向混 45%——比边框明显、比文字轻，六套
                 # 主题都成立，且不用新增主题键。
+                # 底色用卡片色：这个按钮坐在底栏那张 CardCanvas 上，用窗口色
+                # 会在卡片里留一块更暗的方块（深色专业主题下尤其明显）。
                 self.about_button.apply_palette(
-                    foreground=theme["tree_fg"], background=theme["win_bg"],
+                    foreground=theme["tree_fg"],
+                    background=str(theme.get("card_bg") or theme["win_bg"]),
                     border=mix_hex(theme["seg_border"], theme["tree_fg"], 0.45),
                     font=(family, size),
                     hover_fill=theme["seg_hover_bg"],
