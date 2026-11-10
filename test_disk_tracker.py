@@ -1885,6 +1885,22 @@ def _wait_until_idle(window, timeout=30.0):
         raise AssertionError("后台读盘超时未完成，线程栈：" + nl + dump)
     return True
 
+def _wait_for_row(window, needle, timeout=30.0):
+    """等表格里真的出现带 needle 的行，超时就把当前单元格全打出来。
+
+    看门狗一响就把 _busy 复位了，所以 _wait_until_idle 会在 worker 还没回来时
+    提前返回；「这一轮的结果落地了没有」只能看表格本身，不能看 _busy。
+    """
+    deadline = time.monotonic() + timeout
+    shown = []
+    while time.monotonic() < deadline:
+        window.root.update()
+        shown = [window.tree.item(iid, "values")[0] for iid in window.tree.get_children()]
+        if any(needle in str(cell) for cell in shown):
+            return shown
+        time.sleep(0.02)
+    raise AssertionError(f"表格里一直没出现 {needle!r}，当前：{shown}")
+
 def test_gui_background_read_only_touches_tk_from_the_main_thread(tk_root, tmp_path):
     """后台读盘时，所有 Tk 调用都必须发生在主线程（P0-2 的回归）。
 
@@ -2101,13 +2117,12 @@ def test_gui_stale_run_result_is_dropped(tk_root, tmp_path, monkeypatch):
         assert window._run_warned is True, "看门狗没有触发，后面这条路径就走不到了"
         assert window._busy is False
 
-        # 用户照提示又点了一次刷新：第二轮立刻拿到数据并落地
+        # 用户照提示又点了一次刷新：第二轮立刻拿到数据并落地。
+        # 看门狗改回正常值，别让第二轮也被 0 秒超时打断；结果到没到只看表格。
+        monkeypatch.setattr("diskflow.gui.READ_WATCHDOG_SECONDS", 300.0)
         window.refresh_async()
         assert window._run_generation > first_generation, "新一轮必须换世代号"
-        _wait_until_idle(window)
-        time.sleep(0.05)
-        window.root.update()
-        shown = [window.tree.item(iid, "values")[0] for iid in window.tree.get_children()]
+        shown = _wait_for_row(window, "Second Wave NVMe")
         assert any("Second Wave NVMe" in str(cell) for cell in shown), shown
 
         # 现在才放走第一轮那个卡住的 worker：它的结果必须被丢掉
